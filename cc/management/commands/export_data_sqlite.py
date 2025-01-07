@@ -314,6 +314,7 @@ class Command(BaseCommand):
                 instruments = django_cursor.fetchall()
                 instrument_columns = [col[0] for col in django_cursor.description]
                 instrument_placeholders = ', '.join(['?'] * len(instrument_columns))
+                print(instruments)
                 if instruments:
                     cursor.executemany(
                         f'INSERT INTO {instrument_table_name} ({", ".join(instrument_columns)}) VALUES ({instrument_placeholders})',

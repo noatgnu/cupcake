@@ -254,6 +254,7 @@ class Command(BaseCommand):
                 # Export Instrument associated to InstrumentUsage
                 instrument_table_name = Instrument._meta.db_table
                 print(instrument_usages)
+
                 instrument_ids = list(set([instrument_usage[6] for instrument_usage in instrument_usages if instrument_usage[6]]))
                 print(instrument_ids)
                 if len(instrument_ids) > 1:
@@ -265,6 +266,7 @@ class Command(BaseCommand):
                 else:
                     instruments = []
                 instrument_columns = [col[0] for col in django_cursor.description]
+                print(instrument_columns)
                 instrument_placeholders = ', '.join(['?'] * len(instrument_columns))
                 if instruments:
                     cursor.executemany(f'INSERT INTO {instrument_table_name} ({", ".join(instrument_columns)}) VALUES ({instrument_placeholders})', instruments)

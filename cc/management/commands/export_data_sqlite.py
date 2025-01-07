@@ -247,13 +247,14 @@ class Command(BaseCommand):
             django_cursor.execute(f'SELECT * FROM {instrument_usage_table_name} WHERE annotation_id IN ({", ".join(["%s"] * len(annotations))})', [annotation[0] for annotation in annotations])
             instrument_usages = django_cursor.fetchall()
             instrument_usage_columns = [col[0] for col in django_cursor.description]
+            instrument_id_column_index = instrument_usage_columns.index('instrument_id')
             instrument_usage_placeholders = ', '.join(['?'] * len(instrument_usage_columns))
             if instrument_usages:
                 cursor.executemany(f'INSERT INTO {instrument_usage_table_name} ({", ".join(instrument_usage_columns)}) VALUES ({instrument_usage_placeholders})', instrument_usages)
                 conn.commit()
                 # Export Instrument associated to InstrumentUsage
                 instrument_table_name = Instrument._meta.db_table
-                instrument_ids = list(set([instrument_usage[7] for instrument_usage in instrument_usages if instrument_usage[7]]))
+                instrument_ids = list(set([instrument_usage[instrument_id_column_index] for instrument_usage in instrument_usages if instrument_usage[instrument_id_column_index]]))
                 if len(instrument_ids) > 1:
                     django_cursor.execute(f'SELECT * FROM {instrument_table_name} WHERE id IN ({", ".join(["%s"] * len(instrument_ids))})', instrument_ids)
                     instruments = django_cursor.fetchall()

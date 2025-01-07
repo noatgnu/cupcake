@@ -253,13 +253,14 @@ class Command(BaseCommand):
                 conn.commit()
                 # Export Instrument associated to InstrumentUsage
                 instrument_table_name = Instrument._meta.db_table
+                print(instrument_usages)
                 instrument_ids = list(set([instrument_usage[6] for instrument_usage in instrument_usages if instrument_usage[6]]))
                 print(instrument_ids)
                 if len(instrument_ids) > 1:
                     django_cursor.execute(f'SELECT * FROM {instrument_table_name} WHERE id IN ({", ".join(["%s"] * len(instrument_ids))})', instrument_ids)
                     instruments = django_cursor.fetchall()
                 elif len(instrument_ids) == 1:
-                    django_cursor.execute(f'SELECT * FROM {instrument_table_name} WHERE id = %s', instrument_ids[0])
+                    django_cursor.execute(f'SELECT * FROM {instrument_table_name} WHERE id = %s', instrument_ids)
                     instruments = [django_cursor.fetchone()]
                 else:
                     instruments = []

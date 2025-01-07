@@ -167,13 +167,14 @@ class Command(BaseCommand):
                                 django_cursor.execute(f'SELECT * FROM {step_reagent_table_name} WHERE reagent_id IN ({", ".join(["%s"] * len(protocol_reagents))})', [reagent[0] for reagent in protocol_reagents])
                                 step_reagents = django_cursor.fetchall()
                                 step_reagent_columns = [col[0] for col in django_cursor.description]
+                                reagent_id = step_reagent_columns.index('reagent_id')
                                 step_reagent_placeholders = ', '.join(['?'] * len(step_reagent_columns))
                                 if step_reagents:
                                     cursor.executemany(f'INSERT INTO {step_reagent_table_name} ({", ".join(step_reagent_columns)}) VALUES ({step_reagent_placeholders})', step_reagents)
                                     conn.commit()
                                     # Export Reagent associated to ProtocolReagent
                                     reagent_table_name = Reagent._meta.db_table
-                                    django_cursor.execute(f'SELECT * FROM {reagent_table_name} WHERE id IN ({", ".join(["%s"] * len(step_reagents))})', [reagent[1] for reagent in step_reagents])
+                                    django_cursor.execute(f'SELECT * FROM {reagent_table_name} WHERE id IN ({", ".join(["%s"] * len(step_reagents))})', [reagent[reagent_id] for reagent in step_reagents])
                                     reagents = django_cursor.fetchall()
                                     reagent_columns = [col[0] for col in django_cursor.description]
                                     reagent_placeholders = ', '.join(['?'] * len(reagent_columns))

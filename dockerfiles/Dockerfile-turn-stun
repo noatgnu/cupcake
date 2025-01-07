@@ -1,0 +1,10 @@
+FROM coturn/coturn:latest
+
+
+
+COPY turnserver.conf /etc/turnserver.conf
+COPY turnserver-start.sh ./start.sh
+EXPOSE 3478/udp
+EXPOSE 3478/tcp
+
+CMD ["/bin/bash", "./start.sh"]

@@ -1,0 +1,10 @@
+FROM alpine:latest
+
+RUN apk add --no-cache openssl
+
+WORKDIR /certs
+
+RUN openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout localhost.key -out localhost.crt \
+    -subj "/C=US/ST=Denial/L=Springfield/O=Dis/CN=localhost" \
+    -addext "subjectAltName=DNS:localhost,IP:0.0.0.0"

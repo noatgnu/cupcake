@@ -1,0 +1,9 @@
+.idea
+data2
+staticfiles
+media
+__pycache__
+*.docx
+models
+*.gz
+docker-compose.yml

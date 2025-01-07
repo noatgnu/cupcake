@@ -1,0 +1,11 @@
+FROM python:3.10-bullseye
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+RUN apt update && apt upgrade -y
+RUN git clone https://github.com/ggerganov/llama.cpp.git
+WORKDIR /llama.cpp
+RUN curl https://huggingface.co/TheBloke/CapybaraHermes-2.5-Mistral-7B-GGUF/resolve/main/capybarahermes-2.5-mistral-7b.Q5_K_M.gguf?download=true -L -o ./models/capybarahermes-2.5-mistral-7b.Q5_K_M.gguf
+RUN make
+ENTRYPOINT ["./server", "-m", "./models/capybarahermes-2.5-mistral-7b.Q5_K_M.gguf", "-p", "8080", "-t", "8", "-h", "0.0.0.0", "-c", "2048"]
+

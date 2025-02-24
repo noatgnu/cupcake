@@ -915,7 +915,6 @@ def import_user_data(user_id: int, tar_file: str, instance_id: str = None):
             annotationfolder_map[i].save()
 
     annotation_map = {}
-    print(session_map)
     for file in os.listdir(annotations_folder):
         with open(os.path.join(annotations_folder, file), "rt") as f:
 
@@ -932,8 +931,6 @@ def import_user_data(user_id: int, tar_file: str, instance_id: str = None):
 
                 if len(data["folder"]) > 0:
                     folder = annotationfolder_map[data["folder"][0]["id"]]
-
-            print(data)
             instance = Annotation.objects.create(
                 session=session_map[data["session"]],
                 step=data["step"],

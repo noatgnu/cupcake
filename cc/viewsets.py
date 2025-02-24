@@ -33,7 +33,7 @@ from cc.filters import UnimodFilter
 from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVariation, TimeKeeper, ProtocolSection, \
     ProtocolRating, Reagent, StepReagent, ProtocolReagent, ProtocolTag, StepTag, Tag, AnnotationFolder, Project, \
     Instrument, InstrumentUsage, InstrumentPermission, StorageObject, StoredReagent, ReagentAction, LabGroup, Species, \
-    SubcellularLocation, HumanDisease, Tissue, MetadataColumn, MSUniqueVocabularies, Unimod
+    SubcellularLocation, HumanDisease, Tissue, MetadataColumn, MSUniqueVocabularies, Unimod, InstrumentJob
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite
@@ -43,7 +43,8 @@ from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, Anno
     ProtocolTagSerializer, StepTagSerializer, TagSerializer, AnnotationFolderSerializer, ProjectSerializer, \
     InstrumentSerializer, InstrumentUsageSerializer, StorageObjectSerializer, StoredReagentSerializer, \
     ReagentActionSerializer, LabGroupSerializer, SpeciesSerializer, SubcellularLocationSerializer, \
-    HumanDiseaseSerializer, TissueSerializer, MetadataColumnSerializer, MSUniqueVocabulariesSerializer, UnimodSerializer
+    HumanDiseaseSerializer, TissueSerializer, MetadataColumnSerializer, MSUniqueVocabulariesSerializer, \
+    UnimodSerializer, InstrumentJobSerializer
 
 
 class ProtocolViewSet(ModelViewSet, FilterMixin):
@@ -592,15 +593,16 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
     def create(self, request, *args, **kwargs):
         step = None
         custom_id = self.request.META.get('HTTP_X_CUPCAKE_INSTANCE_ID', None)
+        annotation = Annotation()
         if 'step' in request.data:
             step = ProtocolStep.objects.get(id=request.data['step'])
-
-        session = Session.objects.get(unique_id=request.data['session'])
-        annotation = Annotation()
+            annotation.step = step
+        if 'session' in request.data:
+            if request.data['session'] != "":
+                session = Session.objects.get(unique_id=request.data['session'])
+                annotation.session = session
         annotation.annotation = request.data['annotation']
         annotation.annotation_type = request.data['annotation_type']
-        annotation.step = step
-        annotation.session = session
         annotation.user = request.user
         time_started = None
         time_ended = None
@@ -1495,6 +1497,13 @@ class UserViewSet(ModelViewSet, FilterMixin):
 
         return Response({"is_staff": user.is_staff}, status=status.HTTP_200_OK)
 
+    @action(detail=False, methods=['get'])
+    def get_user_lab_groups(self, request):
+        user = self.request.user
+        lab_groups = user.lab_groups.all()
+        data = LabGroupSerializer(lab_groups, many=True).data
+        return Response(data, status=status.HTTP_200_OK)
+
 
 class ProtocolRatingViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticatedOrReadOnly]
@@ -2010,13 +2019,19 @@ class StorageObjectViewSet(ModelViewSet, FilterMixin):
     pagination_class = LimitOffsetPagination
 
     def get_queryset(self):
+        query = Q()
+
         if self.request.query_params.get('stored_at', None):
             store_at = StorageObject.objects.get(id=self.request.query_params.get('stored_at'))
-            return self.queryset.filter(stored_at=store_at)
+            query &= Q(stored_at=store_at)
 
         if self.request.query_params.get('root', 'false') == 'true':
-            return self.queryset.filter(stored_at__isnull=True)
-        return self.queryset
+            query &= Q(stored_at__isnull=True)
+
+        if self.request.query_params.get('lab_group', None):
+            lab_group = LabGroup.objects.get(id=self.request.query_params.get('lab_group'))
+            query &= Q(access_lab_groups=lab_group)
+        return self.queryset.filter(query)
 
     def get_object(self):
         obj = super().get_object()
@@ -2072,9 +2087,33 @@ class StorageObjectViewSet(ModelViewSet, FilterMixin):
         all_children = all_children + [instance]
         stored_within = StoredReagent.objects.filter(Q(storage_object__in=all_children) & ~Q(user=self.request.user))
         if stored_within.exists():
-            return Response(status=status.HTTP_409_CONFLICT)
+            return Response(data="Storage object are not empty and containing items not owned by the user",status=status.HTTP_409_CONFLICT)
         instance.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['post'])
+    def add_access_group(self, request, pk=None):
+        instance = self.get_object()
+        if not self.request.user.is_staff and instance.user == self.request.user:
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+        lab_group = LabGroup.objects.get(id=request.data['lab_group'])
+        if not lab_group.users.filter(id=self.request.user.id).exists():
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+        instance.access_lab_groups.add(lab_group)
+        data = self.get_serializer(instance).data
+        return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def remove_access_group(self, request, pk=None):
+        instance = self.get_object()
+        if not self.request.user.is_staff and instance.user == self.request.user:
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+        lab_group = LabGroup.objects.get(id=request.data['lab_group'])
+        if not lab_group.users.filter(id=self.request.user.id).exists():
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+        instance.access_lab_groups.remove(lab_group)
+        data = self.get_serializer(instance).data
+        return Response(data, status=status.HTTP_200_OK)
 
     # @action(detail=True, methods=['post'])
     # def store_reagent(self, request, pk=None):
@@ -2142,6 +2181,11 @@ class StoredReagentViewSet(ModelViewSet, FilterMixin):
             all_children = storage_object.get_all_children()
             all_children = all_children+[storage_object]
             query &= Q(storage_object__in=all_children)
+
+        lab_group = self.request.query_params.get('lab_group', None)
+        if lab_group:
+            lab_group = LabGroup.objects.get(id=lab_group)
+            query &= Q(storage_object__in=lab_group.storage_objects.all())
 
         return StoredReagent.objects.filter(query)
 
@@ -2424,10 +2468,15 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
     serializer_class = LabGroupSerializer
 
     def get_queryset(self):
+        query = Q()
         stored_reagent_id = self.request.query_params.get('stored_reagent', None)
         if stored_reagent_id:
             stored_reagent = StoredReagent.objects.get(id=stored_reagent_id)
             return stored_reagent.access_lab_groups.all()
+        storage_object_id = self.request.query_params.get('storage_object', None)
+        if storage_object_id:
+            storage_object = StorageObject.objects.get(id=storage_object_id)
+            return storage_object.access_lab_groups.all()
         return self.queryset
 
     def get_object(self):
@@ -2464,9 +2513,9 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
     def remove_user(self, request, pk=None):
         group = self.get_object()
         if not self.request.user.is_staff:
-            if not group.managers.filter(username=request.data['user']).exists():
+            if not group.managers.filter(id=request.data['user']).exists():
                 return Response(status=status.HTTP_401_UNAUTHORIZED)
-        user = User.objects.get(username=request.data['user'])
+        user = User.objects.get(id=request.data['user'])
         group.users.remove(user)
         data = self.get_serializer(group).data
         return Response(data, status=status.HTTP_200_OK)
@@ -2475,10 +2524,10 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
     def add_user(self, request, pk=None):
         group: LabGroup = self.get_object()
         if not self.request.user.is_staff:
-            if not group.managers.filter(username=request.data['user']).exists():
+            if not group.managers.filter(id=request.data['user']).exists():
                 return Response(status=status.HTTP_401_UNAUTHORIZED)
 
-        user = User.objects.get(username=request.data['user'])
+        user = User.objects.get(id=request.data['user'])
         group.users.add(user)
         data = self.get_serializer(group).data
         return Response(data, status=status.HTTP_200_OK)
@@ -2754,3 +2803,137 @@ class UnimodViewSets(FilterMixin, ModelViewSet):
             return Response(status=status.HTTP_403_FORBIDDEN)
         unimod.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+class InstrumentJobViewSets(FilterMixin, ModelViewSet):
+    serializer_class = InstrumentJobSerializer
+    queryset = InstrumentJob.objects.all()
+
+    permission_classes = [IsAuthenticatedOrReadOnly]
+    authentication_classes = [TokenAuthentication]
+    parser_classes = (MultiPartParser, JSONParser)
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    ordering_fields = ['id', 'name', 'created_at']
+    search_fields = ['name']
+
+    def get_queryset(self):
+        return super().get_queryset()
+
+
+    def create(self, request, *args, **kwargs):
+        if not self.request.user.is_staff:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        name = request.data['job_name']
+
+        instrument_job: InstrumentJob = InstrumentJob(
+            job_name=name,
+            user=self.request.user
+        )
+        if 'instrument' in request.data:
+            instrument = Instrument.objects.get(id=request.data['instrument'])
+            instrument_job.instrument = instrument
+        if 'staff' in request.data:
+            staff = User.objects.get(username=request.data['staff'])
+            instrument_job.staff = staff
+            instrument_job.assigned = True
+        if 'project' in request.data:
+            project = Project.objects.get(id=request.data['project'])
+            instrument_job.project = project
+        user_metadata = [
+            {
+                "name": "Organism", "type": "Characteristics", "mandatory": True
+            },
+            {
+                "name": "Tissue", "type": "Characteristics", "mandatory": True
+            },
+            {
+                "name": "Cell type", "type": "Characteristics", "mandatory": True
+            },
+            {
+                "name": "Cleaveage agent details", "type": "Comment", "mandatory": True
+            },
+            {
+                "name": "Enrichment process", "type": "Comment", "mandatory": True
+            }
+        ]
+        instrument_job.save()
+        for metadata in user_metadata:
+            metadata_column = MetadataColumn.objects.create(
+                name=metadata['name'],
+                type=metadata['type'],
+                mandatory=metadata['mandatory'],
+            )
+            instrument_job.user_metadata.add(metadata_column)
+        staff_metadata = [
+            {
+                "name": "Label",
+                "type": "Comment",
+                "mandatory": True
+            }
+        ]
+        for metadata in staff_metadata:
+            metadata_column = MetadataColumn.objects.create(
+                name=metadata['name'],
+                type=metadata['type'],
+                mandatory=metadata['mandatory'],
+            )
+            instrument_job.staff_metadata.add(metadata_column)
+
+        data = InstrumentJobSerializer(instrument_job).data
+        return Response(data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        instrument_job = self.get_object()
+        if not self.request.user.is_staff:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        if 'job_name' in request.data:
+            instrument_job.job_name = request.data['job_name']
+        if 'instrument' in request.data:
+            instrument = Instrument.objects.get(id=request.data['instrument'])
+            instrument_job.instrument = instrument
+        if 'staff' in request.data:
+            if len(request.data['staff']) > 0:
+                staffs = User.objects.filter(id__isin=request.data['staff'])
+                instrument_job.staff.clear()
+                instrument_job.staff.add(*staffs)
+                instrument_job.assigned = True
+            else:
+                instrument_job.staff.clear()
+                instrument_job.assigned = False
+        if 'project' in request.data:
+            project = Project.objects.get(id=request.data['project'])
+            if not instrument_job.project:
+                instrument_job.project = project
+            elif instrument_job.project != project:
+                instrument_job.project = project
+        if 'cost_center' in request.data:
+            instrument_job.cost_center = request.data['cost_center']
+        if 'funder' in request.data:
+            instrument_job.funder = request.data['funder']
+        if 'sample_type' in request.data:
+            instrument_job.sample_type = request.data['sample_type']
+        if 'sample_number' in request.data:
+            instrument_job.sample_number = request.data['sample_number']
+        if 'protocol' in request.data:
+            protocol = ProtocolModel.objects.get(id=request.data['protocol'])
+            if not instrument_job.protocol:
+                instrument_job.protocol = protocol
+            elif instrument_job.protocol != protocol:
+                instrument_job.protocol = protocol
+        instrument_job.save()
+        return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
+
+    def destroy(self, request, *args, **kwargs):
+        instrument_job = self.get_object()
+        if not self.request.user.is_staff:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        instrument_job.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['post'])
+    def set_project(self, request, pk=None):
+        instrument_job = self.get_object()
+        project = Project.objects.get(id=request.data['project'])
+        instrument_job.project = project
+        instrument_job.save()
+        return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
+

@@ -25,7 +25,7 @@ from cc.viewsets import ProtocolViewSet, SessionViewSet, StepViewSet, Annotation
     TagViewSet, AnnotationFolderViewSet, ProjectViewSet, InstrumentViewSet, InstrumentUsageViewSet, \
     StorageObjectViewSet, StoredReagentViewSet, ReagentActionViewSet, LabGroupViewSet, SpeciesViewSet, \
     MetadataColumnViewSet, TissueViewSet, SubcellularLocationViewSet, HumanDiseaseViewSet, MSUniqueVocabulariesViewSet, \
-    UnimodViewSets
+    UnimodViewSets, InstrumentJobViewSets
 
 router = routers.DefaultRouter()
 router.register(r'protocol', ProtocolViewSet)
@@ -55,6 +55,7 @@ router.register(r'subcellular_locations', SubcellularLocationViewSet)
 router.register(r'human_diseases', HumanDiseaseViewSet)
 router.register(r"ms_vocab", MSUniqueVocabulariesViewSet)
 router.register(r"unimod", UnimodViewSets)
+router.register('instrument_jobs', InstrumentJobViewSets)
 
 urlpatterns = [
     path('admin/', admin.site.urls),

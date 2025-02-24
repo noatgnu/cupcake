@@ -663,7 +663,7 @@ class InstrumentPermission(models.Model):
 
 
 class Annotation(models.Model):
-    session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="annotations")
+    session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="annotations", blank=True, null=True)
     step = models.ForeignKey(ProtocolStep, on_delete=models.CASCADE, related_name="annotations", blank=True, null=True)
     annotation = models.TextField(blank=False, null=False)
     file = models.FileField(blank=True, null=True, upload_to="annotations/")
@@ -699,6 +699,7 @@ class Annotation(models.Model):
     annotation_name = models.TextField(blank=True, null=True)
     summary = models.TextField(blank=True, null=True)
     remote_host = models.ForeignKey("RemoteHost", on_delete=models.CASCADE, related_name="annotations", blank=True, null=True)
+    fixed = models.BooleanField(default=False)
 
     class Meta:
         app_label = "cc"
@@ -968,6 +969,7 @@ class StorageObject(models.Model):
     can_delete = models.BooleanField(default=False)
     png_base64 = models.TextField(blank=True, null=True)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="storage_objects", blank=True, null=True)
+    access_lab_groups = models.ManyToManyField("LabGroup", related_name="storage_objects", blank=True)
 
 
     class Meta:
@@ -1004,7 +1006,6 @@ class StoredReagent(models.Model):
     created_by_protocol = models.ForeignKey(ProtocolModel, on_delete=models.CASCADE, related_name="created_reagents", blank=True, null=True)
     created_by_step = models.ForeignKey(ProtocolStep, on_delete=models.CASCADE, related_name="created_reagents", blank=True, null=True)
     created_by_session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="created_reagents", blank=True, null=True)
-
 
     class Meta:
         app_label = "cc"
@@ -1049,6 +1050,7 @@ class LabGroup(models.Model):
     remote_host = models.ForeignKey("RemoteHost", on_delete=models.CASCADE, related_name="lab_groups", blank=True, null=True)
     users = models.ManyToManyField(settings.AUTH_USER_MODEL, related_name="lab_groups", blank=True)
     managers = models.ManyToManyField(settings.AUTH_USER_MODEL, related_name="managed_lab_groups", blank=True)
+    default_storage = models.ForeignKey(StorageObject, on_delete=models.SET_NULL, related_name="lab_groups", blank=True, null=True)
 
     class Meta:
         app_label = "cc"
@@ -1178,6 +1180,57 @@ class Unimod(models.Model):
     def __str__(self):
         return self.accession
 
+class InstrumentJob(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name='instrument_jobs', blank=True, null=True)
+    project = models.ForeignKey(Project, on_delete=models.SET_NULL, related_name='instrument_jobs', blank=True, null=True)
+    instrument = models.ForeignKey(Instrument, on_delete=models.SET_NULL, related_name='instrument_jobs', blank=True, null=True)
+    protocol = models.ForeignKey(ProtocolModel, on_delete=models.SET_NULL, related_name='instrument_jobs', blank=True, null=True)
+    session = models.ForeignKey(Session, on_delete=models.SET_NULL, related_name='instrument_jobs', blank=True, null=True)
+    job_type_choices = [
+        ('maintenance', 'Maintenance'),
+        ('analysis', 'Analysis'),
+        ('other', 'Other'),
+    ]
+    job_type = models.CharField(max_length=20, choices=job_type_choices, default='analysis')
+    user_annotations = models.ManyToManyField(Annotation, related_name='instrument_jobs', blank=True)
+    staff_annotations = models.ManyToManyField(Annotation, related_name='assigned_instrument_jobs', blank=True)
+    assigned = models.BooleanField(default=False)
+    staff = models.ManyToManyField(settings.AUTH_USER_MODEL, related_name='assigned_instrument_jobs', blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    instrument_usage = models.ForeignKey(InstrumentUsage, on_delete=models.SET_NULL, related_name='instrument_jobs', blank=True, null=True)
+    status_choices = [
+        ('draft', 'Draft'),
+        ('submitted', 'Submitted'),
+        ('pending', 'Pending'),
+        ('completed', 'Completed'),
+        ('in_progress', 'In Progress'),
+        ('cancelled', 'Cancelled'),
+    ]
+    status = models.CharField(max_length=20, choices=status_choices, default='draft')
+    job_name = models.TextField(blank=True, null=True)
+    user_metadata = models.ManyToManyField(MetadataColumn, related_name='instrument_jobs', blank=True)
+    staff_metadata = models.ManyToManyField(MetadataColumn, related_name='assigned_instrument_jobs', blank=True)
+    sample_number = models.IntegerField(blank=True, null=True)
+    sample_type_choices = [
+        ('wcl', 'Whole Cell Lysate'),
+        ('ip', 'Immunoprecipitate'),
+        ('other', 'Other'),
+    ]
+    sample_type = models.CharField(max_length=20, choices=sample_type_choices, default='other')
+    funder = models.TextField(blank=True, null=True)
+    cost_center = models.TextField(blank=True, null=True)
+    injection_volume = models.FloatField(blank=True, null=True)
+    injection_unit = models.TextField(blank=True, null=True)
+    search_engine = models.TextField(blank=True, null=True)
+    search_engine_version = models.TextField(blank=True, null=True)
+    search_details = models.TextField(blank=True, null=True)
+    location = models.TextField(blank=True, null=True)
+    stored_reagent = models.ForeignKey(StoredReagent, on_delete=models.SET_NULL, related_name='instrument_jobs', blank=True, null=True)
+
+    class Meta:
+        app_label = 'cc'
+        ordering = ['id']
 
 @receiver(post_save, sender=settings.AUTH_USER_MODEL)
 def create_auth_token(sender, instance=None, created=False, **kwargs):

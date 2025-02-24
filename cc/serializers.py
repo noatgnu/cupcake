@@ -4,7 +4,7 @@ from rest_framework.serializers import ModelSerializer, SerializerMethodField
 from cc.models import ProtocolModel, ProtocolStep, Annotation, StepVariation, Session, TimeKeeper, ProtocolSection, \
     ProtocolRating, Reagent, ProtocolReagent, StepReagent, StepTag, ProtocolTag, Tag, AnnotationFolder, Project, \
     Instrument, InstrumentUsage, StorageObject, StoredReagent, ReagentAction, LabGroup, MSUniqueVocabularies, \
-    HumanDisease, Tissue, SubcellularLocation, MetadataColumn, Species, Unimod
+    HumanDisease, Tissue, SubcellularLocation, MetadataColumn, Species, Unimod, InstrumentJob
 
 
 class ProtocolModelSerializer(ModelSerializer):
@@ -92,7 +92,7 @@ class AnnotationSerializer(ModelSerializer):
 
     class Meta:
         model = Annotation
-        fields = ['id', 'step', 'session', 'annotation', 'file', 'created_at', 'updated_at', 'annotation_type', 'transcribed', 'transcription', 'language', 'translation', 'scratched', 'annotation_name', 'folder', 'summary', 'instrument_usage', 'metadata_columns']
+        fields = ['id', 'step', 'session', 'annotation', 'file', 'created_at', 'updated_at', 'annotation_type', 'transcribed', 'transcription', 'language', 'translation', 'scratched', 'annotation_name', 'folder', 'summary', 'instrument_usage', 'metadata_columns', 'fixed']
 
 
 class StepVariationSerializer(ModelSerializer):
@@ -127,9 +127,18 @@ class ProtocolSectionSerializer(ModelSerializer):
         fields = ['id', 'protocol', 'section_description', 'section_duration', 'created_at', 'updated_at']
 
 class UserSerializer(ModelSerializer):
+    lab_groups = SerializerMethodField()
+    managed_lab_groups = SerializerMethodField()
+
+    def get_lab_groups(self, obj):
+        return [LabGroupSerializer(x, many=False).data for x in obj.lab_groups.all()]
+
+    def get_managed_lab_groups(self, obj):
+        return [LabGroupSerializer(x, many=False).data for x in obj.managed_lab_groups.all()]
+
     class Meta:
         model = User
-        fields = ['id', 'username']
+        fields = ['id', 'username', 'lab_groups', 'managed_lab_groups', 'email']
 
 class ProtocolRatingSerializer(ModelSerializer):
     class Meta:
@@ -241,7 +250,7 @@ class StorageObjectSerializer(ModelSerializer):
 
     class Meta:
         model = StorageObject
-        fields = ['id', 'object_name', 'object_type', 'object_description', 'created_at', 'updated_at', 'can_delete', 'stored_at', 'stored_reagents', 'png_base64', 'user']
+        fields = ['id', 'object_name', 'object_type', 'object_description', 'created_at', 'updated_at', 'can_delete', 'stored_at', 'stored_reagents', 'png_base64', 'user', 'access_lab_groups']
 
 
 class StoredReagentSerializer(ModelSerializer):
@@ -298,7 +307,7 @@ class ReagentActionSerializer(ModelSerializer):
 class LabGroupSerializer(ModelSerializer):
     class Meta:
         model = LabGroup
-        fields = ['id', 'name', 'created_at', 'updated_at', 'description']
+        fields = ['id', 'name', 'created_at', 'updated_at', 'description', 'default_storage']
 
 
 class MetadataColumnSerializer(ModelSerializer):
@@ -335,3 +344,98 @@ class UnimodSerializer(ModelSerializer):
     class Meta:
         model = Unimod
         fields = ["accession", "name", "definition", "additional_data"]
+
+class InstrumentJobSerializer(ModelSerializer):
+    user = SerializerMethodField()
+    project = SerializerMethodField()
+    session = SerializerMethodField()
+    protocol = SerializerMethodField()
+    user_annotations = SerializerMethodField()
+    staff_annotations = SerializerMethodField()
+    staff = SerializerMethodField()
+    instrument_usage = SerializerMethodField()
+    stored_reagent = SerializerMethodField()
+    user_metadata = SerializerMethodField()
+    staff_metadata = SerializerMethodField()
+
+    def get_user(self, obj):
+        if obj.user:
+            return {"id": obj.user.id, "username": obj.user.username}
+        return None
+
+    def get_project(self, obj):
+        if obj.project:
+            return {"id": obj.project.id, "project_name": obj.project.project_name, "project_description": obj.project.project_description}
+        return None
+
+    def get_session(self, obj):
+        if obj.session:
+            return {"id": obj.session.id, "name": obj.session.name, "unique_id": obj.session.unique_id}
+        return None
+
+    def get_protocol(self, obj):
+        if obj.protocol:
+            return {"id": obj.protocol.id, "protocol_title": obj.protocol.protocol_title, "protocol_description": obj.protocol.protocol_description}
+        return None
+
+    def get_user_annotations(self, obj):
+        return AnnotationSerializer(obj.user_annotations.all(), many=True).data
+
+    def get_staff_annotations(self, obj):
+        return AnnotationSerializer(obj.staff_annotations.all(), many=True).data
+
+    def get_staff(self, obj):
+        if obj.staff.all():
+            return [{"id": x.id, "username": x.username} for x in obj.staff.all()]
+        return []
+
+    def get_instrument_usage(self, obj):
+        if obj.instrument_usage:
+            return InstrumentUsageSerializer(obj.instrument_usage, many=False).data
+        return None
+
+    def get_user_metadata(self, obj):
+        if obj.user_metadata:
+            return MetadataColumnSerializer(obj.user_metadata.all(), many=True).data
+        return []
+
+    def get_staff_metadata(self, obj):
+        if obj.staff_metadata:
+            return MetadataColumnSerializer(obj.staff_metadata.all(), many=True).data
+        return []
+
+    def get_stored_reagent(self, obj):
+        if obj.stored_reagent:
+            return StoredReagentSerializer(obj.stored_reagent, many=False).data
+        return None
+
+    class Meta:
+        model = InstrumentJob
+        fields = [
+            'id',
+            'instrument',
+            'user',
+            'created_at',
+            'updated_at',
+            'project',
+            'session',
+            'protocol',
+            'job_type',
+            'user_annotations',
+            'staff_annotations',
+            'assigned', 'staff',
+            'instrument_usage',
+            'job_name', 'user_metadata', 'staff_metadata',
+            'sample_number',
+            'sample_type', 'funder', 'cost_center',
+            'stored_reagent',
+            'injection_volume',
+            'injection_unit',
+            'search_engine',
+            'search_engine_version',
+            'search_details',
+            'location',
+            'status',
+            'funder',
+            'cost_center',
+        ]

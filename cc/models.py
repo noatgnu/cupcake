@@ -1051,6 +1051,8 @@ class LabGroup(models.Model):
     users = models.ManyToManyField(settings.AUTH_USER_MODEL, related_name="lab_groups", blank=True)
     managers = models.ManyToManyField(settings.AUTH_USER_MODEL, related_name="managed_lab_groups", blank=True)
     default_storage = models.ForeignKey(StorageObject, on_delete=models.SET_NULL, related_name="lab_groups", blank=True, null=True)
+    is_professional = models.BooleanField(default=False)
+    service_storage = models.ForeignKey(StorageObject, on_delete=models.SET_NULL, related_name="service_lab_groups", blank=True, null=True)
 
     class Meta:
         app_label = "cc"

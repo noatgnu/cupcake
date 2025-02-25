@@ -12,6 +12,7 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.signing import TimestampSigner
 from django.db.models import Q, Max
+from django.db.models.expressions import result
 from django.http import HttpResponse
 from django.utils import timezone
 from django_filters.views import FilterMixin
@@ -2178,16 +2179,23 @@ class StoredReagentViewSet(ModelViewSet, FilterMixin):
 
         if self.request.query_params.get('storage_object', None):
             storage_object = StorageObject.objects.get(id=self.request.query_params.get('storage_object'))
+            print(storage_object)
             all_children = storage_object.get_all_children()
             all_children = all_children+[storage_object]
+            print(all_children)
+            if (len(all_children) == 1):
+                query &= Q(storage_object=storage_object)
+            else:
+                query &= Q(storage_object__in=all_children)
             query &= Q(storage_object__in=all_children)
 
         lab_group = self.request.query_params.get('lab_group', None)
         if lab_group:
             lab_group = LabGroup.objects.get(id=lab_group)
             query &= Q(storage_object__in=lab_group.storage_objects.all())
-
-        return StoredReagent.objects.filter(query)
+        result = StoredReagent.objects.filter(query)
+        print(result)
+        return result
 
     def get_object(self):
         obj = super().get_object()
@@ -2488,6 +2496,7 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
         user = self.request.user
         group.name = request.data['name']
         group.description = request.data['description']
+        group.is_professional = request.data['is_professional']
         group.save()
         group.users.add(user)
         data = self.get_serializer(group).data
@@ -2499,7 +2508,12 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
             instance.name = request.data['name']
         if "description" in request.data:
             instance.description = request.data['description']
-
+        if "default_storage" in request.data:
+            instance.default_storage = StorageObject.objects.get(id=request.data['default_storage'])
+        if "service_storage" in request.data:
+            instance.service_storage = StorageObject.objects.get(id=request.data['service_storage'])
+        if "is_professional" in request.data:
+            instance.is_professional = request.data['is_professional']
         instance.save()
         data = self.get_serializer(instance).data
         return Response(data, status=status.HTTP_200_OK)
@@ -2731,9 +2745,13 @@ class MSUniqueVocabulariesViewSet(FilterMixin, ModelViewSet):
 
     def get_queryset(self):
         term_type = self.request.query_params.get('term_type', None)
+        print(term_type)
+        print(self.request)
         if term_type:
-            return self.queryset.filter(term_type=term_type)
-        return super().get_queryset()
+            result = self.queryset.filter(term_type__iexact=term_type)
+            print(result)
+            return result
+        return self.queryset
 
     def create(self, request, *args, **kwargs):
         if not self.request.user.is_staff:
@@ -2892,7 +2910,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             instrument_job.instrument = instrument
         if 'staff' in request.data:
             if len(request.data['staff']) > 0:
-                staffs = User.objects.filter(id__isin=request.data['staff'])
+                staffs = User.objects.filter(id__in=request.data['staff'])
                 instrument_job.staff.clear()
                 instrument_job.staff.add(*staffs)
                 instrument_job.assigned = True
@@ -2919,6 +2937,9 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                 instrument_job.protocol = protocol
             elif instrument_job.protocol != protocol:
                 instrument_job.protocol = protocol
+        if 'stored_reagent' in request.data:
+            stored_reagent = StoredReagent.objects.get(id=request.data['stored_reagent'])
+            instrument_job.stored_reagent = stored_reagent
         instrument_job.save()
         return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
 

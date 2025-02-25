@@ -305,9 +305,23 @@ class ReagentActionSerializer(ModelSerializer):
 
 
 class LabGroupSerializer(ModelSerializer):
+    default_storage = SerializerMethodField()
+    service_storage = SerializerMethodField()
+
+    def get_default_storage(self, obj):
+        if obj.default_storage:
+            return {"id": obj.default_storage.id, "object_name": obj.default_storage.object_name, "object_type": obj.default_storage.object_type, "object_description": obj.default_storage.object_description}
+        return None
+
+    def get_service_storage(self, obj):
+        if obj.service_storage:
+            return {"id": obj.service_storage.id, "object_name": obj.service_storage.object_name, "object_type": obj.service_storage.object_type, "object_description": obj.service_storage.object_description}
+        return None
+
+
     class Meta:
         model = LabGroup
-        fields = ['id', 'name', 'created_at', 'updated_at', 'description', 'default_storage']
+        fields = ['id', 'name', 'created_at', 'updated_at', 'description', 'default_storage', 'is_professional', 'service_storage']
 
 
 class MetadataColumnSerializer(ModelSerializer):

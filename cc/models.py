@@ -1198,6 +1198,7 @@ class InstrumentJob(models.Model):
     staff_annotations = models.ManyToManyField(Annotation, related_name='assigned_instrument_jobs', blank=True)
     assigned = models.BooleanField(default=False)
     staff = models.ManyToManyField(settings.AUTH_USER_MODEL, related_name='assigned_instrument_jobs', blank=True)
+    service_lab_group = models.ForeignKey(LabGroup, on_delete=models.SET_NULL, related_name='instrument_jobs', blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     instrument_usage = models.ForeignKey(InstrumentUsage, on_delete=models.SET_NULL, related_name='instrument_jobs', blank=True, null=True)

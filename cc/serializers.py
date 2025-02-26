@@ -371,6 +371,12 @@ class InstrumentJobSerializer(ModelSerializer):
     stored_reagent = SerializerMethodField()
     user_metadata = SerializerMethodField()
     staff_metadata = SerializerMethodField()
+    service_lab_group = SerializerMethodField()
+
+    def get_service_lab_group(self, obj):
+        if obj.service_lab_group:
+            return {"id": obj.service_lab_group.id, "name": obj.service_lab_group.name}
+        return None
 
     def get_user(self, obj):
         if obj.user:
@@ -452,4 +458,5 @@ class InstrumentJobSerializer(ModelSerializer):
             'status',
             'funder',
             'cost_center',
+            'service_lab_group'
         ]

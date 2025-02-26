@@ -668,6 +668,12 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
                 user=request.user,
                 description=annotation.annotation
             )
+        if 'instrument_job' in request.data and 'instrument_user_type' in request.data:
+            instrument_job = InstrumentJob.objects.get(id=request.data['instrument_job'])
+            if request.data['instrument_user_type'] == "staff_annotation":
+                instrument_job.staff_annotation.add(annotation)
+            elif request.data['instrument_user_type'] == "user_annotation":
+                instrument_job.user_annotation.add(annotation)
         data = self.get_serializer(annotation).data
         return Response(data, status=status.HTTP_201_CREATED)
 
@@ -2179,10 +2185,8 @@ class StoredReagentViewSet(ModelViewSet, FilterMixin):
 
         if self.request.query_params.get('storage_object', None):
             storage_object = StorageObject.objects.get(id=self.request.query_params.get('storage_object'))
-            print(storage_object)
             all_children = storage_object.get_all_children()
             all_children = all_children+[storage_object]
-            print(all_children)
             if (len(all_children) == 1):
                 query &= Q(storage_object=storage_object)
             else:
@@ -2194,7 +2198,6 @@ class StoredReagentViewSet(ModelViewSet, FilterMixin):
             lab_group = LabGroup.objects.get(id=lab_group)
             query &= Q(storage_object__in=lab_group.storage_objects.all())
         result = StoredReagent.objects.filter(query)
-        print(result)
         return result
 
     def get_object(self):
@@ -2940,6 +2943,37 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
         if 'stored_reagent' in request.data:
             stored_reagent = StoredReagent.objects.get(id=request.data['stored_reagent'])
             instrument_job.stored_reagent = stored_reagent
+        if 'service_lab_group' in request.data:
+            service_lab_group = LabGroup.objects.get(id=request.data['service_lab_group'])
+            instrument_job.service_lab_group = service_lab_group
+        if 'user_metadata' in request.data:
+            user_metadata = request.data['user_metadata']
+            instrument_job.user_metadata.clear()
+            for metadata in user_metadata:
+                if 'id' in metadata:
+                    if metadata['id']:
+                        metadata_column = MetadataColumn.objects.get(id=metadata['id'])
+                        if metadata_column.value != metadata['value']:
+                            metadata_column.value = metadata['value']
+                            metadata_column.save()
+                        instrument_job.user_metadata.add(metadata_column)
+                    else:
+                        metadata_column = MetadataColumn.objects.create(
+                            name=metadata['name'],
+                            type=metadata['type'],
+                            value=metadata['value'],
+                            mandatory=metadata['mandatory'],
+                        )
+                        instrument_job.user_metadata.add(metadata_column)
+                else:
+                    metadata_column = MetadataColumn.objects.create(
+                        name=metadata['name'],
+                        type=metadata['type'],
+                        value=metadata['value'],
+                        mandatory=metadata['mandatory'],
+                    )
+                    instrument_job.user_metadata.add(metadata_column)
+
         instrument_job.save()
         return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
 

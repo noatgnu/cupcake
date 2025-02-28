@@ -72,6 +72,7 @@ class AnnotationSerializer(ModelSerializer):
     folder = SerializerMethodField()
     instrument_usage = SerializerMethodField()
     metadata_columns = SerializerMethodField()
+    user = SerializerMethodField()
 
     def get_instrument_usage(self, obj):
         return InstrumentUsageSerializer(obj.instrument_usage.all(), many=True).data
@@ -90,9 +91,14 @@ class AnnotationSerializer(ModelSerializer):
             return MetadataColumnSerializer(obj.metadata_columns.all(), many=True).data
         return []
 
+    def get_user(self, obj):
+        if obj.user:
+            return {"id": obj.user.id, "username": obj.user.username}
+        return None
+
     class Meta:
         model = Annotation
-        fields = ['id', 'step', 'session', 'annotation', 'file', 'created_at', 'updated_at', 'annotation_type', 'transcribed', 'transcription', 'language', 'translation', 'scratched', 'annotation_name', 'folder', 'summary', 'instrument_usage', 'metadata_columns', 'fixed']
+        fields = ['id', 'step', 'session', 'annotation', 'file', 'created_at', 'updated_at', 'annotation_type', 'transcribed', 'transcription', 'language', 'translation', 'scratched', 'annotation_name', 'folder', 'summary', 'instrument_usage', 'metadata_columns', 'fixed', 'user']
 
 
 class StepVariationSerializer(ModelSerializer):
@@ -399,10 +405,13 @@ class InstrumentJobSerializer(ModelSerializer):
         return None
 
     def get_user_annotations(self, obj):
-        return AnnotationSerializer(obj.user_annotations.all(), many=True).data
+        # sort by updated_at from newest to oldest
+        annotations = obj.user_annotations.all().order_by('-updated_at')
+        return AnnotationSerializer(annotations, many=True).data
 
     def get_staff_annotations(self, obj):
-        return AnnotationSerializer(obj.staff_annotations.all(), many=True).data
+        annotations = obj.staff_annotations.all().order_by('-updated_at')
+        return AnnotationSerializer(annotations, many=True).data
 
     def get_staff(self, obj):
         if obj.staff.all():

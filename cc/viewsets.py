@@ -671,9 +671,9 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
         if 'instrument_job' in request.data and 'instrument_user_type' in request.data:
             instrument_job = InstrumentJob.objects.get(id=request.data['instrument_job'])
             if request.data['instrument_user_type'] == "staff_annotation":
-                instrument_job.staff_annotation.add(annotation)
+                instrument_job.staff_annotations.add(annotation)
             elif request.data['instrument_user_type'] == "user_annotation":
-                instrument_job.user_annotation.add(annotation)
+                instrument_job.user_annotations.add(annotation)
         data = self.get_serializer(annotation).data
         return Response(data, status=status.HTTP_201_CREATED)
 
@@ -745,18 +745,34 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
         user = self.request.user
         file = {'file': annotation.file.name, 'id': annotation.id}
         signed_token = signer.sign_object(file)
-        if annotation.session.enabled:
-            if not annotation.scratched:
-                return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
+        if annotation.session:
+            if annotation.session.enabled:
+                if not annotation.scratched:
+                    return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
 
         if user.is_authenticated:
-            if user in annotation.session.viewers.all() or user in annotation.session.editors.all() or user == annotation.session.user or user == annotation.user:
-                if annotation.scratched:
-                    if user not in annotation.session.editors.all() and user != annotation.user and user != annotation.session.user:
-                        return Response(status=status.HTTP_401_UNAUTHORIZED)
-                else:
+            if annotation.session:
+                if user in annotation.session.viewers.all() or user in annotation.session.editors.all() or user == annotation.session.user or user == annotation.user:
+                    if annotation.scratched:
+                        if user not in annotation.session.editors.all() and user != annotation.user and user != annotation.session.user:
+                            return Response(status=status.HTTP_401_UNAUTHORIZED)
+                    else:
+                        return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
                     return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
-                return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
+            else:
+                instrument_jobs = annotation.instrument_jobs.all()
+                for instrument_job in instrument_jobs:
+                    if user == instrument_job.user:
+                        return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
+                    else:
+                        lab_group = instrument_job.service_lab_group
+                        staff =  instrument_job.staff.all()
+                        if staff.count() > 0:
+                            if user in staff:
+                                return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
+                        else:
+                            if user in lab_group.users.all():
+                                return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
         return Response(status=status.HTTP_401_UNAUTHORIZED)
 
 
@@ -1389,6 +1405,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 permission['edit'] = True
                 permission['view'] = True
                 permission['delete'] = True
+
             elif request.user in a.session.viewers.all() or a.session.enabled:
                 permission['view'] = True
             permission_list.append({"permission": permission, "annotation": a.id})

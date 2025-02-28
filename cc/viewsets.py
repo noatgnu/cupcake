@@ -596,8 +596,9 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
         custom_id = self.request.META.get('HTTP_X_CUPCAKE_INSTANCE_ID', None)
         annotation = Annotation()
         if 'step' in request.data:
-            step = ProtocolStep.objects.get(id=request.data['step'])
-            annotation.step = step
+            if request.data['step']:
+                step = ProtocolStep.objects.get(id=request.data['step'])
+                annotation.step = step
         if 'session' in request.data:
             if request.data['session'] != "":
                 session = Session.objects.get(unique_id=request.data['session'])
@@ -633,6 +634,7 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
                 if time_started and time_ended:
                     if InstrumentUsage.objects.filter(instrument=instrument, time_started__range=[time_started, time_ended]).exists() or InstrumentUsage.objects.filter(instrument=instrument, time_ended__range=[time_started, time_ended]).exists():
                         return Response(status=status.HTTP_409_CONFLICT)
+        annotation.save()
         if adding_metadata_columns:
             # sort the metadata columns first by type, characteristics first, then none, then comment type
             def sort_key(meta_col):

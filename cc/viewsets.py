@@ -1528,6 +1528,14 @@ class UserViewSet(ModelViewSet, FilterMixin):
         data = LabGroupSerializer(lab_groups, many=True).data
         return Response(data, status=status.HTTP_200_OK)
 
+    @action(detail=False, methods=['post'])
+    def check_user_in_lab_group(self, request):
+        user = self.request.user
+        lab_group = LabGroup.objects.get(id=request.data['lab_group'])
+        if user in lab_group.users.all():
+            return Response(status=status.HTTP_200_OK)
+        return Response(status=status.HTTP_400_BAD_REQUEST)
+
 
 class ProtocolRatingViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticatedOrReadOnly]
@@ -2923,11 +2931,16 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
         instrument_job = self.get_object()
         if not self.request.user.is_staff:
             return Response(status=status.HTTP_403_FORBIDDEN)
+
+        using = []
+
         if 'job_name' in request.data:
             instrument_job.job_name = request.data['job_name']
+            using.append('job_name')
         if 'instrument' in request.data:
             instrument = Instrument.objects.get(id=request.data['instrument'])
             instrument_job.instrument = instrument
+            using.append('instrument')
         if 'staff' in request.data:
             if len(request.data['staff']) > 0:
                 staffs = User.objects.filter(id__in=request.data['staff'])
@@ -2937,32 +2950,43 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             else:
                 instrument_job.staff.clear()
                 instrument_job.assigned = False
+            using.append('staff')
+            using.append('assigned')
         if 'project' in request.data:
             project = Project.objects.get(id=request.data['project'])
             if not instrument_job.project:
                 instrument_job.project = project
             elif instrument_job.project != project:
                 instrument_job.project = project
+            using.append('project')
         if 'cost_center' in request.data:
             instrument_job.cost_center = request.data['cost_center']
+            using.append('cost_center')
         if 'funder' in request.data:
             instrument_job.funder = request.data['funder']
+            using.append('funder')
         if 'sample_type' in request.data:
             instrument_job.sample_type = request.data['sample_type']
+            using.append('sample_type')
         if 'sample_number' in request.data:
             instrument_job.sample_number = request.data['sample_number']
+            using.append('sample_number')
         if 'protocol' in request.data:
             protocol = ProtocolModel.objects.get(id=request.data['protocol'])
+
             if not instrument_job.protocol:
                 instrument_job.protocol = protocol
             elif instrument_job.protocol != protocol:
                 instrument_job.protocol = protocol
+            using.append('protocol')
         if 'stored_reagent' in request.data:
             stored_reagent = StoredReagent.objects.get(id=request.data['stored_reagent'])
             instrument_job.stored_reagent = stored_reagent
+            using.append('stored_reagent')
         if 'service_lab_group' in request.data:
             service_lab_group = LabGroup.objects.get(id=request.data['service_lab_group'])
             instrument_job.service_lab_group = service_lab_group
+            using.append('service_lab_group')
         if 'user_metadata' in request.data:
             user_metadata = request.data['user_metadata']
             instrument_job.user_metadata.clear()
@@ -2990,8 +3014,68 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                         mandatory=metadata['mandatory'],
                     )
                     instrument_job.user_metadata.add(metadata_column)
+        instrument_job.save(update_fields=using)
+        return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
 
-        instrument_job.save()
+    @action(detail=True, methods=['post'])
+    def update_staff_data(self, request, pk=None):
+        instrument_job = self.get_object()
+        staffs = instrument_job.staff.all()
+        if staffs.count() == 0:
+            if instrument_job.service_lab_group:
+                staffs = instrument_job.service_lab_group.users.all()
+                if request.user not in staffs:
+                    return Response(status=status.HTTP_403_FORBIDDEN)
+        else:
+            if request.user not in staffs:
+                return Response(status=status.HTTP_403_FORBIDDEN)
+        using = []
+        if 'staff_metadata' in request.data:
+            staff_metadata = request.data['staff_metadata']
+            instrument_job.staff_metadata.clear()
+            for metadata in staff_metadata:
+                if 'id' in metadata:
+                    if metadata['id']:
+                        metadata_column = MetadataColumn.objects.get(id=metadata['id'])
+                        if metadata_column.value != metadata['value']:
+                            metadata_column.value = metadata['value']
+                            metadata_column.save()
+                        instrument_job.staff_metadata.add(metadata_column)
+                    else:
+                        metadata_column = MetadataColumn.objects.create(
+                            name=metadata['name'],
+                            type=metadata['type'],
+                            value=metadata['value'],
+                            mandatory=metadata['mandatory'],
+                        )
+                        instrument_job.staff_metadata.add(metadata_column)
+                else:
+                    metadata_column = MetadataColumn.objects.create(
+                        name=metadata['name'],
+                        type=metadata['type'],
+                        value=metadata['value'],
+                        mandatory=metadata['mandatory'],
+                    )
+                    instrument_job.staff_metadata.add(metadata_column)
+        if 'search_engine' in request.data:
+            instrument_job.search_engine = request.data['search_engine']
+            using.append('search_engine')
+        if 'search_engine_version' in request.data:
+            instrument_job.search_engine_version = request.data['search_engine_version']
+            using.append('search_engine_version')
+        if 'search_details' in request.data:
+            instrument_job.search_details = request.data['search_details']
+            using.append('search_details')
+        if 'location' in request.data:
+            instrument_job.location = request.data['location']
+            using.append('location')
+        if 'injection_volume' in request.data:
+            instrument_job.injection_volume = request.data['injection_volume']
+            using.append('injection_volume')
+        if 'injection_unit' in request.data:
+            instrument_job.injection_unit = request.data['injection_unit']
+            using.append('injection_unit')
+        instrument_job.save(update_fields=using)
         return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
 
     def destroy(self, request, *args, **kwargs):

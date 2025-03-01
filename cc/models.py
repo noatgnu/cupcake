@@ -1080,6 +1080,7 @@ class MetadataColumn(models.Model):
     mandatory = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    modifiers = models.TextField(blank=True, null=True)
 
     class Meta:
         ordering = ['column_position']

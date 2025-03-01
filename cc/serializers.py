@@ -331,9 +331,16 @@ class LabGroupSerializer(ModelSerializer):
 
 
 class MetadataColumnSerializer(ModelSerializer):
+    modifiers = SerializerMethodField()
+
+    def get_modifiers(self, obj):
+        if obj.modifiers:
+            return json.loads(obj.modifiers)
+        return []
+
     class Meta:
         model = MetadataColumn
-        fields = ["id", "name", "type", "column_position", "value", "stored_reagent", "created_at", "updated_at", "not_applicable", "mandatory"]
+        fields = ["id", "name", "type", "column_position", "value", "stored_reagent", "created_at", "updated_at", "not_applicable", "mandatory", "modifiers"]
 
 class SubcellularLocationSerializer(ModelSerializer):
     class Meta:

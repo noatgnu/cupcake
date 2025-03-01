@@ -342,3 +342,15 @@ USE_WHISPER = os.environ.get("USE_WHISPER", "False") == "True"
 USE_COTURN = os.environ.get("USE_COTURN", "False") == "True"
 USE_OCR = os.environ.get("USE_OCR", "False") == "True"
 
+# Amazon SES SETTINGS
+
+EMAIL_BACKEND = 'django_ses.SESBackend'
+NOTIFICATION_EMAIL_FROM = os.environ.get("NOTIFICATION_EMAIL_FROM", "")
+AWS_SES_ACCESS_KEY_ID = os.environ.get("AWS_SES_ACCESS_KEY_ID", "")
+AWS_SES_SECRET_ACCESS_KEY = os.environ.get("AWS_SES_SECRET_ACCESS_KEY", "")
+AWS_SES_REGION_NAME = os.environ.get('AWS_SES_REGION_NAME', "us-east-1")
+AWS_SES_REGION_ENDPOINT = os.environ.get('AWS_SES_REGION_ENDPOINT', 'email.us-east-1.amazonaws.com')
+
+# Frontend settings
+
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:4200")

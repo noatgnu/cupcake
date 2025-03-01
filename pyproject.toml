@@ -32,6 +32,7 @@ webvtt-py = "^0.4.6"
 pytesseract = "^0.3.10"
 drf-chunked-upload = "^0.6.0"
 pronto = "^2.5.8"
+django-ses = "^4.4.0"
 
 [build-system]
 requires = ["poetry-core"]

@@ -10,7 +10,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.conf import settings
 from django.contrib.auth.models import User
-from django.core.signing import TimestampSigner
+from django.core.signing import TimestampSigner, loads, dumps
 from django.db.models import Q, Max
 from django.db.models.expressions import result
 from django.http import HttpResponse
@@ -1538,6 +1538,66 @@ class UserViewSet(ModelViewSet, FilterMixin):
             return Response(status=status.HTTP_200_OK)
         return Response(status=status.HTTP_400_BAD_REQUEST)
 
+    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
+    def signup(self, request):
+        token = request.data.get('token')
+        signer = TimestampSigner()
+        try:
+            decoded_payload = signer.unsign(token, max_age=60 * 60 * 24)  # Token valid for 24 hours
+            payload = loads(decoded_payload)
+
+            user = User.objects.create_user(email=payload['email'], username=request.data['username'])
+            user.set_password(request.data['password'])
+            user.save()
+            if payload['lab_group']:
+                lab_group = LabGroup.objects.get(id=payload['lab_group'])
+                lab_group.users.add(user)
+            return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
+        except (BadSignature, SignatureExpired):
+            return Response({'error': 'Invalid or expired token'}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
+    def generate_signup_token(self, request):
+        if not request.user.is_staff:
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+        email = request.data.get('email')
+        lab_group = request.data.get('lab_group')
+        if User.objects.filter(email=email).exists():
+            return Response({'error': 'Email already exists'}, status=status.HTTP_400_BAD_REQUEST)
+        signer = TimestampSigner()
+        payload = {
+            'email': email,
+            'lab_group': lab_group
+        }
+
+        token = signer.sign(dumps(payload))
+        return Response({'token': token}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
+    def generate_signup_token_and_send_email(self, request):
+        if not request.user.is_staff:
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+        email = request.data.get('email')
+        lab_group = request.data.get('lab_group')
+        if User.objects.filter(email=email).exists():
+            return Response({'error': 'Email already exists'}, status=status.HTTP_400_BAD_REQUEST)
+        signer = TimestampSigner()
+        payload = {
+            'email': email,
+            'lab_group': lab_group
+        }
+
+        token = signer.sign(dumps(payload))
+        signup_url = f"{settings.FRONTEND_URL}/#/accounts/signup/{token}"
+        send_mail(
+            'Hello from Cupcake',
+            f'Please use the following link to sign up: {signup_url}',
+            settings.NOTIFICATION_EMAIL_FROM,
+            [email],
+            fail_silently=False,
+        )
+        return Response({'token': token}, status=status.HTTP_200_OK)
+
 
 class ProtocolRatingViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticatedOrReadOnly]
@@ -2996,8 +3056,9 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                 if 'id' in metadata:
                     if metadata['id']:
                         metadata_column = MetadataColumn.objects.get(id=metadata['id'])
-                        if metadata_column.value != metadata['value']:
+                        if metadata_column.value != metadata['value'] or metadata_column.modifiers != json.dumps(metadata['modifiers']):
                             metadata_column.value = metadata['value']
+                            metadata_column.modifiers = json.dumps(metadata['modifiers'])
                             metadata_column.save()
                         instrument_job.user_metadata.add(metadata_column)
                     else:
@@ -3005,6 +3066,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                             name=metadata['name'],
                             type=metadata['type'],
                             value=metadata['value'],
+                            modifiers=json.dumps(metadata['modifiers']),
                             mandatory=metadata['mandatory'],
                         )
                         instrument_job.user_metadata.add(metadata_column)
@@ -3014,6 +3076,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                         type=metadata['type'],
                         value=metadata['value'],
                         mandatory=metadata['mandatory'],
+                        modifiers=json.dumps(metadata['modifiers']),
                     )
                     instrument_job.user_metadata.add(metadata_column)
         instrument_job.save(update_fields=using)
@@ -3039,8 +3102,9 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                 if 'id' in metadata:
                     if metadata['id']:
                         metadata_column = MetadataColumn.objects.get(id=metadata['id'])
-                        if metadata_column.value != metadata['value']:
+                        if metadata_column.value != metadata['value'] or metadata_column.modifiers != json.dumps(metadata['modifiers']):
                             metadata_column.value = metadata['value']
+                            metadata_column.modifiers = json.dumps(metadata['modifiers'])
                             metadata_column.save()
                         instrument_job.staff_metadata.add(metadata_column)
                     else:
@@ -3049,6 +3113,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                             type=metadata['type'],
                             value=metadata['value'],
                             mandatory=metadata['mandatory'],
+                            modifiers=json.dumps(metadata['modifiers']),
                         )
                         instrument_job.staff_metadata.add(metadata_column)
                 else:
@@ -3057,6 +3122,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                         type=metadata['type'],
                         value=metadata['value'],
                         mandatory=metadata['mandatory'],
+                        modifiers=json.dumps(metadata['modifiers']),
                     )
                     instrument_job.staff_metadata.add(metadata_column)
         if 'search_engine' in request.data:
@@ -3095,3 +3161,11 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
         instrument_job.save()
         return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['post'])
+    def submit_job(self, request, pk=None):
+        instrument_job = self.get_object()
+        if not self.request.user.is_staff:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        instrument_job.status = 'submitted'
+        instrument_job.save()
+        return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)

@@ -5,7 +5,7 @@ import json
 import time
 import uuid
 from datetime import datetime, timedelta
-
+from django.core.mail import send_mail
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.conf import settings
@@ -2963,7 +2963,17 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
     search_fields = ['name']
 
     def get_queryset(self):
-        return super().get_queryset()
+        user = self.request.user
+        query = Q()
+        mode = self.request.query_params.get('mode', None)
+        if mode == 'staff':
+            query &= Q(staff=user)
+        lab_group = self.request.query_params.get('service_lab_group', None)
+        if mode == 'lab_group':
+            if user in LabGroup.objects.get(id=lab_group).users.all():
+                query &= Q(service_lab_group=lab_group)
+
+        return self.queryset.filter(query)
 
 
     def create(self, request, *args, **kwargs):

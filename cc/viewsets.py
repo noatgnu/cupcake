@@ -1335,6 +1335,27 @@ class UserViewSet(ModelViewSet, FilterMixin):
         obj = super().get_object()
         return obj
 
+    def create(self, request, *args, **kwargs):
+        return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def update(self, request, *args, **kwargs):
+        return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    @action(detail=False, methods=['put'])
+    def update_profile(self, request, *args, **kwargs):
+        instance = request.user
+        if "first_name" in request.data:
+            instance.first_name = request.data['first_name']
+        if "last_name" in request.data:
+            instance.last_name = request.data['last_name']
+        if "email" in request.data:
+            if User.objects.filter(email=request.data['email']).exists():
+                return Response(status=status.HTTP_409_CONFLICT)
+            instance.email = request.data['email']
+        instance.save()
+        data = self.get_serializer(instance).data
+        return Response(data, status=status.HTTP_200_OK)
+
     @action(detail=False, methods=['post'])
     def change_password(self, request):
         user = request.user
@@ -1597,6 +1618,12 @@ class UserViewSet(ModelViewSet, FilterMixin):
             fail_silently=False,
         )
         return Response({'token': token}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
+    def current(self, request):
+        user = request.user
+        data = UserSerializer(user).data
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class ProtocolRatingViewSet(ModelViewSet, FilterMixin):
@@ -2815,10 +2842,22 @@ class MetadataColumnViewSet(FilterMixin, ModelViewSet):
         return Response(MetadataColumnSerializer(metadata_column).data, status=status.HTTP_200_OK)
 
     def destroy(self, request, *args, **kwargs):
-        metadata_column = self.get_object()
-        if metadata_column.stored_reagent.user != request.user:
+        metadata_column: MetadataColumn = self.get_object()
+        if metadata_column.stored_reagent:
+            if metadata_column.stored_reagent.user != request.user:
+                if not request.user.is_staff:
+                    return Response(status=status.HTTP_403_FORBIDDEN)
+        elif metadata_column.instrument:
+            instrument_permission = InstrumentPermission.objects.filter(instrument=metadata_column.instrument, user=request.user)
             if not request.user.is_staff:
-                return Response(status=status.HTTP_403_FORBIDDEN)
+                if not instrument_permission.exists():
+                    return Response(status=status.HTTP_403_FORBIDDEN)
+                if not instrument_permission.first().can_manage:
+                    return Response(status=status.HTTP_403_FORBIDDEN)
+        elif metadata_column.annotation:
+            if metadata_column.annotation.user != request.user:
+                if not request.user.is_staff:
+                    return Response(status=status.HTTP_403_FORBIDDEN)
         metadata_column.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -3168,4 +3207,11 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             return Response(status=status.HTTP_403_FORBIDDEN)
         instrument_job.status = 'submitted'
         instrument_job.save()
+        if settings.NOTIFICATION_EMAIL_FROM:
+            staff = instrument_job.staff.all()
+            subject = 'Instrument Job Submitted'
+            message = f'Instrument Job {instrument_job.job_name} has been submitted by {instrument_job.user.username}'
+            recipient_list = [staff.email for staff in staff]
+            send_mail(subject, message, settings.NOTIFICATION_EMAIL_FROM, recipient_list)
+
         return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)

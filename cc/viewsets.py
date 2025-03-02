@@ -3001,8 +3001,6 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
 
 
     def create(self, request, *args, **kwargs):
-        if not self.request.user.is_staff:
-            return Response(status=status.HTTP_403_FORBIDDEN)
         name = request.data['job_name']
 
         instrument_job: InstrumentJob = InstrumentJob(
@@ -3065,7 +3063,17 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
     def update(self, request, *args, **kwargs):
         instrument_job = self.get_object()
         if not self.request.user.is_staff:
-            return Response(status=status.HTTP_403_FORBIDDEN)
+            if instrument_job.user != self.request.user:
+                staff = instrument_job.staff.all()
+                if staff.count() == 0:
+                    if instrument_job.service_lab_group:
+                        staff = instrument_job.service_lab_group.users.all()
+                        if self.request.user not in staff:
+                            return Response(status=status.HTTP_403_FORBIDDEN)
+                else:
+                    if self.request.user not in staff:
+                        return Response(status=status.HTTP_403_FORBIDDEN)
+                return Response(status=status.HTTP_401_UNAUTHORIZED)
 
         using = []
 
@@ -3085,7 +3093,6 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             else:
                 instrument_job.staff.clear()
                 instrument_job.assigned = False
-            using.append('staff')
             using.append('assigned')
         if 'project' in request.data:
             project = Project.objects.get(id=request.data['project'])
@@ -3159,14 +3166,15 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
     def update_staff_data(self, request, pk=None):
         instrument_job = self.get_object()
         staffs = instrument_job.staff.all()
-        if staffs.count() == 0:
-            if instrument_job.service_lab_group:
-                staffs = instrument_job.service_lab_group.users.all()
+        if not request.user.is_staff:
+            if staffs.count() == 0:
+                if instrument_job.service_lab_group:
+                    staffs = instrument_job.service_lab_group.users.all()
+                    if request.user not in staffs:
+                        return Response(status=status.HTTP_403_FORBIDDEN)
+            else:
                 if request.user not in staffs:
                     return Response(status=status.HTTP_403_FORBIDDEN)
-        else:
-            if request.user not in staffs:
-                return Response(status=status.HTTP_403_FORBIDDEN)
         using = []
         if 'staff_metadata' in request.data:
             staff_metadata = request.data['staff_metadata']

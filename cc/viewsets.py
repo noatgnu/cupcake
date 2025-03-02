@@ -2959,19 +2959,43 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
     authentication_classes = [TokenAuthentication]
     parser_classes = (MultiPartParser, JSONParser)
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    ordering_fields = ['id', 'name', 'created_at']
-    search_fields = ['name']
+    ordering_fields = ['id', 'job_name', 'created_at']
+    search_fields = ['job_name']
 
     def get_queryset(self):
         user = self.request.user
         query = Q()
         mode = self.request.query_params.get('mode', None)
+        lab_group = self.request.query_params.get('lab_group', None)
+        funder = self.request.query_params.get('funder', None)
+        cost_center = self.request.query_params.get('cost_center', None)
+        search_engine = self.request.query_params.get('search_engine', None)
+        search_engine_version = self.request.query_params.get('search_engine_version', None)
+
         if mode == 'staff':
             query &= Q(staff=user)
-        lab_group = self.request.query_params.get('service_lab_group', None)
-        if mode == 'lab_group':
-            if user in LabGroup.objects.get(id=lab_group).users.all():
-                query &= Q(service_lab_group=lab_group)
+        elif mode == 'service_lab_group':
+            lab_group = LabGroup.objects.get(id=lab_group)
+            query &= Q(service_lab_group=lab_group)
+        elif mode == 'lab_group':
+            lab_group = LabGroup.objects.get(id=lab_group)
+            users = lab_group.users.all()
+            query &= Q(user__in=users)
+        else:
+            query &= Q(user=user)
+        status = self.request.query_params.get('status', None)
+        if status:
+            query &= Q(status=status)
+        if funder:
+            query &= Q(funder=funder)
+        if cost_center:
+            query &= Q(cost_center=cost_center)
+        if search_engine:
+            query &= Q(search_engine=search_engine)
+        if search_engine_version:
+            query &= Q(search_engine_version=search_engine_version)
+
+        query &= ~Q(status='draft') | Q(user=user)
 
         return self.queryset.filter(query)
 
@@ -3225,3 +3249,19 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             send_mail(subject, message, settings.NOTIFICATION_EMAIL_FROM, recipient_list)
 
         return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'])
+    def individual_field_typeahead(selfself, request):
+        field_name = request.query_params.get('field_name', None)
+        if field_name in ['cost_center', 'funder']:
+            paginator = LimitOffsetPagination()
+            paginator.default_limit = 10
+            search_query = request.query_params.get('search', None)
+            if field_name == 'cost_center' and search_query:
+                queryset = InstrumentJob.objects.filter(cost_center__startswith=search_query).values_list('cost_center', flat=True).distinct()
+            elif field_name == 'funder' and search_query:
+                queryset = InstrumentJob.objects.filter(funder__startswith=search_query).values_list('funder', flat=True).distinct()
+            page = paginator.paginate_queryset(queryset, request)
+            return paginator.get_paginated_response(page)
+        else:
+            return Response(status=status.HTTP_400_BAD_REQUEST)

@@ -194,7 +194,7 @@ CORS_ALLOW_HEADERS = [
     "x-cupcake-instance-id",
     "http_x_cupcake_instance_id",
 ]
-CSRF_TRUSTED_ORIGINS = os.environ.get("DJANGO_CORS_WHITELIST").split(",")
+CSRF_TRUSTED_ORIGINS = os.environ.get("ALLOWED_HOSTS", "localhost").split(",")
 CORS_ORIGIN_WHITELIST = os.environ.get("CORS_ORIGIN_WHITELIST", "http://localhost:4200").split(",")
 CORS_ALLOW_METHODS = [
     "DELETE",

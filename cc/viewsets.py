@@ -2066,8 +2066,8 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         query_time_ended = Q(time_ended__range=[time_started, time_ended])
 
         if instrument:
-            return self.queryset.filter(query_time_started & query_time_ended, instrument__id=instrument)
-        return self.queryset.filter(query_time_started & query_time_ended)
+            return self.queryset.filter((query_time_started | query_time_ended), instrument__id=instrument)
+        return self.queryset.filter((query_time_started | query_time_ended))
 
     def get_object(self):
         obj = super().get_object()

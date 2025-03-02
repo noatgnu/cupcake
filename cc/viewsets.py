@@ -117,6 +117,19 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
         else:
             raise PermissionDenied
 
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if not request.user.is_staff:
+            if not instance.user == request.user and not instance.viewers.filter(id=request.user.id).exists():
+                return Response(status=status.HTTP_401_UNAUTHORIZED)
+        instance.protocol_title = request.data['protocol_title']
+        instance.protocol_description = request.data['protocol_description']
+        if "enabled" in request.data:
+            instance.enabled = request.data['enabled']
+        instance.save()
+        data = self.get_serializer(instance).data
+        return Response(data, status=status.HTTP_200_OK)
+
     @action(detail=False, methods=['get'], pagination_class=LimitOffsetPagination)
     def get_user_protocols(self, request):
         if self.request.user.is_anonymous:

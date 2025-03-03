@@ -903,6 +903,12 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
             if session.exists():
                 session = session.first()
                 annotation.session = session
+        if "instrument_user_type" in request.data and "instrument_job" in request.data:
+            instrument_job = InstrumentJob.objects.get(id=request.data['instrument_job'])
+            if request.data['instrument_user_type'] == "staff_annotation":
+                instrument_job.staff_annotations.add(annotation)
+            elif request.data['instrument_user_type'] == "user_annotation":
+                instrument_job.user_annotations.add(annotation)
 
         annotation.annotation_name = annotation_name
         annotation.annotation_type = "file"
@@ -3041,6 +3047,10 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                 "name": "Cell type", "type": "Characteristics", "mandatory": True
             },
             {
+                "name": "Sample type", "type": "Characteristics", "mandatory": True
+            }
+            ,
+            {
                 "name": "Cleaveage agent details", "type": "Comment", "mandatory": True
             },
             {
@@ -3075,6 +3085,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
 
     def update(self, request, *args, **kwargs):
         instrument_job = self.get_object()
+        is_staff = False
         if not self.request.user.is_staff:
             if instrument_job.user != self.request.user:
                 staff = instrument_job.staff.all()
@@ -3083,10 +3094,18 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                         staff = instrument_job.service_lab_group.users.all()
                         if self.request.user not in staff:
                             return Response(status=status.HTTP_403_FORBIDDEN)
+                        else:
+                            is_staff = True
                 else:
                     if self.request.user not in staff:
                         return Response(status=status.HTTP_403_FORBIDDEN)
+                    else:
+                        is_staff = True
                 return Response(status=status.HTTP_401_UNAUTHORIZED)
+        else:
+            is_staff = True
+        if instrument_job.status != 'draft' and not is_staff:
+            return Response(status=status.HTTP_403_FORBIDDEN)
 
         using = []
 
@@ -3155,6 +3174,8 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                             metadata_column.save()
                         instrument_job.user_metadata.add(metadata_column)
                     else:
+                        if 'modifiers' not in metadata:
+                            metadata['modifiers'] = []
                         metadata_column = MetadataColumn.objects.create(
                             name=metadata['name'],
                             type=metadata['type'],
@@ -3202,6 +3223,8 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                             metadata_column.save()
                         instrument_job.staff_metadata.add(metadata_column)
                     else:
+                        if 'modifiers' not in metadata:
+                            metadata['modifiers'] = []
                         metadata_column = MetadataColumn.objects.create(
                             name=metadata['name'],
                             type=metadata['type'],
@@ -3260,6 +3283,8 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
         instrument_job = self.get_object()
         if not self.request.user.is_staff:
             return Response(status=status.HTTP_403_FORBIDDEN)
+        if instrument_job.status != 'draft':
+            return Response(status=status.HTTP_400_BAD_REQUEST)
         instrument_job.status = 'submitted'
         instrument_job.save()
         if settings.NOTIFICATION_EMAIL_FROM:

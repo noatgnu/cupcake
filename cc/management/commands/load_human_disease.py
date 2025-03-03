@@ -25,6 +25,8 @@ def parse_human_disease_file(filename=None):
         elif line.startswith("ID"):
             entry = HumanDisease()
             entry.identifier = line[5:].strip()
+            if entry.identifier.endswith("."):
+                entry.identifier = entry.identifier[:-1]
         elif line.startswith("AC") and entry:
             entry.accession = line[5:].strip()
         elif line.startswith("AR") and entry:

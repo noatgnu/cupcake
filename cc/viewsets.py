@@ -3051,7 +3051,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             }
             ,
             {
-                "name": "Cleaveage agent details", "type": "Comment", "mandatory": True
+                "name": "Cleavage agent details", "type": "Comment", "mandatory": True
             },
             {
                 "name": "Enrichment process", "type": "Comment", "mandatory": True

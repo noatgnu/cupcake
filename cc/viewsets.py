@@ -3312,3 +3312,22 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             return paginator.get_paginated_response(page)
         else:
             return Response(status=status.HTTP_400_BAD_REQUEST)
+
+
+    @action(detail=True, methods=['post'])
+    def update_status(self, request, pk=None):
+        instrument_job = self.get_object()
+        if not self.request.user.is_staff:
+            staff = instrument_job.staff.all()
+            if staff.count() == 0:
+                if instrument_job.service_lab_group:
+                    staff = instrument_job.service_lab_group.users.all()
+                    if self.request.user not in staff:
+                        return Response(status=status.HTTP_403_FORBIDDEN)
+            else:
+                if self.request.user not in staff:
+                    return Response(status=status.HTTP_403_FORBIDDEN)
+        status = request.data['status']
+        instrument_job.status = status
+        instrument_job.save()
+        return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)

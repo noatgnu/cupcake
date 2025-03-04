@@ -3291,8 +3291,9 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             staff = instrument_job.staff.all()
             subject = 'Instrument Job Submitted'
             message = f'Instrument Job {instrument_job.job_name} has been submitted by {instrument_job.user.username}'
-            recipient_list = [staff.email for staff in staff]
-            send_mail(subject, message, settings.NOTIFICATION_EMAIL_FROM, recipient_list)
+            recipient_list = [staff.email for staff in staff if staff.email]
+            if recipient_list:
+                send_mail(subject, message, settings.NOTIFICATION_EMAIL_FROM, recipient_list)
 
         return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
 

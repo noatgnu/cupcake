@@ -37,7 +37,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
     SubcellularLocation, HumanDisease, Tissue, MetadataColumn, MSUniqueVocabularies, Unimod, InstrumentJob
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
-    ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite
+    ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata
 from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, AnnotationSerializer, \
     SessionSerializer, StepVariationSerializer, TimeKeeperSerializer, ProtocolSectionSerializer, UserSerializer, \
     ProtocolRatingSerializer, ReagentSerializer, StepReagentSerializer, ProtocolReagentSerializer, \
@@ -3038,6 +3038,9 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             instrument_job.project = project
         user_metadata = [
             {
+                "name": "Source name", "type": "", "mandatory": True
+            },
+            {
                 "name": "Organism", "type": "Characteristics", "mandatory": True
             },
             {
@@ -3047,15 +3050,29 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                 "name": "Cell type", "type": "Characteristics", "mandatory": True
             },
             {
+              "name": "Assay name", "type": "", "mandatory": True
+            },
+            {
+                "name": "Technology type", "type": "", "mandatory": True, "value": "proteomic profiling by mass spectrometry"
+            },
+            {
+                "name": "Technical replicate", "type": "Comment", "mandatory": True
+            },
+            {
+                "name": "Biological replicate", "type": "Comment", "mandatory": True
+            }
+            ,
+            {
                 "name": "Sample type", "type": "Characteristics", "mandatory": True
+            },
+            {
+                "name": "Enrichment process", "type": "Characteristics", "mandatory": True
             }
             ,
             {
                 "name": "Cleavage agent details", "type": "Comment", "mandatory": True
             },
-            {
-                "name": "Enrichment process", "type": "Comment", "mandatory": True
-            }
+
         ]
         instrument_job.save()
         for metadata in user_metadata:
@@ -3066,6 +3083,10 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             )
             instrument_job.user_metadata.add(metadata_column)
         staff_metadata = [
+            {
+                "name": "Data file", "type": "Comment", "mandatory": True
+            }
+            ,
             {
                 "name": "Label",
                 "type": "Comment",
@@ -3331,3 +3352,19 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
         instrument_job.status = status
         instrument_job.save()
         return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def export_metadata_to_tsv(self, request, pk=None):
+        instrument_job = self.get_object()
+        if not self.request.user.is_staff:
+            staff = instrument_job.staff.all()
+            if staff.count() == 0:
+                if instrument_job.service_lab_group:
+                    staff = instrument_job.service_lab_group.users.all()
+                    if self.request.user not in staff:
+                        return Response(status=status.HTTP_403_FORBIDDEN)
+            else:
+                if self.request.user not in staff:
+                    return Response(status=status.HTTP_403_FORBIDDEN)
+        job = export_instrument_job_metadata.delay(instrument_job.id, request.data["data_type"], request.user.id, request.data["instance_id"])
+        return Response({"task_id": job.id}, status=status.HTTP_200_OK)

@@ -372,3 +372,38 @@ class WebRTCSignalConsumer(AsyncJsonWebsocketConsumer):
         password = hmac.new(secret.encode(), temporary_username.encode(), hashlib.sha1)
         password = base64.b64encode(password.digest()).decode()
         return temporary_username, password
+
+
+class InstrumentJobConsumer(AsyncJsonWebsocketConsumer):
+    async def connect(self):
+        self.user_id = str(self.scope["user"].id)
+        await self.channel_layer.group_add(
+            f"user_{self.user_id}_instrument_job",
+            self.channel_name
+        )
+
+        await self.accept()
+        await self.send_json({"message": f"Connected to the instrument job channel"})
+
+    async def disconnect(self, close_code):
+        await self.channel_layer.group_discard(
+            f"user_{self.user_id}_instrument_job",
+            self.channel_name
+        )
+
+    async def receive_json(self, content):
+        await self.channel_layer.group_send(
+            f"user_{self.user_id}_instrument_job",
+            {
+                "type": "instrument_job_message",
+                "message": content,
+            }
+        )
+
+    async def instrument_job_message(self, event):
+        content = event["message"]
+        await self.send_json(content)
+
+    async def download_message(self, event):
+        content = event["message"]
+        await self.send_json(content)

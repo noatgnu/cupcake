@@ -1083,7 +1083,7 @@ class MetadataColumn(models.Model):
     modifiers = models.TextField(blank=True, null=True)
 
     class Meta:
-        ordering = ['column_position']
+        ordering = ['id']
         app_label = 'cc'
 
     def __str__(self):

@@ -6,7 +6,7 @@ import shutil
 import threading
 import uuid
 from datetime import time
-
+import csv
 import ffmpeg
 import webvtt
 from PIL import Image
@@ -24,7 +24,7 @@ from docx.oxml.ns import nsdecls
 from pytesseract import pytesseract
 
 from cc.models import Annotation, ProtocolModel, ProtocolStep, StepVariation, ProtocolSection, Session, \
-    AnnotationFolder, Reagent, ProtocolReagent, StepReagent, ProtocolTag, StepTag, Tag, Project
+    AnnotationFolder, Reagent, ProtocolReagent, StepReagent, ProtocolTag, StepTag, Tag, Project, MetadataColumn, InstrumentJob
 from django.conf import settings
 import numpy as np
 import subprocess
@@ -970,6 +970,270 @@ def import_user_data(user_id: int, tar_file: str, instance_id: str = None):
         session = session_map[i]
         session.processing = False
         session.save()
+
+@job('export', timeout='3h')
+def export_instrument_job_metadata(instrument_job_id: int, data_type: str, user_id: int, instance_id: str = None):
+    instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
+    if data_type == "user_metadata":
+        metadata = instrument_job.user_metadata.all()
+    else:
+        metadata = instrument_job.staff_metadata.all()
+    result = sort_metadata(metadata, instrument_job)
+    # create tsv file from result
+    filename = str(uuid.uuid4())
+    tsv_filepath = os.path.join(settings.MEDIA_ROOT, "temp", f"{filename}.tsv")
+    with open(tsv_filepath, "wt") as f:
+        writer = csv.writer(f, delimiter="\t")
+        writer.writerow(result[0])
+        for row in result[1:]:
+            writer.writerow(row)
+    signer = TimestampSigner()
+    value = signer.sign(f"{filename}.tsv")
+    channel_layer = get_channel_layer()
+    async_to_sync(channel_layer.group_send)(
+        f"user_{user_id}_instrument_job",
+        {
+            "type": "download_message",
+            "message": {
+                "signed_value": value,
+                "instance_id": instance_id
+            },
+        }
+    )
+    return value
+
+
+
+def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob):
+    headers = []
+    default_columns_list = [{
+        "name": "Source name", "type": "", "mandatory": True
+    },
+        {
+            "name": "Organism", "type": "Characteristics", "mandatory": True
+        }, {
+            "name": "Tissue", "type": "Characteristics", "mandatory": True
+        }, {
+            "name": "Disease", "type": "Characteristics", "mandatory": True
+        }, {
+            "name": "Cell type", "type": "Characteristics", "mandatory": True
+        }, {
+            "name": "Biological replicate", "type": "Characteristics", "mandatory": True
+        },
+        {
+          "name": 'Enrichment process', 'type': 'Characteristics', 'mandatory': True
+        },
+        {
+            "name": "Material type", "type": "", "mandatory": True
+        },
+        {
+            "name": "Assay name", "type": "", "mandatory": True
+        }, {
+            "name": "Technology type", "type": "", "mandatory": True
+        }, {
+            "name": "Technical replicate", "type": "Comment", "mandatory": True
+        },
+        {"name": "Label", "type": "Comment", "mandatory": True},
+        {"name": "Fraction identifier", "type": "Comment", "mandatory": True},
+        {"name": "Instrument", "type": "Comment", "mandatory": True},
+        {"name": "Data file", "type": "Comment", "mandatory": True},
+        {"name": "Cleavage agent details", "type": "Comment", "mandatory": True},
+        {"name": "Modification parameters", "type": "Comment", "mandatory": True},
+        {"name": "Dissociation method", "type": "Comment", "mandatory": True},
+        {"name": "Precursor mass tolerance", "type": "Comment", "mandatory": True},
+        {"name": "Fragment mass tolerance", "type": "Comment", "mandatory": True},
+    ]
+    metadata_column_map = {}
+    source_name_metadata = None
+    assay_name_metadata = None
+    for m in metadata:
+        if m.name not in metadata_column_map:
+            metadata_column_map[m.name] = []
+        metadata_column_map[m.name].append(m)
+    new_metadata = []
+    non_default_columns = []
+    default_column_map = {}
+    for i in default_columns_list:
+        default_column_map[i["name"]] = i
+        if i["name"] in metadata_column_map and i["name"] != "Assay name" and i["name"] != "Source name":
+            new_metadata.extend(metadata_column_map[i["name"]])
+        if i["name"] == "Assay name":
+            if "Assay name" in metadata_column_map:
+                assay_name_metadata = metadata_column_map[i["name"]][0]
+        if i["name"] == "Source name":
+            if "Source name" in metadata_column_map:
+                source_name_metadata = metadata_column_map["Source name"][0]
+
+    for name in metadata_column_map:
+        if name not in default_column_map and name != "Assay name" and name != "Source name":
+            non_default_columns.extend(metadata_column_map[name])
+
+    # render an empty 2d array with number of row equal to job sample_number and number of columns equalt to number of metadata columns
+    col_count = len(new_metadata) + len(non_default_columns)
+    if source_name_metadata:
+        col_count += 1
+    if assay_name_metadata:
+        col_count += 1
+    data = [["" for i in range(col_count)] for j in range(instrument_job.sample_number)]
+    # render in order, source name, characteristics, non type, comment and factor values
+    # fill first column with source name
+    last_characteristics = 0
+    if source_name_metadata:
+        headers.append("source name")
+        if source_name_metadata.modifiers:
+            modifiers = json.loads(source_name_metadata.modifiers)
+            for m in modifiers:
+                samples = parseSampleIndicesFromModifierString(m["samples"])
+                for s in samples:
+                    data[s][0] = m["value"]
+        for i in range(instrument_job.sample_number):
+            if data[i][0] == "":
+                data[i][0] = source_name_metadata.value
+        last_characteristics += 1
+    # fill characteristics
+    for i in range(0, len(new_metadata)):
+        m = new_metadata[i]
+        if m.type == "Characteristics":
+            if m.name.lower() == 'tissue':
+                headers.append("characteristics[organism part]")
+            else:
+                headers.append(f"characteristics[{m.name.lower()}]")
+
+            if m.modifiers:
+                modifiers = json.loads(m.modifiers)
+                if modifiers:
+                    for mod in modifiers:
+                        samples = parseSampleIndicesFromModifierString(mod["samples"])
+                        for s in samples:
+                            data[s][last_characteristics] = mod["value"]
+
+
+            for j in range(instrument_job.sample_number):
+                if data[j][last_characteristics] == "":
+                    data[j][last_characteristics] = m.value
+
+            last_characteristics += 1
+    # fill characteristics from non default columns
+    for i in range(0, len(non_default_columns)):
+        m = non_default_columns[i]
+        if m.type == "Characteristics":
+
+            headers.append(f"characteristics[{m.name.lower()}]")
+            if m.modifiers:
+                modifiers = json.loads(m.modifiers)
+                if modifiers:
+                    for mod in modifiers:
+                        samples = parseSampleIndicesFromModifierString(mod["samples"])
+                        for s in samples:
+                            data[s][last_characteristics] = mod["value"]
+            for j in range(instrument_job.sample_number):
+                if data[j][last_characteristics] == "":
+                    data[j][last_characteristics] = m.value
+            last_characteristics += 1
+    # fill assay name column
+    last_non_type = last_characteristics
+    if assay_name_metadata:
+
+        headers.append("assay name")
+        if assay_name_metadata.modifiers:
+            modifiers = json.loads(assay_name_metadata.modifiers)
+            if modifiers:
+                for m in modifiers:
+                    samples = parseSampleIndicesFromModifierString(m["samples"])
+                    for s in samples:
+                        data[s][last_non_type] = m["value"]
+        for i in range(instrument_job.sample_number):
+            if data[i][last_non_type] == "":
+                data[i][last_non_type] = assay_name_metadata.value
+        last_non_type += 1
+    # fill non type column
+    for i in range(0, len(new_metadata)):
+        m = new_metadata[i]
+        if m.type == "":
+
+            headers.append(m.name.lower())
+            if m.modifiers:
+                modifiers = json.loads(m.modifiers)
+                if modifiers:
+                    for mod in modifiers:
+                        samples = parseSampleIndicesFromModifierString(mod["samples"])
+                        for s in samples:
+                            data[s][last_non_type] = mod["value"]
+
+            for j in range(instrument_job.sample_number):
+                if data[j][last_non_type] == "":
+                    data[j][last_non_type] = m.value
+            last_non_type += 1
+    # fill non type from non default columns
+    for i in range(0, len(non_default_columns)):
+        m = non_default_columns[i]
+        if m.type == "":
+
+            if m.modifiers:
+                modifiers = json.loads(m.modifiers)
+                if modifiers:
+                    for mod in modifiers:
+                        samples = parseSampleIndicesFromModifierString(mod["samples"])
+                        for s in samples:
+                            data[s][last_non_type] = mod["value"]
+
+            for j in range(instrument_job.sample_number):
+                if data[j][last_non_type] == "":
+                    data[j][last_non_type] = m.value
+            last_non_type += 1
+    # fill comment column
+    last_comment = last_non_type
+    for i in range(0, len(new_metadata)):
+        m = new_metadata[i]
+        if m.type == "Comment":
+            headers.append(f"comment[{m.name.lower()}]")
+
+            if m.modifiers:
+                modifiers = json.loads(m.modifiers)
+                if modifiers:
+                    for mod in modifiers:
+                        samples = parseSampleIndicesFromModifierString(mod["samples"])
+                        for s in samples:
+                            data[s][last_comment] = mod["value"]
+            for j in range(instrument_job.sample_number):
+                print(last_comment)
+                if data[j][last_comment] == "":
+                    data[j][last_comment] = m.value
+            last_comment += 1
+    # fill comment from non default columns
+    for i in range(0, len(non_default_columns)):
+        m = non_default_columns[i]
+        if m.type == "Comment":
+            headers.append(f"comment[{m.name.lower()}]")
+
+            if m.modifiers:
+                modifiers = json.loads(m.modifiers)
+                if modifiers:
+                    for mod in modifiers:
+                        samples = parseSampleIndicesFromModifierString(mod["samples"])
+                        for s in samples:
+                            data[s][last_comment] = mod["value"]
+            for j in range(instrument_job.sample_number):
+                if data[j][last_comment] == "":
+                    data[j][last_comment] = m.value
+            last_comment += 1
+    return [headers, *data]
+
+def parseSampleIndicesFromModifierString(samples: str):
+    """
+    Sample indices is a string of comma separated integers and ranges of integers separated by hyphen. This will parse it into a sorted list of integers from lowest to highest
+    :param samples:
+    :return:
+    """
+    samples = samples.split(",")
+    sample_indices = []
+    for sample in samples:
+        if "-" in sample:
+            start, end = sample.split("-")
+            sample_indices.extend(range(int(start)-1, int(end)))
+        else:
+            sample_indices.append(int(sample)-1)
+    return sorted(sample_indices)
 
 
 

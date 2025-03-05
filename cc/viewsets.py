@@ -3050,6 +3050,13 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                 "name": "Cell type", "type": "Characteristics", "mandatory": False
             },
             {
+                "name": "Reduction reagent", "type": "Comment", "mandatory": False
+            }
+            ,
+            {
+                "name": "Alkylation reagent", "type": "Comment", "mandatory": False
+            },
+            {
               "name": "Assay name", "type": "", "mandatory": True
             },
             {

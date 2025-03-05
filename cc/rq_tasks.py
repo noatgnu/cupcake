@@ -1340,9 +1340,9 @@ def convert_metadata_column_value_to_sdrf(column_name: str, value: str):
                 return value
     if column_name == "modification parameters":
         if value:
-            v = Unimod.objects.filter(value.split(";")[0])
+            v = Unimod.objects.filter(name=value.split(";")[0])
             if v.exists():
-                if "AC=" in value:
+                if "AC=" in value or "ac=" in value:
                     return f"NT={value}"
                 else:
                     return f"AC={v.first().accession};NT={value}"

@@ -2937,7 +2937,7 @@ class UnimodViewSets(FilterMixin, ModelViewSet):
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = UnimodFilter
     ordering_fields = ['accession', 'name']
-    search_fields = ['^name']
+    search_fields = ['^name', 'definition', '^accession']
     pagination_class = LimitOffsetPagination
 
     def get_queryset(self):
@@ -3013,8 +3013,8 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             query &= Q(search_engine=search_engine)
         if search_engine_version:
             query &= Q(search_engine_version=search_engine_version)
-
-        query &= ~Q(status='draft') | Q(user=user)
+        if mode != 'service_lab_group' and mode != 'lab_group':
+            query &= ~Q(status='draft') | Q(user=user)
 
         return self.queryset.filter(query)
 
@@ -3047,7 +3047,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                 "name": "Tissue", "type": "Characteristics", "mandatory": True
             },
             {
-                "name": "Cell type", "type": "Characteristics", "mandatory": True
+                "name": "Cell type", "type": "Characteristics", "mandatory": False
             },
             {
               "name": "Assay name", "type": "", "mandatory": True
@@ -3076,21 +3076,33 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
         ]
         instrument_job.save()
         for metadata in user_metadata:
-            metadata_column = MetadataColumn.objects.create(
+            metadata_column = MetadataColumn(
                 name=metadata['name'],
                 type=metadata['type'],
                 mandatory=metadata['mandatory'],
             )
+            if 'value' in metadata:
+                metadata_column.value = metadata['value']
+            metadata_column.save()
             instrument_job.user_metadata.add(metadata_column)
         staff_metadata = [
             {
                 "name": "Data file", "type": "Comment", "mandatory": True
+            },
+            {
+                "name": "File uri", "type": "Comment", "mandatory": True
+            },
+            {
+                "name": "Proteomics data acquisition method", "type": "Comment", "mandatory": True
             }
             ,
             {
                 "name": "Label",
                 "type": "Comment",
                 "mandatory": True
+            },
+            {
+                "name": "MS1 scan range", "type": "Comment", "mandatory": True
             }
         ]
         for metadata in staff_metadata:

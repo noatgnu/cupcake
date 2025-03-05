@@ -24,7 +24,8 @@ from docx.oxml.ns import nsdecls
 from pytesseract import pytesseract
 
 from cc.models import Annotation, ProtocolModel, ProtocolStep, StepVariation, ProtocolSection, Session, \
-    AnnotationFolder, Reagent, ProtocolReagent, StepReagent, ProtocolTag, StepTag, Tag, Project, MetadataColumn, InstrumentJob
+    AnnotationFolder, Reagent, ProtocolReagent, StepReagent, ProtocolTag, StepTag, Tag, Project, MetadataColumn, \
+    InstrumentJob, SubcellularLocation, Species, MSUniqueVocabularies, Unimod
 from django.conf import settings
 import numpy as np
 import subprocess
@@ -1030,23 +1031,34 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
             "name": "Assay name", "type": "", "mandatory": True
         }, {
             "name": "Technology type", "type": "", "mandatory": True
-        }, {
+        },
+        {
+            "name": "Proteomics data acquisition method", "type": "Comment", "mandatory": True
+        }
+
+        , {"name": "Label", "type": "Comment", "mandatory": True},
+        {"name": "Instrument", "type": "Comment", "mandatory": True},
+        {"name": "Fraction identifier", "type": "Comment", "mandatory": True},
+        {
             "name": "Technical replicate", "type": "Comment", "mandatory": True
         },
-        {"name": "Label", "type": "Comment", "mandatory": True},
-        {"name": "Fraction identifier", "type": "Comment", "mandatory": True},
-        {"name": "Instrument", "type": "Comment", "mandatory": True},
-        {"name": "Data file", "type": "Comment", "mandatory": True},
+        {
+            "name": "Biological replicate", "type": "Comment", "mandatory": True
+        },
         {"name": "Cleavage agent details", "type": "Comment", "mandatory": True},
         {"name": "Modification parameters", "type": "Comment", "mandatory": True},
         {"name": "Dissociation method", "type": "Comment", "mandatory": True},
         {"name": "Precursor mass tolerance", "type": "Comment", "mandatory": True},
         {"name": "Fragment mass tolerance", "type": "Comment", "mandatory": True},
+        {"name": "File uri", "type": "Comment", "mandatory": True},
+        {"name": "Data file", "type": "Comment", "mandatory": True},
+        {"name": "", "type": "Factor value", "mandatory": True},
     ]
     metadata_column_map = {}
     source_name_metadata = None
     assay_name_metadata = None
     for m in metadata:
+        m.value = convert_metadata_column_value_to_sdrf(m.name.lower(), m.value)
         if m.name not in metadata_column_map:
             metadata_column_map[m.name] = []
         metadata_column_map[m.name].append(m)
@@ -1083,7 +1095,7 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
         if source_name_metadata.modifiers:
             modifiers = json.loads(source_name_metadata.modifiers)
             for m in modifiers:
-                samples = parseSampleIndicesFromModifierString(m["samples"])
+                samples = parse_sample_indices_from_modifier_string(m["samples"])
                 for s in samples:
                     data[s][0] = m["value"]
         for i in range(instrument_job.sample_number):
@@ -1103,7 +1115,7 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
                 modifiers = json.loads(m.modifiers)
                 if modifiers:
                     for mod in modifiers:
-                        samples = parseSampleIndicesFromModifierString(mod["samples"])
+                        samples = parse_sample_indices_from_modifier_string(mod["samples"])
                         for s in samples:
                             data[s][last_characteristics] = mod["value"]
 
@@ -1123,7 +1135,7 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
                 modifiers = json.loads(m.modifiers)
                 if modifiers:
                     for mod in modifiers:
-                        samples = parseSampleIndicesFromModifierString(mod["samples"])
+                        samples = parse_sample_indices_from_modifier_string(mod["samples"])
                         for s in samples:
                             data[s][last_characteristics] = mod["value"]
             for j in range(instrument_job.sample_number):
@@ -1139,7 +1151,7 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
             modifiers = json.loads(assay_name_metadata.modifiers)
             if modifiers:
                 for m in modifiers:
-                    samples = parseSampleIndicesFromModifierString(m["samples"])
+                    samples = parse_sample_indices_from_modifier_string(m["samples"])
                     for s in samples:
                         data[s][last_non_type] = m["value"]
         for i in range(instrument_job.sample_number):
@@ -1156,7 +1168,7 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
                 modifiers = json.loads(m.modifiers)
                 if modifiers:
                     for mod in modifiers:
-                        samples = parseSampleIndicesFromModifierString(mod["samples"])
+                        samples = parse_sample_indices_from_modifier_string(mod["samples"])
                         for s in samples:
                             data[s][last_non_type] = mod["value"]
 
@@ -1173,7 +1185,7 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
                 modifiers = json.loads(m.modifiers)
                 if modifiers:
                     for mod in modifiers:
-                        samples = parseSampleIndicesFromModifierString(mod["samples"])
+                        samples = parse_sample_indices_from_modifier_string(mod["samples"])
                         for s in samples:
                             data[s][last_non_type] = mod["value"]
 
@@ -1192,7 +1204,7 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
                 modifiers = json.loads(m.modifiers)
                 if modifiers:
                     for mod in modifiers:
-                        samples = parseSampleIndicesFromModifierString(mod["samples"])
+                        samples = parse_sample_indices_from_modifier_string(mod["samples"])
                         for s in samples:
                             data[s][last_comment] = mod["value"]
             for j in range(instrument_job.sample_number):
@@ -1210,7 +1222,7 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
                 modifiers = json.loads(m.modifiers)
                 if modifiers:
                     for mod in modifiers:
-                        samples = parseSampleIndicesFromModifierString(mod["samples"])
+                        samples = parse_sample_indices_from_modifier_string(mod["samples"])
                         for s in samples:
                             data[s][last_comment] = mod["value"]
             for j in range(instrument_job.sample_number):
@@ -1219,7 +1231,7 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
             last_comment += 1
     return [headers, *data]
 
-def parseSampleIndicesFromModifierString(samples: str):
+def parse_sample_indices_from_modifier_string(samples: str):
     """
     Sample indices is a string of comma separated integers and ranges of integers separated by hyphen. This will parse it into a sorted list of integers from lowest to highest
     :param samples:
@@ -1235,5 +1247,105 @@ def parseSampleIndicesFromModifierString(samples: str):
             sample_indices.append(int(sample)-1)
     return sorted(sample_indices)
 
-
-
+def convert_metadata_column_value_to_sdrf(column_name: str, value: str):
+    """
+    Convert metadata column value to SDRF format
+    :param column_name:
+    :param value:
+    :return:
+    """
+    if column_name == "subcellular location":
+        if value:
+            v = SubcellularLocation.objects.filter(location_identifier=value)
+            if v.exists():
+                if "AC=" in value:
+                    return f"NT={value}"
+                else:
+                    return f"NT={value};AC={v.first().accession}"
+            else:
+                return f"NT={value}"
+    if column_name == "organism":
+        if value:
+            v = Species.objects.filter(official_name=value)
+            if v.exists():
+                return f"http://purl.obolibrary.org/obo/NCBITaxon_{v.first().taxon}"
+            else:
+                return f"{value}"
+    if column_name == "label":
+        if value:
+            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="sample attribute")
+            if v.exists():
+                return f"NT={value};AC={v.first().accession}"
+            else:
+                return f"NT={value}"
+    if column_name == "instrument":
+        if value:
+            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="instrument")
+            if v.exists():
+                if "AC=" in value:
+                    return f"NT={value}"
+                else:
+                    return f"NT={value};AC={v.first().accession}"
+            else:
+                return f"NT={value}"
+    if column_name == "dissociation method":
+        if value:
+            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="dissociation method")
+            if v.exists():
+                if "AC=" in value:
+                    return f"NT={value}"
+                else:
+                    return f"NT={value};AC={v.first().accession}"
+            else:
+                return f"{value}"
+    if column_name == "cleavage agent details":
+        if value:
+            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="cleavage agent")
+            if v.exists():
+                if "AC=" in value:
+                    return f"NT={value}"
+                else:
+                    return f"NT={value};AC={v.first().accession}"
+            else:
+                return f"{value}"
+    if column_name == "enrichment process":
+        if value:
+            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="enrichment process")
+            if v.exists():
+                if "AC=" in value:
+                    return f"NT={value}"
+                else:
+                    return f"AC={v.first().accession};NT={value}"
+            else:
+                return f"{value}"
+    if column_name == "fractionation method":
+        if value:
+            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="fractionation method")
+            if v.exists():
+                if "AC=" in value:
+                    return f"NT={value}"
+                else:
+                    return f"AC={v.first().accession};NT={value}"
+            else:
+                return value
+    if column_name == "proteomics data acquisition method":
+        if value:
+            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="proteomics data acquisition method")
+            if v.exists():
+                if "AC=" in value:
+                    return f"NT={value}"
+                else:
+                    return f"AC={v.first().accession};NT={value}"
+            else:
+                return value
+    if column_name == "modification parameters":
+        if value:
+            v = Unimod.objects.filter(value.split(";")[0])
+            if v.exists():
+                if "AC=" in value:
+                    return f"NT={value}"
+                else:
+                    return f"AC={v.first().accession};NT={value}"
+            else:
+                return value
+    return value

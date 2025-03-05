@@ -1575,7 +1575,20 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
         metadata_column.name = name.capitalize()
         metadata_column.type = type.capitalize()
         metadata_columns.append(metadata_column)
-
+    if len(data) != instrument_job.sample_number:
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}_instrument_job",
+            {
+                "type": "instrument_job_message",
+                "message": {
+                    "instance_id": instance_id,
+                    "status": "error",
+                    "message": "Number of samples in SDRF file does not match the number of samples in the job"
+                },
+            }
+        )
+        return
     if data_type == "user_metadata":
         instrument_job.user_metadata.clear()
     else:

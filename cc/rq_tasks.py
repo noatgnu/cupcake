@@ -21,6 +21,7 @@ from django.db.models import Q
 from django_rq import job
 from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls
+from drf_chunked_upload.models import ChunkedUpload
 from pytesseract import pytesseract
 
 from cc.models import Annotation, ProtocolModel, ProtocolStep, StepVariation, ProtocolSection, Session, \
@@ -1369,3 +1370,292 @@ def convert_metadata_column_value_to_sdrf(column_name: str, value: str):
             else:
                 return value
     return value
+
+def read_sdrf_file(file: str):
+    """
+    Import SDRF file
+    :param file_path:
+    :return:
+    """
+
+    with open(file, "rt") as f:
+        reader = csv.reader(f, delimiter="\t")
+        headers = next(reader)
+        data = []
+        for row in reader:
+            data.append(row)
+    return headers, data
+
+def convert_sdrf_to_metadata(name: str, value: str):
+    data = value.split(";")
+
+    if name == "subcellular location":
+        for i in data:
+            if "NT=" in i:
+                metadata_nt = i.split("=")[1]
+                v = SubcellularLocation.objects.filter(location_identifier=metadata_nt)
+                if v.exists():
+                    return v.first().location_identifier
+            if "AC=" in i:
+                metadata_ac = i.split("=")[1]
+                v = SubcellularLocation.objects.filter(accession=metadata_ac)
+                if v.exists():
+                    return v.first().location_identifier
+        return value
+    if name == "organism":
+        for i in data:
+            if "http" in i:
+                metadata_tx = i.split("_")[1]
+                v = Species.objects.filter(taxon=metadata_tx)
+                if v.exists():
+                    return v.first().official_name
+            else:
+                return value
+    if name == "label":
+        for i in data:
+            if "NT=" in i:
+                metadata_nt = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(name=metadata_nt, term_type="sample attribute")
+                if v.exists():
+                    return v.first().name
+            if "AC=" in i:
+                metadata_ac = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(accession=metadata_ac, term_type="sample attribute")
+                if v.exists():
+                    return v.first().name
+        return value
+    if name == "instrument":
+        for i in data:
+            if "NT=" in i:
+                metadata_nt = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(name=metadata_nt, term_type="instrument")
+                if v.exists():
+                    return v.first().name
+            if "AC=" in i:
+                metadata_ac = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(accession=metadata_ac, term_type="instrument")
+                if v.exists():
+                    return v.first().name
+        return value
+    if name == "dissociation method":
+        for i in data:
+            if "NT=" in i:
+                metadata_nt = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(name=metadata_nt, term_type="dissociation method")
+                if v.exists():
+                    return v.first().name
+            if "AC=" in i:
+                metadata_ac = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(accession=metadata_ac, term_type="dissociation method")
+                if v.exists():
+                    return v.first().name
+        return value
+    if name == "cleavage agent details":
+        for i in data:
+            if "NT=" in i:
+                metadata_nt = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(name=metadata_nt, term_type="cleavage agent")
+                if v.exists():
+                    return v.first().name
+            if "AC=" in i:
+                metadata_ac = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(accession=metadata_ac, term_type="cleavage agent")
+                if v.exists():
+                    return v.first().name
+        return value
+    if name == "enrichment process":
+        for i in data:
+            if "NT=" in i:
+                metadata_nt = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(name=metadata_nt, term_type="enrichment process")
+                if v.exists():
+                    return v.first().name
+            if "AC=" in i:
+                metadata_ac = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(accession=metadata_ac, term_type="enrichment process")
+                if v.exists():
+                    return v.first().name
+        return value
+    if name == "fractionation method":
+        for i in data:
+            if "NT=" in i:
+                metadata_nt = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(name=metadata_nt, term_type="fractionation method")
+                if v.exists():
+                    return v.first().name
+            if "AC=" in i:
+                metadata_ac = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(accession=metadata_ac, term_type="fractionation method")
+                if v.exists():
+                    return v.first().name
+        return value
+    if name == "proteomics data acquisition method":
+        for i in data:
+            if "NT=" in i:
+                metadata_nt = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(name=metadata_nt, term_type="proteomics data acquisition method")
+                if v.exists():
+                    return v.first().name
+            if "AC=" in i:
+                metadata_ac = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(accession=metadata_ac, term_type="proteomics data acquisition method")
+                if v.exists():
+                    return v.first().name
+        return value
+    if name == "reduction reagent":
+        for i in data:
+            if "NT=" in i:
+                metadata_nt = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(name=metadata_nt, term_type="reduction reagent")
+                if v.exists():
+                    return v.first().name
+            if "AC=" in i:
+                metadata_ac = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(accession=metadata_ac, term_type="reduction reagent")
+                if v.exists():
+                    return v.first().name
+        return value
+
+    if name == "alkylation reagent":
+        for i in data:
+            if "NT=" in i:
+                metadata_nt = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(name=metadata_nt, term_type="alkylation reagent")
+                if v.exists():
+                    return v.first().name
+            if "AC=" in i:
+                metadata_ac = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(accession=metadata_ac, term_type="alkylation reagent")
+                if v.exists():
+                    return v.first().name
+        return value
+    if name == "modification parameters":
+        for i in data:
+            if "NT=" in i:
+                metadata_nt = i.split("=")[1]
+                v = Unimod.objects.filter(name=metadata_nt)
+                if v.exists():
+                    all_data = [metadata_nt]+[d for d in data if "NT=" not in d]
+                    return ";".join(all_data)
+            if "AC=" in i:
+                metadata_ac = i.split("=")[1]
+                v = Unimod.objects.filter(accession=metadata_ac)
+                if v.exists():
+                    all_data = [v.first().name] + [d for d in data if "NT=" not in d]
+                    return ";".join(all_data)
+        return value
+    return value
+
+@job('import-data', timeout='3h')
+def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, instance_id: str = None, data_type: str = "user_metadata"):
+    """
+    Import SDRF file
+    :param completed_chunk_file_id
+    :param user_id:
+    :param instrument_job_id:
+    :param instance_id:
+    :return:
+    """
+    annotation = Annotation.objects.get(id=annotation_id)
+    headers, data = read_sdrf_file(annotation.file.path)
+    instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
+    user = User.objects.get(id=user_id)
+    metadata_columns = []
+
+    for header in headers:
+        metadata_column = MetadataColumn()
+        header = header.lower()
+        #extract type from pattern <type>[<name>]
+        if "[" in header:
+            type = header.split("[")[0]
+            name = header.split("[")[1].replace("]", "")
+        else:
+            type = ""
+            name = header
+        metadata_column.name = name.capitalize()
+        metadata_column.type = type.capitalize()
+        metadata_columns.append(metadata_column)
+
+    if data_type == "user_metadata":
+        instrument_job.user_metadata.clear()
+    else:
+        instrument_job.staff_metadata.clear()
+    for i in range(len(metadata_columns)):
+        metadata_value_map = {}
+
+        for j in range(len(data)):
+            name = metadata_columns[i].name.lower()
+            if data[j][i] == "":
+                continue
+            if data[j][i] == "not available":
+                continue
+            if data[j][i] == "not applicable":
+                metadata_columns[i].not_applicable = True
+                continue
+            value = convert_sdrf_to_metadata(name, data[j][i])
+            if value not in metadata_value_map:
+                metadata_value_map[value] = []
+            metadata_value_map[value].append(j)
+        # get value with the highest count
+        max_count = 0
+        max_value = None
+        for value in metadata_value_map:
+            if len(metadata_value_map[value]) > max_count:
+                max_count = len(metadata_value_map[value])
+                max_value = value
+        if max_value:
+            metadata_columns[i].value = max_value
+            metadata_columns[i].save()
+        # calculate modifiers from the rest of the values
+        modifiers = []
+        for value in metadata_value_map:
+            if value != max_value:
+                modifier = {"samples": [], "value": value}
+                # sort from lowest to highest. add samples index. for continuous samples, add range
+                samples = metadata_value_map[value]
+                samples.sort()
+                start = samples[0]
+                end = samples[0]
+                for i in range(1, len(samples)):
+                    if samples[i] == end + 1:
+                        end = samples[i]
+                    else:
+                        if start == end:
+                            modifier["samples"].append(str(start+1))
+                        else:
+                            modifier["samples"].append(f"{start+1}-{end+1}")
+                        start = samples[i]
+                        end = samples[i]
+                if start == end:
+                    modifier["samples"].append(str(start+1))
+                else:
+                    modifier["samples"].append(f"{start+1}-{end+1}")
+                if len(modifier["samples"]) == 1:
+                    modifier["samples"] = modifier["samples"][0]
+                else:
+                    modifier["samples"] = ",".join(modifier["samples"])
+                modifiers.append(modifier)
+        if modifiers:
+            metadata_columns[i].modifiers = json.dumps(modifiers)
+        metadata_columns[i].save()
+        if data_type == "user_metadata":
+            instrument_job.user_metadata.add(metadata_columns[i])
+        else:
+            instrument_job.staff_metadata.add(metadata_columns[i])
+
+    channel_layer = get_channel_layer()
+    #notify user through channels that it has completed
+    async_to_sync(channel_layer.group_send)(
+        f"user_{user_id}_instrument_job",
+        {
+            "type": "instrument_job_message",
+            "message": {
+                "instance_id": instance_id,
+                "status": "completed",
+                "message": "Metadata imported successfully"
+            },
+        }
+    )
+
+
+

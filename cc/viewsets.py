@@ -37,7 +37,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
     SubcellularLocation, HumanDisease, Tissue, MetadataColumn, MSUniqueVocabularies, Unimod, InstrumentJob
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
-    ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata
+    ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, import_sdrf_file
 from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, AnnotationSerializer, \
     SessionSerializer, StepVariationSerializer, TimeKeeperSerializer, ProtocolSectionSerializer, UserSerializer, \
     ProtocolRatingSerializer, ReagentSerializer, StepReagentSerializer, ProtocolReagentSerializer, \
@@ -888,6 +888,7 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
         annotation_name = request.data['annotation_name']
         upload = ChunkedUpload.objects.get(id=upload_id)
         annotation = Annotation()
+        annotation.user = request.user
         if "step" in request.data:
             step = ProtocolStep.objects.filter(id=request.data['step'])
             if step.exists():
@@ -903,18 +904,19 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
             if session.exists():
                 session = session.first()
                 annotation.session = session
-        if "instrument_user_type" in request.data and "instrument_job" in request.data:
-            instrument_job = InstrumentJob.objects.get(id=request.data['instrument_job'])
-            if request.data['instrument_user_type'] == "staff_annotation":
-                instrument_job.staff_annotations.add(annotation)
-            elif request.data['instrument_user_type'] == "user_annotation":
-                instrument_job.user_annotations.add(annotation)
+
 
         annotation.annotation_name = annotation_name
         annotation.annotation_type = "file"
         with open(upload.file.path, "rb") as f:
             annotation.file.save(file_name, f)
         annotation.save()
+        if "instrument_user_type" in request.data and "instrument_job" in request.data:
+            instrument_job = InstrumentJob.objects.get(id=request.data['instrument_job'])
+            if request.data['instrument_user_type'] == "staff_annotation":
+                instrument_job.staff_annotations.add(annotation)
+            elif request.data['instrument_user_type'] == "user_annotation":
+                instrument_job.user_annotations.add(annotation)
         upload.delete()
         data = self.get_serializer(annotation).data
         return Response(data, status=status.HTTP_201_CREATED)
@@ -1443,13 +1445,19 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 "view": False,
                 "delete": False
             }
-            if a.user == request.user or a.session.user == request.user or request.user in a.session.editors.all():
+            if a.user == request.user:
                 permission['edit'] = True
                 permission['view'] = True
                 permission['delete'] = True
 
-            elif request.user in a.session.viewers.all() or a.session.enabled:
-                permission['view'] = True
+            if a.session:
+                if a.session.user == request.user or request.user in a.session.editors.all():
+                    permission['edit'] = True
+                    permission['view'] = True
+                    permission['delete'] = True
+                elif request.user in a.session.viewers.all() or a.session.enabled:
+                    permission['view'] = True
+
             permission_list.append({"permission": permission, "annotation": a.id})
         return Response(permission_list, status=status.HTTP_200_OK)
 
@@ -3386,4 +3394,20 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                 if self.request.user not in staff:
                     return Response(status=status.HTTP_403_FORBIDDEN)
         job = export_instrument_job_metadata.delay(instrument_job.id, request.data["data_type"], request.user.id, request.data["instance_id"])
+        return Response({"task_id": job.id}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def import_sdrf_metadata(self, request, pk=None):
+        instrument_job = self.get_object()
+        if not self.request.user.is_staff:
+            staff = instrument_job.staff.all()
+            if staff.count() == 0:
+                if instrument_job.service_lab_group:
+                    staff = instrument_job.service_lab_group.users.all()
+                    if self.request.user not in staff:
+                        return Response(status=status.HTTP_403_FORBIDDEN)
+            else:
+                if self.request.user not in staff:
+                    return Response(status=status.HTTP_403_FORBIDDEN)
+        job = import_sdrf_file.delay(request.data["annotation"], request.user.id, instrument_job.id, request.data["instance_id"], request.data["data_type"])
         return Response({"task_id": job.id}, status=status.HTTP_200_OK)

@@ -58,6 +58,10 @@ def load_instrument():
     load_ebi_resource(
         "https://www.ebi.ac.uk/ols4/api/ontologies/pride/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FPRIDE_0000598/hierarchicalDescendants",
         1000, "alkylation reagent")
+    load_ebi_resource(
+        "https://www.ebi.ac.uk/ols4/api/ontologies/pride/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FMS_1000443/hierarchicalDescendants",
+        1000, "mass analyzer type")
+
 
 def load_ebi_resource(base_url: str, size: int = 20, term_type: str = "sample attribute"):
     response = requests.get(base_url+"?page=0&size="+str(size))

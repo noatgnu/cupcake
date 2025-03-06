@@ -3118,6 +3118,9 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             },
             {
                 "name": "MS1 scan range", "type": "Comment", "mandatory": True
+            },
+            {
+                "name": "MS2 analyzer type", "type": "Comment", "mandatory": True
             }
         ]
         for metadata in staff_metadata:

@@ -1369,6 +1369,16 @@ def convert_metadata_column_value_to_sdrf(column_name: str, value: str):
                     return f"AC={v.first().accession};NT={value}"
             else:
                 return value
+    if column_name == "ms2 analyzer type":
+        if value:
+            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="mass analyzer type")
+            if v.exists():
+                if "AC=" in value:
+                    return f"NT={value}"
+                else:
+                    return f"AC={v.first().accession};NT={value}"
+            else:
+                return value
     return value
 
 def read_sdrf_file(file: str):
@@ -1544,6 +1554,19 @@ def convert_sdrf_to_metadata(name: str, value: str):
                     all_data = [v.first().name] + [d for d in data if "NT=" not in d]
                     return ";".join(all_data)
         return value
+    if name == "ms2 analyzer type":
+        for i in data:
+            if "NT=" in i:
+                metadata_nt = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(name=metadata_nt, term_type="mass analyzer type")
+                if v.exists():
+                    return v.first().name
+            if "AC=" in i:
+                metadata_ac = i.split("=")[1]
+                v = MSUniqueVocabularies.objects.filter(accession=metadata_ac, term_type="mass analyzer type")
+                if v.exists():
+                    return v.first().name
+        return value
     return value
 
 @job('import-data', timeout='3h')
@@ -1583,12 +1606,23 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
                 "type": "instrument_job_message",
                 "message": {
                     "instance_id": instance_id,
-                    "status": "error",
+                    "status": "warning",
                     "message": "Number of samples in SDRF file does not match the number of samples in the job"
                 },
             }
         )
-        return
+        # extend the number of samples to match the number of samples in the job and fill with empty strings
+        if len(data) < instrument_job.sample_number:
+            data.extend(
+                [
+                    ["" for i in range(len(headers))]
+                    for j in range(instrument_job.sample_number - len(data))
+                ]
+            )
+            
+        else:
+            data = data[:instrument_job.sample_number]
+
     if data_type == "user_metadata":
         instrument_job.user_metadata.clear()
     else:

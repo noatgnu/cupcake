@@ -1619,7 +1619,7 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
                     for j in range(instrument_job.sample_number - len(data))
                 ]
             )
-            
+
         else:
             data = data[:instrument_job.sample_number]
 

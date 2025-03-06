@@ -2945,7 +2945,7 @@ class UnimodViewSets(FilterMixin, ModelViewSet):
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = UnimodFilter
     ordering_fields = ['accession', 'name']
-    search_fields = ['^name', 'definition', '^accession']
+    search_fields = ['^name', '^definition','^accession']
     pagination_class = LimitOffsetPagination
 
     def get_queryset(self):

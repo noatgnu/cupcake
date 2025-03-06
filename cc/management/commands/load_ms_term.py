@@ -1,6 +1,7 @@
 import requests
 from django.core.management.base import BaseCommand
 from cc.models import MSUniqueVocabularies
+from django.db import transaction
 import pronto
 from io import BytesIO
 
@@ -59,32 +60,33 @@ def load_instrument():
         "https://www.ebi.ac.uk/ols4/api/ontologies/pride/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FPRIDE_0000598/hierarchicalDescendants",
         1000, "alkylation reagent")
     load_ebi_resource(
-        "https://www.ebi.ac.uk/ols4/api/ontologies/pride/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FMS_1000443/hierarchicalDescendants",
+        "https://www.ebi.ac.uk/ols4/api/ontologies/ms/terms/http%253A%252F%252Fpurl.obolibrary.org%252Fobo%252FMS_1000443/hierarchicalDescendants",
         1000, "mass analyzer type")
 
 
 def load_ebi_resource(base_url: str, size: int = 20, term_type: str = "sample attribute"):
     response = requests.get(base_url+"?page=0&size="+str(size))
     data = response.json()
-    for term in data["_embedded"]["terms"]:
-        MSUniqueVocabularies.objects.create(
-            accession=term["obo_id"],
-            name=term["label"],
-            definition = term["description"],
-            term_type=term_type
-        )
-    if data["page"]["totalPages"] > 1:
-        for i in range(1, data["page"]["totalPages"]+1):
-            response = requests.get(base_url+"?page="+str(i)+"&size="+str(size))
-            data2 = response.json()
-            if "_embedded" in data2:
-                for term in data2["_embedded"]["terms"]:
-                    MSUniqueVocabularies.objects.create(
-                        accession=term["obo_id"],
-                        name=term["label"],
-                        definition = term["description"],
-                        term_type=term_type
-                    )
+    with transaction.atomic():
+        for term in data["_embedded"]["terms"]:
+            MSUniqueVocabularies.objects.create(
+                accession=term["obo_id"],
+                name=term["label"],
+                definition = term["description"],
+                term_type=term_type
+            )
+        if data["page"]["totalPages"] > 1:
+            for i in range(1, data["page"]["totalPages"]+1):
+                response = requests.get(base_url+"?page="+str(i)+"&size="+str(size))
+                data2 = response.json()
+                if "_embedded" in data2:
+                    for term in data2["_embedded"]["terms"]:
+                        MSUniqueVocabularies.objects.create(
+                            accession=term["obo_id"],
+                            name=term["label"],
+                            definition = term["description"],
+                            term_type=term_type
+                        )
 
 
 class Command(BaseCommand):

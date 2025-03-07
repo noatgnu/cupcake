@@ -1595,6 +1595,8 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
         else:
             type = ""
             name = header
+        if name == "organism part":
+            name = "tissue"
         metadata_column.name = name.capitalize()
         metadata_column.type = type.capitalize()
         metadata_columns.append(metadata_column)
@@ -1633,8 +1635,6 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
         for j in range(len(data)):
             name = metadata_columns[i].name.lower()
             if data[j][i] == "":
-                continue
-            if data[j][i] == "not available":
                 continue
             if data[j][i] == "not applicable":
                 metadata_columns[i].not_applicable = True

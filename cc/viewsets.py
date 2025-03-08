@@ -3441,17 +3441,26 @@ class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
         user = self.request.user
         mode = self.request.query_params.get('mode', None)
         metadata_name = self.request.query_params.get('name', None)
+        lab_group = self.request.query_params.get('lab_group_id', None)
         query = Q()
-        if mode == 'service_lab_group':
-            lab_group = LabGroup.objects.get(id=self.request.query_params.get('lab_group', None), is_professional=True)
+
+        if mode == 'service_lab_group' and lab_group:
+            lab_group = LabGroup.objects.get(id=lab_group, is_professional=True)
             query &= Q(service_lab_group=lab_group)
-        elif mode == 'lab_group':
-            lab_group = LabGroup.objects.get(id=self.request.query_params.get('lab_group', None))
+        elif mode == 'lab_group' and lab_group:
+            lab_group = LabGroup.objects.get(id=lab_group)
             query &= Q(lab_group=lab_group)
         else:
-            query &= Q(user=user, lab_group=None, service_lab_group=None)
+            query &= Q(user=user, lab_group__isnull=True, service_lab_group__isnull=True)
+
         if metadata_name:
             query &= Q(name=metadata_name)
+
+        print("Query:", query)
+        print("FavouriteMetadataOption.objects.filter(query):", FavouriteMetadataOption.objects.filter(query))
+        print("self.queryset:", self.queryset)
+        print("self.queryset.filter(query):", self.queryset.filter(query))
+
         return self.queryset.filter(query)
 
     def create(self, request, *args, **kwargs):

@@ -1274,14 +1274,14 @@ def convert_metadata_column_value_to_sdrf(column_name: str, value: str):
                 return f"{value}"
     if column_name == "label":
         if value:
-            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="sample attribute")
+            v = MSUniqueVocabularies.objects.filter(name=value, term_type="sample attribute")
             if v.exists():
                 return f"NT={value};AC={v.first().accession}"
             else:
                 return f"NT={value}"
     if column_name == "instrument":
         if value:
-            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="instrument")
+            v = MSUniqueVocabularies.objects.filter(name=value, term_type="instrument")
             if v.exists():
                 if "AC=" in value:
                     return f"NT={value}"
@@ -1291,7 +1291,7 @@ def convert_metadata_column_value_to_sdrf(column_name: str, value: str):
                 return f"NT={value}"
     if column_name == "dissociation method":
         if value:
-            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="dissociation method")
+            v = MSUniqueVocabularies.objects.filter(name=value, term_type="dissociation method")
             if v.exists():
                 if "AC=" in value:
                     return f"NT={value}"
@@ -1301,7 +1301,7 @@ def convert_metadata_column_value_to_sdrf(column_name: str, value: str):
                 return f"{value}"
     if column_name == "cleavage agent details":
         if value:
-            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="cleavage agent")
+            v = MSUniqueVocabularies.objects.filter(name=value, term_type="cleavage agent")
             if v.exists():
                 if "AC=" in value:
                     return f"NT={value}"
@@ -1311,7 +1311,7 @@ def convert_metadata_column_value_to_sdrf(column_name: str, value: str):
                 return f"{value}"
     if column_name == "enrichment process":
         if value:
-            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="enrichment process")
+            v = MSUniqueVocabularies.objects.filter(name=value, term_type="enrichment process")
             if v.exists():
                 if "AC=" in value:
                     return f"NT={value}"
@@ -1321,7 +1321,7 @@ def convert_metadata_column_value_to_sdrf(column_name: str, value: str):
                 return f"{value}"
     if column_name == "fractionation method":
         if value:
-            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="fractionation method")
+            v = MSUniqueVocabularies.objects.filter(name=value, term_type="fractionation method")
             if v.exists():
                 if "AC=" in value:
                     return f"NT={value}"
@@ -1331,7 +1331,7 @@ def convert_metadata_column_value_to_sdrf(column_name: str, value: str):
                 return value
     if column_name == "proteomics data acquisition method":
         if value:
-            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="proteomics data acquisition method")
+            v = MSUniqueVocabularies.objects.filter(name=value, term_type="proteomics data acquisition method")
             if v.exists():
                 if "AC=" in value:
                     return f"NT={value}"
@@ -1341,7 +1341,7 @@ def convert_metadata_column_value_to_sdrf(column_name: str, value: str):
                 return value
     if column_name == "reduction reagent":
         if value:
-            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="reduction reagent")
+            v = MSUniqueVocabularies.objects.filter(name=value, term_type="reduction reagent")
             if v.exists():
                 if "AC=" in value:
                     return f"NT={value}"
@@ -1351,7 +1351,7 @@ def convert_metadata_column_value_to_sdrf(column_name: str, value: str):
                 return value
     if column_name == "alkylation reagent":
         if value:
-            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="alkylation reagent")
+            v = MSUniqueVocabularies.objects.filter(name=value, term_type="alkylation reagent")
             if v.exists():
                 if "AC=" in value:
                     return f"NT={value}"
@@ -1371,7 +1371,7 @@ def convert_metadata_column_value_to_sdrf(column_name: str, value: str):
                 return value
     if column_name == "ms2 analyzer type":
         if value:
-            v = MSUniqueVocabularies.objects.filter(name=column.value, term_type="mass analyzer type")
+            v = MSUniqueVocabularies.objects.filter(name=value, term_type="mass analyzer type")
             if v.exists():
                 if "AC=" in value:
                     return f"NT={value}"

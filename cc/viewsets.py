@@ -10,7 +10,7 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.conf import settings
 from django.contrib.auth.models import User
-from django.core.signing import TimestampSigner, loads, dumps
+from django.core.signing import TimestampSigner, loads, dumps, BadSignature, SignatureExpired
 from django.db.models import Q, Max
 from django.db.models.expressions import result
 from django.http import HttpResponse
@@ -25,7 +25,7 @@ from rest_framework.filters import SearchFilter, OrderingFilter
 from django.core.files.base import File as djangoFile
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly, AllowAny
-from rest_framework.authentication import TokenAuthentication
+from rest_framework.authentication import TokenAuthentication, SessionAuthentication
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.pagination import LimitOffsetPagination
@@ -34,7 +34,8 @@ from cc.filters import UnimodFilter
 from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVariation, TimeKeeper, ProtocolSection, \
     ProtocolRating, Reagent, StepReagent, ProtocolReagent, ProtocolTag, StepTag, Tag, AnnotationFolder, Project, \
     Instrument, InstrumentUsage, InstrumentPermission, StorageObject, StoredReagent, ReagentAction, LabGroup, Species, \
-    SubcellularLocation, HumanDisease, Tissue, MetadataColumn, MSUniqueVocabularies, Unimod, InstrumentJob
+    SubcellularLocation, HumanDisease, Tissue, MetadataColumn, MSUniqueVocabularies, Unimod, InstrumentJob, \
+    FavouriteMetadataOption, Preset
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, import_sdrf_file
@@ -45,13 +46,13 @@ from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, Anno
     InstrumentSerializer, InstrumentUsageSerializer, StorageObjectSerializer, StoredReagentSerializer, \
     ReagentActionSerializer, LabGroupSerializer, SpeciesSerializer, SubcellularLocationSerializer, \
     HumanDiseaseSerializer, TissueSerializer, MetadataColumnSerializer, MSUniqueVocabulariesSerializer, \
-    UnimodSerializer, InstrumentJobSerializer
+    UnimodSerializer, InstrumentJobSerializer, FavouriteMetadataOptionSerializer, PresetSerializer
 
 
 class ProtocolViewSet(ModelViewSet, FilterMixin):
     permission_classes = [OwnerOrReadOnly]
     queryset = ProtocolModel.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['protocol_title', 'protocol_description']
     ordering_fields = ['protocol_title', 'protocol_created_on']
@@ -364,7 +365,7 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
 class StepViewSet(ModelViewSet, FilterMixin):
     permission_classes = [OwnerOrReadOnly]
     queryset = ProtocolStep.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['step_description', 'step_section']
     ordering_fields = ['step_description', 'step_section']
@@ -597,7 +598,7 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticatedOrReadOnly]
     queryset = Annotation.objects.all()
     parser_classes = [MultiPartParser, JSONParser]
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['annotation']
     ordering_fields = ['created_at']
@@ -926,7 +927,7 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
 class SessionViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticatedOrReadOnly]
     queryset = Session.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     lookup_field = 'unique_id'
     search_fields = ['unique_id', 'name']
@@ -1142,7 +1143,7 @@ class SessionViewSet(ModelViewSet, FilterMixin):
 class VariationViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticatedOrReadOnly]
     queryset = StepVariation.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['variation_description']
     ordering_fields = ['variation_description']
@@ -1192,7 +1193,7 @@ class VariationViewSet(ModelViewSet, FilterMixin):
 class TimeKeeperViewSet(ModelViewSet):
     permission_classes = [IsAuthenticated]
     queryset = TimeKeeper.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     serializer_class = TimeKeeperSerializer
 
     def get_queryset(self):
@@ -1274,7 +1275,7 @@ class TimeKeeperViewSet(ModelViewSet):
 class ProtocolSectionViewSet(ModelViewSet):
     permission_classes = [OwnerOrReadOnly]
     queryset = ProtocolSection.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     parser_classes = [MultiPartParser, JSONParser]
     serializer_class = ProtocolSectionSerializer
     pagination_class = LimitOffsetPagination
@@ -1335,7 +1336,7 @@ class ProtocolSectionViewSet(ModelViewSet):
 class UserViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticated]
     queryset = User.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     serializer_class = UserSerializer
     parser_classes = [MultiPartParser, JSONParser]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
@@ -1575,8 +1576,14 @@ class UserViewSet(ModelViewSet, FilterMixin):
     def get_user_lab_groups(self, request):
         user = self.request.user
         lab_groups = user.lab_groups.all()
-        data = LabGroupSerializer(lab_groups, many=True).data
-        return Response(data, status=status.HTTP_200_OK)
+        is_professional = request.query_params.get('is_professional', None)
+        is_professional = True if is_professional == "true" else False
+        if is_professional:
+            lab_groups = lab_groups.filter(is_professional=True)
+        paginator = LimitOffsetPagination()
+        paginator.default_limit = 10
+        pagination = paginator.paginate_queryset(lab_groups, request)
+        return paginator.get_paginated_response(LabGroupSerializer(pagination, many=True).data)
 
     @action(detail=False, methods=['post'])
     def check_user_in_lab_group(self, request):
@@ -1656,7 +1663,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
 class ProtocolRatingViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticatedOrReadOnly]
     queryset = ProtocolRating.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     ordering_fields = ['id']
     filterset_fields = ['protocol__id', 'user__id']
@@ -1707,7 +1714,7 @@ class ProtocolRatingViewSet(ModelViewSet, FilterMixin):
 class ReagentViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticatedOrReadOnly]
     queryset = Reagent.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['name']
     ordering_fields = ['name']
@@ -1739,7 +1746,7 @@ class ReagentViewSet(ModelViewSet, FilterMixin):
 class ProtocolTagViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticatedOrReadOnly]
     queryset = ProtocolTag.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['tag']
     ordering_fields = ['tag']
@@ -1769,7 +1776,7 @@ class ProtocolTagViewSet(ModelViewSet, FilterMixin):
 class StepTagViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticatedOrReadOnly]
     queryset = StepTag.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['tag']
     ordering_fields = ['tag']
@@ -1798,7 +1805,7 @@ class StepTagViewSet(ModelViewSet, FilterMixin):
 class TagViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticatedOrReadOnly]
     queryset = Tag.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['tag']
     ordering_fields = ['tag']
@@ -1828,7 +1835,7 @@ class TagViewSet(ModelViewSet, FilterMixin):
 class AnnotationFolderViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticatedOrReadOnly]
     queryset = AnnotationFolder.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['folder_name']
     ordering_fields = ['folder_name']
@@ -1865,7 +1872,7 @@ class AnnotationFolderViewSet(ModelViewSet, FilterMixin):
 class ProjectViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticatedOrReadOnly]
     queryset = Project.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['project_name', 'project_description']
     ordering_fields = ['project_name']
@@ -1942,7 +1949,7 @@ class ProjectViewSet(ModelViewSet, FilterMixin):
 class InstrumentViewSet(ModelViewSet, FilterMixin):
     permission_classes = [InstrumentViewSetPermission]
     queryset = Instrument.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['instrument_name', 'instrument_description']
     ordering_fields = ['instrument_name']
@@ -2070,7 +2077,7 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
 class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
     permission_classes = [InstrumentUsagePermission]
     queryset = InstrumentUsage.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['instrument__instrument_name']
     ordering_fields = ['time_started', 'time_ended']
@@ -2158,7 +2165,7 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
 class StorageObjectViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticated]
     queryset = StorageObject.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['object_name', 'object_description', 'object_type']
     ordering_fields = ['object_name', 'object_type']
@@ -2299,7 +2306,7 @@ class StorageObjectViewSet(ModelViewSet, FilterMixin):
 class StoredReagentViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticated]
     queryset = StoredReagent.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['reagent__name', 'reagent__unit', 'barcode']
     ordering_fields = ['reagent__name', 'reagent__unit', 'barcode']
@@ -2518,7 +2525,7 @@ class StoredReagentViewSet(ModelViewSet, FilterMixin):
 class ReagentActionViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticated]
     queryset = ReagentAction.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['action_type', 'reagent__reagent__name', 'reagent__reagent__unit']
     ordering_fields = ['action_type', 'reagent__reagent__name', 'reagent__reagent__unit', 'created_at', 'updated_at']
@@ -2612,7 +2619,7 @@ class ReagentActionViewSet(ModelViewSet, FilterMixin):
 class LabGroupViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticated]
     queryset = LabGroup.objects.all()
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     search_fields = ['name', 'description']
     ordering_fields = ['name']
@@ -2622,6 +2629,7 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
     def get_queryset(self):
         query = Q()
         stored_reagent_id = self.request.query_params.get('stored_reagent', None)
+        is_professional = self.request.query_params.get('is_professional', None)
         if stored_reagent_id:
             stored_reagent = StoredReagent.objects.get(id=stored_reagent_id)
             return stored_reagent.access_lab_groups.all()
@@ -2629,7 +2637,10 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
         if storage_object_id:
             storage_object = StorageObject.objects.get(id=storage_object_id)
             return storage_object.access_lab_groups.all()
-        return self.queryset
+        if is_professional:
+            is_professional = is_professional == 'true'
+            query &= Q(is_professional=is_professional)
+        return self.queryset.filter(query)
 
     def get_object(self):
         obj = super().get_object()
@@ -2708,7 +2719,7 @@ class SpeciesViewSet(ModelViewSet, FilterMixin):
     serializer_class = SpeciesSerializer
     queryset = Species.objects.all()
     permission_classes = [AllowAny]
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     parser_classes = (MultiPartParser, JSONParser)
     pagination_class = LimitOffsetPagination
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
@@ -2747,7 +2758,7 @@ class SubcellularLocationViewSet(ModelViewSet, FilterMixin):
     serializer_class = SubcellularLocationSerializer
     queryset = SubcellularLocation.objects.all()
     permission_classes = [AllowAny]
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     parser_classes = (MultiPartParser, JSONParser)
     pagination_class = LimitOffsetPagination
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
@@ -2761,7 +2772,7 @@ class TissueViewSet(ModelViewSet, FilterMixin):
     serializer_class = TissueSerializer
     queryset = Tissue.objects.all()
     permission_classes = [AllowAny]
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     parser_classes = (MultiPartParser, JSONParser)
     pagination_class = LimitOffsetPagination
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
@@ -2776,7 +2787,7 @@ class HumanDiseaseViewSet(ModelViewSet, FilterMixin):
     serializer_class = HumanDiseaseSerializer
     queryset = HumanDisease.objects.all()
     permission_classes = [AllowAny]
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     parser_classes = (MultiPartParser, JSONParser)
     pagination_class = LimitOffsetPagination
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
@@ -2791,7 +2802,7 @@ class MetadataColumnViewSet(FilterMixin, ModelViewSet):
     serializer_class = MetadataColumnSerializer
     queryset = MetadataColumn.objects.all()
     permission_classes = [IsAuthenticatedOrReadOnly]
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     parser_classes = (MultiPartParser, JSONParser)
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     ordering_fields = ['id', 'name', 'created_at']
@@ -2892,7 +2903,7 @@ class MSUniqueVocabulariesViewSet(FilterMixin, ModelViewSet):
     serializer_class = MSUniqueVocabulariesSerializer
     queryset = MSUniqueVocabularies.objects.all()
     permission_classes = [IsAuthenticatedOrReadOnly]
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     parser_classes = (MultiPartParser, JSONParser)
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     ordering_fields = ['accession', 'name']
@@ -2940,7 +2951,7 @@ class UnimodViewSets(FilterMixin, ModelViewSet):
     serializer_class = UnimodSerializer
     queryset = Unimod.objects.all()
     permission_classes = [IsAuthenticatedOrReadOnly]
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     parser_classes = (MultiPartParser, JSONParser)
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_class = UnimodFilter
@@ -2983,7 +2994,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
     queryset = InstrumentJob.objects.all()
 
     permission_classes = [IsAuthenticatedOrReadOnly]
-    authentication_classes = [TokenAuthentication]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
     parser_classes = (MultiPartParser, JSONParser)
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     ordering_fields = ['id', 'job_name', 'created_at']
@@ -3414,3 +3425,118 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                     return Response(status=status.HTTP_403_FORBIDDEN)
         job = import_sdrf_file.delay(request.data["annotation"], request.user.id, instrument_job.id, request.data["instance_id"], request.data["data_type"])
         return Response({"task_id": job.id}, status=status.HTTP_200_OK)
+
+
+class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
+    serializer_class = FavouriteMetadataOptionSerializer
+    queryset = FavouriteMetadataOption.objects.all()
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    parser_classes = (MultiPartParser, JSONParser)
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    ordering_fields = ['id', 'name', 'created_at']
+    search_fields = ['value']
+
+    def get_queryset(self):
+        user = self.request.user
+        mode = self.request.query_params.get('mode', None)
+        metadata_name = self.request.query_params.get('name', None)
+        query = Q()
+        if mode == 'service_lab_group':
+            lab_group = LabGroup.objects.get(id=self.request.query_params.get('lab_group', None), is_professional=True)
+            query &= Q(service_lab_group=lab_group)
+        elif mode == 'lab_group':
+            lab_group = LabGroup.objects.get(id=self.request.query_params.get('lab_group', None))
+            query &= Q(lab_group=lab_group)
+        else:
+            query &= Q(user=user, lab_group=None, service_lab_group=None)
+        if metadata_name:
+            query &= Q(name=metadata_name)
+        return self.queryset.filter(query)
+
+    def create(self, request, *args, **kwargs):
+        user = self.request.user
+        mode = request.data.get('mode', None)
+        lab_group = request.data.get('lab_group', None)
+        metadata_name = request.data.get('name', None)
+        metadata_type = request.data.get('type', None)
+        value = request.data.get('value', None)
+        display_name = request.data.get('display_name', None)
+        preset = request.data.get('preset', None)
+        if preset:
+            preset = Preset.objects.get(id=preset)
+        if mode == 'service_lab_group':
+
+            lab_group = LabGroup.objects.get(id=lab_group, is_professional=True)
+            if not lab_group.users.filter(id=user.id).exists():
+                return Response(status=status.HTTP_403_FORBIDDEN)
+            else:
+                option = FavouriteMetadataOption.objects.create(name=metadata_name, type=metadata_type, value=value, display_value=display_name, service_lab_group=lab_group, preset=preset, user=user)
+        elif mode == 'lab_group':
+            lab_group = LabGroup.objects.get(id=lab_group)
+            if not lab_group.users.filter(id=user.id).exists():
+                return Response(status=status.HTTP_403_FORBIDDEN)
+            else:
+                option = FavouriteMetadataOption.objects.create(name=metadata_name, type=metadata_type, value=value, display_value=display_name, lab_group=lab_group, preset=preset, user=user)
+        else:
+            option = FavouriteMetadataOption.objects.create(name=metadata_name, type=metadata_type, value=value, display_value=display_name, user=user, preset=preset)
+
+        return Response(FavouriteMetadataOptionSerializer(option).data, status=status.HTTP_200_OK)
+
+    def update(self, request, *args, **kwargs):
+        return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def destroy(self, request, *args, **kwargs):
+        option = self.get_object()
+        if option.service_lab_group:
+            if not option.service_lab_group.users.filter(id=request.user.id).exists():
+                return Response(status=status.HTTP_403_FORBIDDEN)
+        elif option.lab_group:
+            if not option.lab_group.users.filter(id=request.user.id).exists():
+                return Response(status=status.HTTP_403_FORBIDDEN)
+        elif option.user != request.user:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        else:
+            if not request.user.is_staff:
+                return Response(status=status.HTTP_403_FORBIDDEN)
+        option.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class PresetViewSet(ModelViewSet):
+    serializer_class = PresetSerializer
+    queryset = Preset.objects.all()
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    parser_classes = (MultiPartParser, JSONParser)
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    ordering_fields = ['id', 'name', 'created_at']
+    search_fields = ['name']
+
+    def get_queryset(self):
+        user = self.request.user
+        query = Q()
+        if not user.is_staff:
+            query &= Q(user=user)
+        return self.queryset.filter(query)
+
+    def create(self, request, *args, **kwargs):
+        user = self.request.user
+        name = request.data['name']
+        preset = Preset.objects.create(name=name, user=user)
+        return Response(PresetSerializer(preset).data, status=status.HTTP_200_OK)
+
+    def update(self, request, *args, **kwargs):
+        preset = self.get_object()
+        if preset.user != request.user:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        preset.name = request.data['name']
+        preset.save()
+        return Response(PresetSerializer(preset).data, status=status.HTTP_200_OK)
+
+    def destroy(self, request, *args, **kwargs):
+        preset = self.get_object()
+        if preset.user != request.user:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        preset.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

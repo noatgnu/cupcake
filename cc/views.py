@@ -1,5 +1,6 @@
+from django.http import JsonResponse
 from django.shortcuts import render
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from drf_chunked_upload.exceptions import ChunkedUploadError
 from drf_chunked_upload.views import ChunkedUploadView
 from rest_framework.authentication import TokenAuthentication
@@ -20,7 +21,7 @@ from cc.models import ProtocolModel
 
 
 class GetProtocolIO(APIView):
-    #authentication_classes = [TokenAuthentication]
+    #authentication_classes = [TokenAuthentication, SessionAuthentication]
     permission_classes = [AllowAny]
 
     def post(self, request, format=None):
@@ -120,3 +121,8 @@ class DataChunkedUploadView(ChunkedUploadView):
 
     def on_completion(self, chunked_upload, request):
         return super().on_completion(chunked_upload, request)
+
+
+@ensure_csrf_cookie
+def set_csrf(request):
+    return JsonResponse(data={"data": "CSRF cookie set"}, status=status.HTTP_200_OK)

@@ -4,7 +4,8 @@ import json
 from cc.models import ProtocolModel, ProtocolStep, Annotation, StepVariation, Session, TimeKeeper, ProtocolSection, \
     ProtocolRating, Reagent, ProtocolReagent, StepReagent, StepTag, ProtocolTag, Tag, AnnotationFolder, Project, \
     Instrument, InstrumentUsage, StorageObject, StoredReagent, ReagentAction, LabGroup, MSUniqueVocabularies, \
-    HumanDisease, Tissue, SubcellularLocation, MetadataColumn, Species, Unimod, InstrumentJob
+    HumanDisease, Tissue, SubcellularLocation, MetadataColumn, Species, Unimod, InstrumentJob, FavouriteMetadataOption, \
+    Preset
 
 
 class ProtocolModelSerializer(ModelSerializer):
@@ -476,3 +477,13 @@ class InstrumentJobSerializer(ModelSerializer):
             'cost_center',
             'service_lab_group'
         ]
+
+class FavouriteMetadataOptionSerializer(ModelSerializer):
+    class Meta:
+        model = FavouriteMetadataOption
+        fields = ['id', 'user', 'name', 'type', 'value', 'display_value', 'service_lab_group', 'lab_group', 'preset', 'created_at', 'updated_at']
+
+class PresetSerializer(ModelSerializer):
+    class Meta:
+        model = Preset
+        fields = ['id', 'name', 'user', 'created_at', 'updated_at']

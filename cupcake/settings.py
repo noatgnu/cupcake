@@ -168,6 +168,7 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.TokenAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20
@@ -193,7 +194,16 @@ CORS_ALLOW_HEADERS = [
     "content-disposition",
     "x-cupcake-instance-id",
     "http_x_cupcake_instance_id",
+    'http-x-session-token',
+    "http-x-csrftoken",
+    'x-session-token',
 ]
+CSRF_COOKIE_NAME = "csrfToken"
+CSRF_HEADER_NAME = "HTTP_X_CSRFTOKEN"
+CSRF_USE_SESSIONS = False
+CSRF_COOKIE_HTTPONLY = False
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_ALL_ORIGINS = False
 CSRF_TRUSTED_ORIGINS = os.environ.get("CORS_ORIGIN_WHITELIST", "http://localhost:4200").split(",")
 CORS_ORIGIN_WHITELIST = os.environ.get("CORS_ORIGIN_WHITELIST", "http://localhost:4200").split(",")
 CORS_ALLOW_METHODS = [

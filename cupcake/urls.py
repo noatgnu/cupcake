@@ -16,7 +16,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
-from cc.views import GetProtocolIO, DataChunkedUploadView
+from cc.views import GetProtocolIO, DataChunkedUploadView, set_csrf
 from rest_framework.authtoken.views import obtain_auth_token
 from rest_framework import routers
 
@@ -25,7 +25,7 @@ from cc.viewsets import ProtocolViewSet, SessionViewSet, StepViewSet, Annotation
     TagViewSet, AnnotationFolderViewSet, ProjectViewSet, InstrumentViewSet, InstrumentUsageViewSet, \
     StorageObjectViewSet, StoredReagentViewSet, ReagentActionViewSet, LabGroupViewSet, SpeciesViewSet, \
     MetadataColumnViewSet, TissueViewSet, SubcellularLocationViewSet, HumanDiseaseViewSet, MSUniqueVocabulariesViewSet, \
-    UnimodViewSets, InstrumentJobViewSets
+    UnimodViewSets, InstrumentJobViewSets, FavouriteMetadataOptionViewSets, PresetViewSet
 
 router = routers.DefaultRouter()
 router.register(r'protocol', ProtocolViewSet)
@@ -56,6 +56,8 @@ router.register(r'human_diseases', HumanDiseaseViewSet)
 router.register(r"ms_vocab", MSUniqueVocabulariesViewSet)
 router.register(r"unimod", UnimodViewSets)
 router.register('instrument_jobs', InstrumentJobViewSets)
+router.register(r'favourite_metadata_option', FavouriteMetadataOptionViewSets)
+router.register(r'preset', PresetViewSet)
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -64,4 +66,5 @@ urlpatterns = [
     path('api/token-auth/', obtain_auth_token),
     path('api/chunked_upload/', DataChunkedUploadView.as_view(), name='chunked_upload'),
     path('api/chunked_upload/<uuid:pk>/', DataChunkedUploadView.as_view(), name='chunkedupload-detail'),
+    path("api/set-csrf/", set_csrf, name="set_csrf"),
 ]

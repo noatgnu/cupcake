@@ -1236,6 +1236,33 @@ class InstrumentJob(models.Model):
         app_label = 'cc'
         ordering = ['-id']
 
+class Preset(models.Model):
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name='presets', blank=True, null=True)
+
+    class Meta:
+        app_label = 'cc'
+        ordering = ['id']
+
+class FavouriteMetadataOption(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name='favourite_metadata_options', blank=True, null=True)
+    name = models.CharField(max_length=255)
+    type = models.CharField(max_length=255)
+    value = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    display_value = models.TextField(blank=True, null=True)
+    service_lab_group = models.ForeignKey(LabGroup, on_delete=models.SET_NULL, related_name='favourite_service_lab_group_metadata_options', blank=True, null=True)
+    lab_group = models.ForeignKey(LabGroup, on_delete=models.SET_NULL, related_name='favourite_lab_group_metadata_options', blank=True, null=True)
+    preset = models.ForeignKey(Preset, on_delete=models.SET_NULL, related_name='favourite_metadata_options', blank=True, null=True)
+
+    class Meta:
+        app_label = 'cc'
+        ordering = ['id']
+
 @receiver(post_save, sender=settings.AUTH_USER_MODEL)
 def create_auth_token(sender, instance=None, created=False, **kwargs):
     if created:

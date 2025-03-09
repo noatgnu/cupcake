@@ -665,6 +665,7 @@ class InstrumentPermission(models.Model):
 class Annotation(models.Model):
     session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="annotations", blank=True, null=True)
     step = models.ForeignKey(ProtocolStep, on_delete=models.CASCADE, related_name="annotations", blank=True, null=True)
+    stored_reagent = models.ForeignKey("StoredReagent", on_delete=models.CASCADE, related_name="annotations", blank=True, null=True)
     annotation = models.TextField(blank=False, null=False)
     file = models.FileField(blank=True, null=True, upload_to="annotations/")
     created_at = models.DateTimeField(auto_now_add=True)

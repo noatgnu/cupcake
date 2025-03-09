@@ -17,12 +17,13 @@ from django.contrib.auth.models import User
 from django.core.files import File
 from django.core.management import call_command
 from django.core.signing import TimestampSigner
-from django.db.models import Q
+from django.db.models import Q, QuerySet
 from django_rq import job
 from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls
 from drf_chunked_upload.models import ChunkedUpload
 from pytesseract import pytesseract
+from sdrf_pipelines.sdrf.sdrf import SdrfDataFrame
 
 from cc.models import Annotation, ProtocolModel, ProtocolStep, StepVariation, ProtocolSection, Session, \
     AnnotationFolder, Reagent, ProtocolReagent, StepReagent, ProtocolTag, StepTag, Tag, Project, MetadataColumn, \
@@ -978,9 +979,11 @@ def export_instrument_job_metadata(instrument_job_id: int, data_type: str, user_
     instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
     if data_type == "user_metadata":
         metadata = instrument_job.user_metadata.all()
-    else:
+    elif data_type == "staff_metadata":
         metadata = instrument_job.staff_metadata.all()
-    result = sort_metadata(metadata, instrument_job)
+    else:
+        metadata = list(instrument_job.user_metadata.all()) + list(instrument_job.staff_metadata.all())
+    result = sort_metadata(metadata, instrument_job.sample_number)
     # create tsv file from result
     filename = str(uuid.uuid4())
     tsv_filepath = os.path.join(settings.MEDIA_ROOT, "temp", f"{filename}.tsv")
@@ -1006,7 +1009,7 @@ def export_instrument_job_metadata(instrument_job_id: int, data_type: str, user_
 
 
 
-def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob):
+def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
     headers = []
     default_columns_list = [{
         "name": "Source name", "type": "", "mandatory": True
@@ -1058,27 +1061,40 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
     metadata_column_map = {}
     source_name_metadata = None
     assay_name_metadata = None
+    material_type_metadata = None
+    technology_type_metadata = None
+    factor_value_columns = []
     for m in metadata:
         m.value = convert_metadata_column_value_to_sdrf(m.name.lower(), m.value)
-        if m.name not in metadata_column_map:
-            metadata_column_map[m.name] = []
-        metadata_column_map[m.name].append(m)
+        if m.type != "Factor value":
+            if m.name not in metadata_column_map:
+                metadata_column_map[m.name] = []
+            metadata_column_map[m.name].append(m)
+        else:
+            factor_value_columns.append(m)
     new_metadata = []
+
     non_default_columns = []
     default_column_map = {}
     for i in default_columns_list:
         default_column_map[i["name"]] = i
-        if i["name"] in metadata_column_map and i["name"] != "Assay name" and i["name"] != "Source name":
+        if i["name"] in metadata_column_map and i["name"] != "Assay name" and i["name"] != "Source name" and i["name"] != "Material type" and i["name"] != "Technology type":
             new_metadata.extend(metadata_column_map[i["name"]])
         if i["name"] == "Assay name":
             if "Assay name" in metadata_column_map:
                 assay_name_metadata = metadata_column_map[i["name"]][0]
-        if i["name"] == "Source name":
+        elif i["name"] == "Source name":
             if "Source name" in metadata_column_map:
                 source_name_metadata = metadata_column_map["Source name"][0]
+        elif i["name"] == "Material type":
+            if "Material type" in metadata_column_map:
+                material_type_metadata = metadata_column_map["Material type"][0]
+        elif i["name"] == "Technology type":
+            if "Technology type" in metadata_column_map:
+                technology_type_metadata = metadata_column_map["Technology type"][0]
 
     for name in metadata_column_map:
-        if name not in default_column_map and name != "Assay name" and name != "Source name":
+        if name not in default_column_map and name != "Assay name" and name != "Source name" and name != "Material type" and name != "Technology type":
             non_default_columns.extend(metadata_column_map[name])
 
     # render an empty 2d array with number of row equal to job sample_number and number of columns equalt to number of metadata columns
@@ -1087,7 +1103,13 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
         col_count += 1
     if assay_name_metadata:
         col_count += 1
-    data = [["" for i in range(col_count)] for j in range(instrument_job.sample_number)]
+    if len(factor_value_columns) > 0:
+        col_count += len(factor_value_columns)
+    if material_type_metadata:
+        col_count += 1
+    if technology_type_metadata:
+        col_count += 1
+    data = [["" for i in range(col_count)] for j in range(sample_number)]
     # render in order, source name, characteristics, non type, comment and factor values
     # fill first column with source name
     last_characteristics = 0
@@ -1099,7 +1121,7 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
                 samples = parse_sample_indices_from_modifier_string(m["samples"])
                 for s in samples:
                     data[s][0] = m["value"]
-        for i in range(instrument_job.sample_number):
+        for i in range(sample_number):
             if data[i][0] == "":
                 data[i][0] = source_name_metadata.value
         last_characteristics += 1
@@ -1111,7 +1133,6 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
                 headers.append("characteristics[organism part]")
             else:
                 headers.append(f"characteristics[{m.name.lower()}]")
-
             if m.modifiers:
                 modifiers = json.loads(m.modifiers)
                 if modifiers:
@@ -1119,18 +1140,14 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
                         samples = parse_sample_indices_from_modifier_string(mod["samples"])
                         for s in samples:
                             data[s][last_characteristics] = mod["value"]
-
-
-            for j in range(instrument_job.sample_number):
+            for j in range(sample_number):
                 if data[j][last_characteristics] == "":
                     data[j][last_characteristics] = m.value
-
             last_characteristics += 1
     # fill characteristics from non default columns
     for i in range(0, len(non_default_columns)):
         m = non_default_columns[i]
         if m.type == "Characteristics":
-
             headers.append(f"characteristics[{m.name.lower()}]")
             if m.modifiers:
                 modifiers = json.loads(m.modifiers)
@@ -1139,14 +1156,27 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
                         samples = parse_sample_indices_from_modifier_string(mod["samples"])
                         for s in samples:
                             data[s][last_characteristics] = mod["value"]
-            for j in range(instrument_job.sample_number):
+            for j in range(sample_number):
                 if data[j][last_characteristics] == "":
                     data[j][last_characteristics] = m.value
             last_characteristics += 1
-    # fill assay name column
+    # fill material type column
     last_non_type = last_characteristics
+    if material_type_metadata:
+        headers.append("material type")
+        if material_type_metadata.modifiers:
+            modifiers = json.loads(material_type_metadata.modifiers)
+            if modifiers:
+                for m in modifiers:
+                    samples = parse_sample_indices_from_modifier_string(m["samples"])
+                    for s in samples:
+                        data[s][last_non_type] = m["value"]
+        for i in range(sample_number):
+            if data[i][last_non_type] == "":
+                data[i][last_non_type] = material_type_metadata.value
+        last_non_type += 1
+    # fill assay name column
     if assay_name_metadata:
-
         headers.append("assay name")
         if assay_name_metadata.modifiers:
             modifiers = json.loads(assay_name_metadata.modifiers)
@@ -1155,15 +1185,28 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
                     samples = parse_sample_indices_from_modifier_string(m["samples"])
                     for s in samples:
                         data[s][last_non_type] = m["value"]
-        for i in range(instrument_job.sample_number):
+        for i in range(sample_number):
             if data[i][last_non_type] == "":
                 data[i][last_non_type] = assay_name_metadata.value
+        last_non_type += 1
+    # fill technology type column
+    if technology_type_metadata:
+        headers.append("technology type")
+        if technology_type_metadata.modifiers:
+            modifiers = json.loads(technology_type_metadata.modifiers)
+            if modifiers:
+                for m in modifiers:
+                    samples = parse_sample_indices_from_modifier_string(m["samples"])
+                    for s in samples:
+                        data[s][last_non_type] = m["value"]
+        for i in range(sample_number):
+            if data[i][last_non_type] == "":
+                data[i][last_non_type] = technology_type_metadata.value
         last_non_type += 1
     # fill non type column
     for i in range(0, len(new_metadata)):
         m = new_metadata[i]
         if m.type == "":
-
             headers.append(m.name.lower())
             if m.modifiers:
                 modifiers = json.loads(m.modifiers)
@@ -1173,7 +1216,7 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
                         for s in samples:
                             data[s][last_non_type] = mod["value"]
 
-            for j in range(instrument_job.sample_number):
+            for j in range(sample_number):
                 if data[j][last_non_type] == "":
                     data[j][last_non_type] = m.value
             last_non_type += 1
@@ -1181,7 +1224,6 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
     for i in range(0, len(non_default_columns)):
         m = non_default_columns[i]
         if m.type == "":
-
             if m.modifiers:
                 modifiers = json.loads(m.modifiers)
                 if modifiers:
@@ -1189,8 +1231,7 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
                         samples = parse_sample_indices_from_modifier_string(mod["samples"])
                         for s in samples:
                             data[s][last_non_type] = mod["value"]
-
-            for j in range(instrument_job.sample_number):
+            for j in range(sample_number):
                 if data[j][last_non_type] == "":
                     data[j][last_non_type] = m.value
             last_non_type += 1
@@ -1208,8 +1249,7 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
                         samples = parse_sample_indices_from_modifier_string(mod["samples"])
                         for s in samples:
                             data[s][last_comment] = mod["value"]
-            for j in range(instrument_job.sample_number):
-                print(last_comment)
+            for j in range(sample_number):
                 if data[j][last_comment] == "":
                     data[j][last_comment] = m.value
             last_comment += 1
@@ -1226,10 +1266,29 @@ def sort_metadata(metadata: list[MetadataColumn], instrument_job: InstrumentJob)
                         samples = parse_sample_indices_from_modifier_string(mod["samples"])
                         for s in samples:
                             data[s][last_comment] = mod["value"]
-            for j in range(instrument_job.sample_number):
+            for j in range(sample_number):
                 if data[j][last_comment] == "":
                     data[j][last_comment] = m.value
             last_comment += 1
+    # write factor values
+
+    for i in range(0, len(factor_value_columns)):
+        m = factor_value_columns[i]
+        if m.name == "Tissue":
+            m.name = "Organism part"
+        headers.append(f"factor value[{m.name.lower()}]")
+        if m.modifiers:
+            modifiers = json.loads(m.modifiers)
+            if modifiers:
+                for mod in modifiers:
+
+                    samples = parse_sample_indices_from_modifier_string(mod["samples"])
+                    for s in samples:
+                        data[s][last_comment] = mod["value"]
+        for j in range(sample_number):
+            if data[j][last_comment] == "":
+                data[j][last_comment] = m.value
+        last_comment += 1
     return [headers, *data]
 
 def parse_sample_indices_from_modifier_string(samples: str):
@@ -1269,7 +1328,8 @@ def convert_metadata_column_value_to_sdrf(column_name: str, value: str):
         if value:
             v = Species.objects.filter(official_name=value)
             if v.exists():
-                return f"http://purl.obolibrary.org/obo/NCBITaxon_{v.first().taxon}"
+                #return f"http://purl.obolibrary.org/obo/NCBITaxon_{v.first().taxon}"
+                return f"{value}"
             else:
                 return f"{value}"
     if column_name == "label":
@@ -1582,7 +1642,6 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
     annotation = Annotation.objects.get(id=annotation_id)
     headers, data = read_sdrf_file(annotation.file.path)
     instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
-    user = User.objects.get(id=user_id)
     metadata_columns = []
 
     for header in headers:
@@ -1626,12 +1685,15 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
             data = data[:instrument_job.sample_number]
 
     if data_type == "user_metadata":
+        for m in instrument_job.user_metadata.all():
+            m.delete()
         instrument_job.user_metadata.clear()
     else:
+        for m in instrument_job.staff_metadata.all():
+            m.delete()
         instrument_job.staff_metadata.clear()
     for i in range(len(metadata_columns)):
         metadata_value_map = {}
-
         for j in range(len(data)):
             name = metadata_columns[i].name.lower()
             if data[j][i] == "":
@@ -1663,16 +1725,16 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
                 samples.sort()
                 start = samples[0]
                 end = samples[0]
-                for i in range(1, len(samples)):
-                    if samples[i] == end + 1:
-                        end = samples[i]
+                for i2 in range(1, len(samples)):
+                    if samples[i2] == end + 1:
+                        end = samples[i2]
                     else:
                         if start == end:
                             modifier["samples"].append(str(start+1))
                         else:
                             modifier["samples"].append(f"{start+1}-{end+1}")
-                        start = samples[i]
-                        end = samples[i]
+                        start = samples[i2]
+                        end = samples[i2]
                 if start == end:
                     modifier["samples"].append(str(start+1))
                 else:
@@ -1703,6 +1765,52 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
             },
         }
     )
+
+@job('import-data', timeout='3h')
+def validate_sdrf_file(metadata_column_ids: list[int], sample_number: int, user_id: int, instance_id: str):
+    """
+
+    :param metadata_column_ids:
+    :param user_id:
+    :param instance_id:
+    :return:
+    """
+
+    metadata_column = MetadataColumn.objects.filter(id__in=metadata_column_ids)
+    result = sort_metadata(metadata_column, sample_number)
+    df = SdrfDataFrame.parse(io.StringIO("\n".join(["\t".join(i) for i in result])))
+    try:
+        errors = df.validate("default", True)
+    except Exception as e:
+        errors = [str(e)]
+    errors = errors + df.validate("mass_spectrometry", True)
+    errors = errors + df.validate_experimental_design()
+    channel_layer = get_channel_layer()
+    if errors:
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}_instrument_job",
+            {
+                "type": "instrument_job_message",
+                "message": {
+                    "instance_id": instance_id,
+                    "status": "error",
+                    "message": "Validation failed",
+                    "errors": [str(e) for e in errors]
+                },
+            }
+        )
+    else:
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}_instrument_job",
+            {
+                "type": "instrument_job_message",
+                "message": {
+                    "instance_id": instance_id,
+                    "status": "completed",
+                    "message": "Validation successful"
+                },
+            }
+        )
 
 
 

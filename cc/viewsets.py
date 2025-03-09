@@ -38,7 +38,8 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
     FavouriteMetadataOption, Preset
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
-    ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, import_sdrf_file
+    ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
+    import_sdrf_file, validate_sdrf_file
 from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, AnnotationSerializer, \
     SessionSerializer, StepVariationSerializer, TimeKeeperSerializer, ProtocolSectionSerializer, UserSerializer, \
     ProtocolRatingSerializer, ReagentSerializer, StepReagentSerializer, ProtocolReagentSerializer, \
@@ -609,6 +610,9 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
         step = None
         custom_id = self.request.META.get('HTTP_X_CUPCAKE_INSTANCE_ID', None)
         annotation = Annotation()
+        if 'stored_reagent' in request.data:
+            stored_reagent = StoredReagent.objects.get(id=request.data['stored_reagent'])
+            annotation.stored_reagent = stored_reagent
         if 'step' in request.data:
             if request.data['step']:
                 step = ProtocolStep.objects.get(id=request.data['step'])
@@ -905,7 +909,9 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
             if session.exists():
                 session = session.first()
                 annotation.session = session
-
+        if "stored_reagent" in request.data:
+            stored_reagent = StoredReagent.objects.get(id=request.data['stored_reagent'])
+            annotation.stored_reagent = stored_reagent
 
         annotation.annotation_name = annotation_name
         annotation.annotation_type = "file"
@@ -921,7 +927,6 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
         upload.delete()
         data = self.get_serializer(annotation).data
         return Response(data, status=status.HTTP_201_CREATED)
-
 
 
 class SessionViewSet(ModelViewSet, FilterMixin):
@@ -3426,6 +3431,26 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
         job = import_sdrf_file.delay(request.data["annotation"], request.user.id, instrument_job.id, request.data["instance_id"], request.data["data_type"])
         return Response({"task_id": job.id}, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['post'])
+    def validate_sdrf_metadata(self, request, pk=None):
+        instrument_job = self.get_object()
+        if not self.request.user.is_staff:
+            staff = instrument_job.staff.all()
+            if staff.count() == 0:
+                if instrument_job.service_lab_group:
+                    staff = instrument_job.service_lab_group.users.all()
+                    if self.request.user not in staff:
+                        return Response(status=status.HTTP_403_FORBIDDEN)
+            else:
+                if self.request.user not in staff:
+                    return Response(status=status.HTTP_403_FORBIDDEN)
+        # get id of metadata column objects from instrument_job.user_metadata and instrument_job.staff_metadata
+        user_metadata = instrument_job.user_metadata.all()
+        staff_metadata = instrument_job.staff_metadata.all()
+        user_metadata_ids = [metadata.id for metadata in user_metadata]
+        staff_metadata_ids = [metadata.id for metadata in staff_metadata]
+        job = validate_sdrf_file.delay(user_metadata_ids+staff_metadata_ids, instrument_job.sample_number, request.user.id, request.data['instance_id'])
+        return Response({"task_id": job.id}, status=status.HTTP_200_OK)
 
 class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
     serializer_class = FavouriteMetadataOptionSerializer

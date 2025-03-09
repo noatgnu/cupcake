@@ -99,7 +99,7 @@ class AnnotationSerializer(ModelSerializer):
 
     class Meta:
         model = Annotation
-        fields = ['id', 'step', 'session', 'annotation', 'file', 'created_at', 'updated_at', 'annotation_type', 'transcribed', 'transcription', 'language', 'translation', 'scratched', 'annotation_name', 'folder', 'summary', 'instrument_usage', 'metadata_columns', 'fixed', 'user']
+        fields = ['id', 'step', 'session', 'annotation', 'file', 'created_at', 'updated_at', 'annotation_type', 'transcribed', 'transcription', 'language', 'translation', 'scratched', 'annotation_name', 'folder', 'summary', 'instrument_usage', 'metadata_columns', 'fixed', 'user', 'stored_reagent']
 
 
 class StepVariationSerializer(ModelSerializer):

@@ -3496,7 +3496,8 @@ class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
         return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
 
     def destroy(self, request, *args, **kwargs):
-        option = self.get_object()
+        option = FavouriteMetadataOption.objects.get(id=kwargs['pk'])
+        print(option)
         if option.service_lab_group:
             if not option.service_lab_group.users.filter(id=request.user.id).exists():
                 return Response(status=status.HTTP_403_FORBIDDEN)

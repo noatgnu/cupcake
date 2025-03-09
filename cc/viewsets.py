@@ -3456,11 +3456,6 @@ class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
         if metadata_name:
             query &= Q(name=metadata_name)
 
-        print("Query:", query)
-        print("FavouriteMetadataOption.objects.filter(query):", FavouriteMetadataOption.objects.filter(query))
-        print("self.queryset:", self.queryset)
-        print("self.queryset.filter(query):", self.queryset.filter(query))
-
         return self.queryset.filter(query)
 
     def create(self, request, *args, **kwargs):

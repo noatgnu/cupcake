@@ -43,6 +43,8 @@ import re
 from docx.shared import Inches, RGBColor
 import re
 
+from cc.utils import user_metadata, staff_metadata
+
 capture_language = re.compile(r"auto-detected language: (\w+)")
 
 @job('transcribe', timeout='1h')
@@ -1643,6 +1645,16 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
     headers, data = read_sdrf_file(annotation.file.path)
     instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
     metadata_columns = []
+    user_metadata_field_map = {}
+    for i in user_metadata:
+        if i['type'] not in user_metadata_field_map:
+            user_metadata_field_map[i['type']] = {}
+        user_metadata_field_map[i['type']][i['name']] = i
+    staff_metadata_field_map = {}
+    for i in staff_metadata:
+        if i['type'] not in staff_metadata_field_map:
+            staff_metadata_field_map[i['type']] = {}
+        staff_metadata_field_map[i['type']][i['name']] = i
 
     for header in headers:
         metadata_column = MetadataColumn()
@@ -1688,7 +1700,14 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
         for m in instrument_job.user_metadata.all():
             m.delete()
         instrument_job.user_metadata.clear()
+    elif data_type == "staff_metadata":
+        for m in instrument_job.staff_metadata.all():
+            m.delete()
+        instrument_job.staff_metadata.clear()
     else:
+        for m in instrument_job.user_metadata.all():
+            m.delete()
+        instrument_job.user_metadata.clear()
         for m in instrument_job.staff_metadata.all():
             m.delete()
         instrument_job.staff_metadata.clear()
@@ -1749,8 +1768,16 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
         metadata_columns[i].save()
         if data_type == "user_metadata":
             instrument_job.user_metadata.add(metadata_columns[i])
-        else:
+        elif data_type == "staff_metadata":
             instrument_job.staff_metadata.add(metadata_columns[i])
+        else:
+            if metadata_columns[i].type in user_metadata_field_map:
+                if metadata_columns[i].name in user_metadata_field_map[metadata_columns[i].type]:
+                    instrument_job.user_metadata.add(metadata_columns[i])
+                else:
+                    instrument_job.staff_metadata.add(metadata_columns[i])
+            else:
+                instrument_job.staff_metadata.add(metadata_columns[i])
 
     channel_layer = get_channel_layer()
     #notify user through channels that it has completed

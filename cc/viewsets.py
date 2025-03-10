@@ -48,6 +48,7 @@ from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, Anno
     ReagentActionSerializer, LabGroupSerializer, SpeciesSerializer, SubcellularLocationSerializer, \
     HumanDiseaseSerializer, TissueSerializer, MetadataColumnSerializer, MSUniqueVocabulariesSerializer, \
     UnimodSerializer, InstrumentJobSerializer, FavouriteMetadataOptionSerializer, PresetSerializer
+from cc.utils import user_metadata, staff_metadata
 
 
 class ProtocolViewSet(ModelViewSet, FilterMixin):
@@ -692,8 +693,19 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
             instrument_job = InstrumentJob.objects.get(id=request.data['instrument_job'])
             if request.data['instrument_user_type'] == "staff_annotation":
                 instrument_job.staff_annotations.add(annotation)
+                if annotation.annotation_type == "instrument":
+                    metadata_columns = annotation.metadata_columns.all()
+                    for meta_col in metadata_columns:
+                        instrument_job_staff_metadata = instrument_job.staff_metadata.filter(name=meta_col.name, type=meta_col.type)
+                        if instrument_job_instrument_metadata.exists():
+                            instrument_job_instrument_metadata = instrument_job_instrument_metadata.first()
+                            if not instrument_job_instrument_metadata.value:
+                                instrument_job_instrument_metadata.value = meta_col.value
+                                instrument_job_instrument_metadata.save()
+
             elif request.data['instrument_user_type'] == "user_annotation":
                 instrument_job.user_annotations.add(annotation)
+
         data = self.get_serializer(annotation).data
         return Response(data, status=status.HTTP_201_CREATED)
 
@@ -3060,51 +3072,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
         if 'project' in request.data:
             project = Project.objects.get(id=request.data['project'])
             instrument_job.project = project
-        user_metadata = [
-            {
-                "name": "Source name", "type": "", "mandatory": True
-            },
-            {
-                "name": "Organism", "type": "Characteristics", "mandatory": True
-            },
-            {
-                "name": "Tissue", "type": "Characteristics", "mandatory": True
-            },
-            {
-                "name": "Cell type", "type": "Characteristics", "mandatory": False
-            },
-            {
-                "name": "Reduction reagent", "type": "Comment", "mandatory": False
-            }
-            ,
-            {
-                "name": "Alkylation reagent", "type": "Comment", "mandatory": False
-            },
-            {
-              "name": "Assay name", "type": "", "mandatory": True
-            },
-            {
-                "name": "Technology type", "type": "", "mandatory": True, "value": "proteomic profiling by mass spectrometry"
-            },
-            {
-                "name": "Technical replicate", "type": "Comment", "mandatory": True
-            },
-            {
-                "name": "Biological replicate", "type": "Comment", "mandatory": True
-            }
-            ,
-            {
-                "name": "Sample type", "type": "Characteristics", "mandatory": True
-            },
-            {
-                "name": "Enrichment process", "type": "Characteristics", "mandatory": True
-            }
-            ,
-            {
-                "name": "Cleavage agent details", "type": "Comment", "mandatory": True
-            },
 
-        ]
         instrument_job.save()
         for metadata in user_metadata:
             metadata_column = MetadataColumn(
@@ -3116,29 +3084,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                 metadata_column.value = metadata['value']
             metadata_column.save()
             instrument_job.user_metadata.add(metadata_column)
-        staff_metadata = [
-            {
-                "name": "Data file", "type": "Comment", "mandatory": True
-            },
-            {
-                "name": "File uri", "type": "Comment", "mandatory": True
-            },
-            {
-                "name": "Proteomics data acquisition method", "type": "Comment", "mandatory": True
-            }
-            ,
-            {
-                "name": "Label",
-                "type": "Comment",
-                "mandatory": True
-            },
-            {
-                "name": "MS1 scan range", "type": "Comment", "mandatory": True
-            },
-            {
-                "name": "MS2 analyzer type", "type": "Comment", "mandatory": True
-            }
-        ]
+
         for metadata in staff_metadata:
             metadata_column = MetadataColumn.objects.create(
                 name=metadata['name'],

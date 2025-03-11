@@ -1225,7 +1225,7 @@ class InstrumentJob(models.Model):
     sample_type = models.CharField(max_length=20, choices=sample_type_choices, default='other')
     funder = models.TextField(blank=True, null=True)
     cost_center = models.TextField(blank=True, null=True)
-    injection_volume = models.FloatField(blank=True, null=True)
+    injection_volume = models.FloatField(blank=True, null=True, default='uL')
     injection_unit = models.TextField(blank=True, null=True)
     search_engine = models.TextField(blank=True, null=True)
     search_engine_version = models.TextField(blank=True, null=True)

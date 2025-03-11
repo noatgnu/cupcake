@@ -86,27 +86,27 @@ ASGI_APPLICATION = 'cupcake.asgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/5.0/ref/settings/#databases
-sqlite_db_path = os.environ.get("SQLITE_DB_PATH", None)
-if sqlite_db_path:
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': sqlite_db_path,
+
+SQLITE_BACKUP_LOCATION = os.environ.get("SQLITE_DB_PATH", None)
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': os.environ.get('POSTGRES_DB', 'postgres'),
+        'USER': os.environ.get('POSTGRES_USER', 'postgres'),
+        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'postgres'),
+        'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
+        'PORT': os.environ.get('POSTGRES_PORT', '5433'),
+        'TEST': {
+            'DEPENDENCIES': [],
         }
-    }
-else:
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.postgresql',
-            'NAME': os.environ.get('POSTGRES_DB', 'postgres'),
-            'USER': os.environ.get('POSTGRES_USER', 'postgres'),
-            'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'postgres'),
-            'HOST': os.environ.get('POSTGRES_HOST', 'localhost'),
-            'PORT': os.environ.get('POSTGRES_PORT', '5433'),
-            'TEST': {
-                'DEPENDENCIES': [],
-            }
-        }
+    },
+
+}
+if SQLITE_BACKUP_LOCATION:
+    DATABASES['backup_db'] = {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': SQLITE_BACKUP_LOCATION,
     }
 
 # if test environment, use sqlite
@@ -365,3 +365,6 @@ AWS_SES_REGION_ENDPOINT = os.environ.get('AWS_SES_REGION_ENDPOINT', 'email.us-ea
 # Frontend settings
 
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:4200")
+
+# Instrument Booking Settings
+ALLOW_OVERLAP_BOOKINGS = os.environ.get("ALLOW_OVERLAP_BOOKINGS", "True") == "True"

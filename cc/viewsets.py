@@ -39,7 +39,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
-    import_sdrf_file, validate_sdrf_file
+    import_sdrf_file, validate_sdrf_file, export_excel_template
 from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, AnnotationSerializer, \
     SessionSerializer, StepVariationSerializer, TimeKeeperSerializer, ProtocolSectionSerializer, UserSerializer, \
     ProtocolRatingSerializer, ReagentSerializer, StepReagentSerializer, ProtocolReagentSerializer, \
@@ -1579,7 +1579,8 @@ class UserViewSet(ModelViewSet, FilterMixin):
         use_llm = settings.USE_LLM
         use_ocr = settings.USE_OCR
         use_whisper = settings.USE_WHISPER
-        return Response({"use_coturn": use_coturn, "use_llm": use_llm, "use_ocr": use_ocr, "use_whisper": use_whisper}, status=status.HTTP_200_OK)
+        allow_overlap_bookings = settings.ALLOW_OVERLAP_BOOKINGS
+        return Response({"allow_overlap_bookings": allow_overlap_bookings, "use_coturn": use_coturn, "use_llm": use_llm, "use_ocr": use_ocr, "use_whisper": use_whisper}, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'])
     def is_staff(self, request):
@@ -2167,7 +2168,8 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         time_started = request.data['time_started']
         time_ended = request.data['time_ended']
         if InstrumentUsage.objects.filter(time_started__range=[time_started,time_ended]).exists() or InstrumentUsage.objects.filter(time_ended__range=[time_started, time_ended]).exists():
-            return Response(status=status.HTTP_409_CONFLICT)
+            if not settings.ALLOW_OVERLAP_BOOKINGS:
+                return Response(status=status.HTTP_409_CONFLICT)
         usage = InstrumentUsage()
         usage.instrument = instrument
         usage.user = user
@@ -3396,6 +3398,23 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
         user_metadata_ids = [metadata.id for metadata in user_metadata]
         staff_metadata_ids = [metadata.id for metadata in staff_metadata]
         job = validate_sdrf_file.delay(user_metadata_ids+staff_metadata_ids, instrument_job.sample_number, request.user.id, request.data['instance_id'])
+        return Response({"task_id": job.id}, status=status.HTTP_200_OK)
+
+
+    @action(detail=True, methods=['post'])
+    def export_excel_template(self, request, pk=None):
+        instrument_job = self.get_object()
+        if not self.request.user.is_staff:
+            staff = instrument_job.staff.all()
+            if staff.count() == 0:
+                if instrument_job.service_lab_group:
+                    staff = instrument_job.service_lab_group.users.all()
+                    if self.request.user not in staff:
+                        return Response(status=status.HTTP_403_FORBIDDEN)
+            else:
+                if self.request.user not in staff:
+                    return Response(status=status.HTTP_403_FORBIDDEN)
+        job = export_excel_template.delay(request.user.id, request.data["instance_id"], instrument_job.id)
         return Response({"task_id": job.id}, status=status.HTTP_200_OK)
 
 class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):

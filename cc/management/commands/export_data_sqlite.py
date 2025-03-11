@@ -365,3 +365,5 @@ class Command(BaseCommand):
             tar.add(export_dir, arcname=os.path.basename(export_dir))
             # Remove the original export directory
             shutil.rmtree(export_dir)
+
+    

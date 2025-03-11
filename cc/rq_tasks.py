@@ -22,12 +22,16 @@ from django_rq import job
 from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls
 from drf_chunked_upload.models import ChunkedUpload
+from openpyxl.reader.excel import load_workbook
+from openpyxl.utils import get_column_letter
+from openpyxl.workbook import Workbook
+from openpyxl.worksheet.datavalidation import DataValidation
 from pytesseract import pytesseract
 from sdrf_pipelines.sdrf.sdrf import SdrfDataFrame
 
 from cc.models import Annotation, ProtocolModel, ProtocolStep, StepVariation, ProtocolSection, Session, \
     AnnotationFolder, Reagent, ProtocolReagent, StepReagent, ProtocolTag, StepTag, Tag, Project, MetadataColumn, \
-    InstrumentJob, SubcellularLocation, Species, MSUniqueVocabularies, Unimod
+    InstrumentJob, SubcellularLocation, Species, MSUniqueVocabularies, Unimod, FavouriteMetadataOption
 from django.conf import settings
 import numpy as np
 import subprocess
@@ -1838,6 +1842,264 @@ def validate_sdrf_file(metadata_column_ids: list[int], sample_number: int, user_
                 },
             }
         )
+
+@job('export', timeout='3h')
+def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int):
+    """
+    Export excel template
+    :param user_id:
+    :param instance_id:
+    :param instrument_job_id:
+    :return:
+    """
+    instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
+    metadata = list(instrument_job.user_metadata.all()) + list(instrument_job.staff_metadata.all())
+    result = sort_metadata(metadata, instrument_job.sample_number)
+
+    # get favourites for each metadata column
+    favourites = {}
+    user_favourite = FavouriteMetadataOption.objects.filter(user_id=user_id, service_lab_group__isnull=True, lab_group__isnull=True)
+    facility_recommended = FavouriteMetadataOption.objects.filter(service_lab_group=instrument_job.service_lab_group)
+    for r in list(user_favourite):
+        if r.name.lower() not in favourites:
+            favourites[r.name.lower()] = []
+        favourites[r.name.lower()].append(f"{r.display_value}[*]")
+    for r in list(facility_recommended):
+        if r.name.lower() not in favourites:
+            favourites[r.name.lower()] = []
+        favourites[r.name.lower()].append(f"{r.display_value}[**]")
+
+    # based on column name from result, contruct an excel file with the appropriate rows beside the header row where the cell with the same name in favourite can have preset selection options dropdown related to that column
+    wb = Workbook()
+    ws = wb.active
+    ws.append(result[0])
+    for i in range(1, len(result)):
+        ws.append(result[i])
+    for i in range(len(result[0])):
+        name_splitted = result[0][i].split("[")
+        if len(name_splitted) > 1:
+            name = name_splitted[1].replace("]", "")
+        else:
+            name = name_splitted[0]
+        if name == "organism part":
+            name = "tissue"
+        if name.lower() in favourites:
+            dv = DataValidation(
+                type="list",
+                formula1=f'"{",".join(favourites[name.lower()])}"',
+                showDropDown=False
+            )
+            col_letter = get_column_letter(i + 1)
+            ws.add_data_validation(dv)
+            dv.add(f"{col_letter}2:{col_letter}{instrument_job.sample_number + 1}")
+
+    # save the file
+    filename = str(uuid.uuid4())
+    xlsx_filepath = os.path.join(settings.MEDIA_ROOT, "temp", f"{filename}.xlsx")
+
+    wb.save(xlsx_filepath)
+    signer = TimestampSigner()
+    value = signer.sign(f"{filename}.xlsx")
+
+    channel_layer = get_channel_layer()
+    async_to_sync(channel_layer.group_send)(
+        f"user_{user_id}_instrument_job",
+        {
+            "type": "download_message",
+            "message": {
+                "signed_value": value,
+                "instance_id": instance_id
+            },
+        }
+    )
+
+@job('import-data', timeout='3h')
+def import_excel(file: str, user_id: int, instrument_job_id: int, instance_id: str = None, data_type: str = "user_metadata"):
+    """
+    Import excel file
+    :param file:
+    :param user_id:
+    :param instrument_job_id:
+    :param instance_id:
+    :return:
+    """
+    wb = load_workbook(file)
+    ws = wb.active
+    headers = []
+    for row in ws.iter_rows(min_row=1, max_row=1):
+        for cell in row:
+            headers.append(cell.value)
+    data = []
+    for row in ws.iter_rows(min_row=2):
+        data.append([cell.value for cell in row])
+    instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
+    metadata_columns = []
+    user_metadata_field_map = {}
+    for i in user_metadata:
+        if i['type'] not in user_metadata_field_map:
+            user_metadata_field_map[i['type']] = {}
+        user_metadata_field_map[i['type']][i['name']] = i
+    staff_metadata_field_map = {}
+    for i in staff_metadata:
+        if i['type'] not in staff_metadata_field_map:
+            staff_metadata_field_map[i['type']] = {}
+        staff_metadata_field_map[i['type']][i['name']] = i
+
+    for i in range(len(headers)):
+        metadata_column = MetadataColumn()
+        header = headers[i].lower()
+        #extract type from pattern <type>[<name>]
+        if "[" in header:
+            type = header.split("[")[0]
+            name = header.split("[")[1].replace("]", "")
+        else:
+            type = ""
+            name = header
+        if name == "organism part":
+            name = "tissue"
+        metadata_column.name = name.capitalize()
+        metadata_column.type = type.capitalize()
+        metadata_columns.append(metadata_column)
+    if len(data) != instrument_job.sample_number:
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}_instrument_job",
+            {
+                "type": "instrument_job_message",
+                "message": {
+                    "instance_id": instance_id,
+                    "status": "warning",
+                    "message": "Number of samples in excel file does not match the number of samples in the job"
+                },
+            }
+        )
+        # extend the number of samples to match the number of samples in the job and
+        # fill with empty strings
+
+        if len(data) < instrument_job.sample_number:
+            data.extend(
+                [
+                    ["" for i in range(len(headers))]
+                    for j in range(instrument_job.sample_number - len(data))
+                ]
+            )
+
+        else:
+            data = data[:instrument_job.sample_number]
+
+    if data_type == "user_metadata":
+        for m in instrument_job.user_metadata.all():
+            m.delete()
+        instrument_job.user_metadata.clear()
+    elif data_type == "staff_metadata":
+        for m in instrument_job.staff_metadata.all():
+            m.delete()
+        instrument_job.staff_metadata.clear()
+    else:
+        for m in instrument_job.user_metadata.all():
+            m.delete()
+        instrument_job.user_metadata.clear()
+        for m in instrument_job.staff_metadata.all():
+            m.delete()
+        instrument_job.staff_metadata.clear()
+
+    for i in range(len(metadata_columns)):
+        metadata_value_map = {}
+        for j in range(len(data)):
+            name = metadata_columns[i].name.lower()
+            if data[j][i] == "":
+                continue
+            if data[j][i] == "not applicable":
+                metadata_columns[i].not_applicable = True
+                continue
+            if data[j][i].endswith("[*]"):
+                value = data[j][i].replace("[*]", "")
+                value_query = FavouriteMetadataOption.objects.filter(user_id=user_id, name=name, display_value=value, service_lab_group__isnull=True, lab_group__isnull=True)
+                if value_query.exists():
+                    value = value_query.first().value
+                value = convert_sdrf_to_metadata(name, value)
+            elif data[j][i].endswith("[**]"):
+                value = data[j][i].replace("[**]", "")
+                value_query = FavouriteMetadataOption.objects.filter(name=name, service_lab_group=instrument_job.service_lab_group, display_value=value)
+                if value_query.exists():
+                    value = value_query.first().value
+                value = convert_sdrf_to_metadata(name, value)
+            else:
+                value = convert_sdrf_to_metadata(name, data[j][i])
+            if value not in metadata_value_map:
+                metadata_value_map[value] = []
+            metadata_value_map[value].append(j)
+        # get value with the highest count
+        max_count = 0
+        max_value = None
+        for value in metadata_value_map:
+            if len(metadata_value_map[value]) > max_count:
+                max_count = len(metadata_value_map[value])
+                max_value = value
+        if max_value:
+            metadata_columns[i].value = max_value
+            metadata_columns[i].save()
+        # calculate modifiers from the rest of the values
+        modifiers = []
+        for value in metadata_value_map:
+            if value != max_value:
+                modifier = {"samples": [], "value": value}
+                # sort from lowest to highest. add samples index. for continuous samples, add range
+                samples = metadata_value_map[value]
+                samples.sort()
+                start = samples[0]
+                end = samples[0]
+                for i2 in range(1, len(samples)):
+                    if samples[i2] == end + 1:
+                        end = samples[i2]
+                    else:
+                        if start == end:
+                            modifier["samples"].append(str(start + 1))
+                        else:
+                            modifier["samples"].append(f"{start + 1}-{end + 1}")
+                        start = samples[i2]
+                        end = samples[i2]
+                if start == end:
+                    modifier["samples"].append(str(start + 1))
+                else:
+                    modifier["samples"].append(f"{start + 1}-{end + 1}")
+                if len(modifier["samples"]) == 1:
+                    modifier["samples"] = modifier["samples"][0]
+                else:
+                    modifier["samples"] = ",".join(modifier["samples"])
+                modifiers.append(modifier)
+        if modifiers:
+            metadata_columns[i].modifiers = json.dumps(modifiers)
+        metadata_columns[i].save()
+        if data_type == "user_metadata":
+            instrument_job.user_metadata.add(metadata_columns[i])
+        elif data_type == "staff_metadata":
+            instrument_job.staff_metadata.add(metadata_columns[i])
+        else:
+            if metadata_columns[i].type in user_metadata_field_map:
+                if metadata_columns[i].name in user_metadata_field_map[metadata_columns[i].type]:
+                    instrument_job.user_metadata.add(metadata_columns[i])
+                else:
+                    instrument_job.staff_metadata.add(metadata_columns[i])
+            else:
+                instrument_job.staff_metadata.add(metadata_columns[i])
+
+    channel_layer = get_channel_layer()
+    # notify user through channels that it has completed
+    async_to_sync(channel_layer.group_send)(
+        f"user_{user_id}_instrument_job",
+        {
+            "type": "instrument_job_message",
+            "message": {
+                "instance_id": instance_id,
+                "status": "completed",
+                "message": "Metadata imported successfully"
+            },
+        }
+    )
+
+
+
 
 
 

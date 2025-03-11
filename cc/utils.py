@@ -53,16 +53,16 @@ user_metadata = [
                 "name": "Alkylation reagent", "type": "Comment", "mandatory": False
             },
             {
-              "name": "Assay name", "type": "", "mandatory": True
+              "name": "Assay name", "type": "", "mandatory": True, "value": "run 1"
             },
             {
                 "name": "Technology type", "type": "", "mandatory": True, "value": "proteomic profiling by mass spectrometry"
             },
             {
-                "name": "Technical replicate", "type": "Comment", "mandatory": True
+                "name": "Technical replicate", "type": "Comment", "mandatory": True, "value": "1"
             },
             {
-                "name": "Biological replicate", "type": "Comment", "mandatory": True
+                "name": "Biological replicate", "type": "Comment", "mandatory": True, "value": "1"
             }
             ,
             {
@@ -75,6 +75,22 @@ user_metadata = [
             {
                 "name": "Cleavage agent details", "type": "Comment", "mandatory": True
             },
+
+    {
+        "name": "Sex", "type": "Characteristics", "mandatory": True
+    },
+    {
+        "name": "Developmental stage", "type": "Characteristics", "mandatory": True
+    },
+    {
+        "Age": "Age", "type": "Characteristics", "mandatory": True
+    },
+{
+      "name": "Mass", "type": "Characteristics","mandatory": True
+    },
+    {
+        "name": "Modification parameters", "type": "Comment", "mandatory": True
+    }
 
         ]
 
@@ -99,5 +115,8 @@ staff_metadata = [
             },
             {
                 "name": "MS2 analyzer type", "type": "Comment", "mandatory": True
-            }
+            },
+    {"name": "Dissociation method", "type": "Comment", "mandatory": True},
+    {"name": "Precursor mass tolerance", "type": "Comment", "mandatory": True},
+    {"name": "Fragment mass tolerance", "type": "Comment", "mandatory": True},
         ]

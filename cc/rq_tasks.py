@@ -1854,8 +1854,10 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
     """
     instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
     metadata = list(instrument_job.user_metadata.all()) + list(instrument_job.staff_metadata.all())
-    result = sort_metadata(metadata, instrument_job.sample_number)
-
+    main_metadata = [m for m in metadata if not m.hidden]
+    hidden_metadata = [m for m in metadata if m.hidden]
+    result_main = sort_metadata(main_metadata, instrument_job.sample_number)
+    result_hidden = sort_metadata(hidden_metadata, instrument_job.sample_number)
     # get favourites for each metadata column
     favourites = {}
     user_favourite = FavouriteMetadataOption.objects.filter(user_id=user_id, service_lab_group__isnull=True, lab_group__isnull=True)
@@ -1871,12 +1873,44 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
 
     # based on column name from result, contruct an excel file with the appropriate rows beside the header row where the cell with the same name in favourite can have preset selection options dropdown related to that column
     wb = Workbook()
-    ws = wb.active
-    ws.append(result[0])
-    for i in range(1, len(result)):
-        ws.append(result[i])
-    for i in range(len(result[0])):
-        name_splitted = result[0][i].split("[")
+    main_ws = wb.active
+    main_ws.title = "main"
+    hidden_ws = wb.create_sheet(title="hidden")
+
+    # Append headers and data to the main worksheet
+    main_ws.append(result_main[0])
+    for row in result_main[1:]:
+        main_ws.append(row)
+    for col in main_ws.columns:
+        max_length = 0
+        column = col[0].column_letter  # Get the column name
+        for cell in col:
+            try:
+                if len(str(cell.value)) > max_length:
+                    max_length = len(cell.value)
+            except:
+                pass
+        adjusted_width = (max_length + 2)
+        main_ws.column_dimensions[column].width = adjusted_width
+
+    # Append headers and data to the hidden worksheet
+    hidden_ws.append(result_hidden[0])
+    for row in result_hidden[1:]:
+        hidden_ws.append(row)
+    for col in hidden_ws.columns:
+        max_length = 0
+        column = col[0].column_letter  # Get the column name
+        for cell in col:
+            try:
+                if len(str(cell.value)) > max_length:
+                    max_length = len(cell.value)
+            except:
+                pass
+        adjusted_width = (max_length + 2)
+        hidden_ws.column_dimensions[column].width = adjusted_width
+
+    for i, header in enumerate(result_main[0]):
+        name_splitted = result_main[0][i].split("[")
         if len(name_splitted) > 1:
             name = name_splitted[1].replace("]", "")
         else:
@@ -1890,7 +1924,25 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
                 showDropDown=False
             )
             col_letter = get_column_letter(i + 1)
-            ws.add_data_validation(dv)
+            main_ws.add_data_validation(dv)
+            dv.add(f"{col_letter}2:{col_letter}{instrument_job.sample_number + 1}")
+
+    for i, header in enumerate(result_hidden[0]):
+        name_splitted = result_hidden[0][i].split("[")
+        if len(name_splitted) > 1:
+            name = name_splitted[1].replace("]", "")
+        else:
+            name = name_splitted[0]
+        if name == "organism part":
+            name = "tissue"
+        if name.lower() in favourites:
+            dv = DataValidation(
+                type="list",
+                formula1=f'"{",".join(favourites[name.lower()])}"',
+                showDropDown=False
+            )
+            col_letter = get_column_letter(i + 1)
+            hidden_ws.add_data_validation(dv)
             dv.add(f"{col_letter}2:{col_letter}{instrument_job.sample_number + 1}")
 
     # save the file

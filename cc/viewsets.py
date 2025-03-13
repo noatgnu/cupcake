@@ -35,7 +35,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
     ProtocolRating, Reagent, StepReagent, ProtocolReagent, ProtocolTag, StepTag, Tag, AnnotationFolder, Project, \
     Instrument, InstrumentUsage, InstrumentPermission, StorageObject, StoredReagent, ReagentAction, LabGroup, Species, \
     SubcellularLocation, HumanDisease, Tissue, MetadataColumn, MSUniqueVocabularies, Unimod, InstrumentJob, \
-    FavouriteMetadataOption, Preset
+    FavouriteMetadataOption, Preset, MetadataTableTemplate
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
@@ -47,7 +47,8 @@ from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, Anno
     InstrumentSerializer, InstrumentUsageSerializer, StorageObjectSerializer, StoredReagentSerializer, \
     ReagentActionSerializer, LabGroupSerializer, SpeciesSerializer, SubcellularLocationSerializer, \
     HumanDiseaseSerializer, TissueSerializer, MetadataColumnSerializer, MSUniqueVocabulariesSerializer, \
-    UnimodSerializer, InstrumentJobSerializer, FavouriteMetadataOptionSerializer, PresetSerializer
+    UnimodSerializer, InstrumentJobSerializer, FavouriteMetadataOptionSerializer, PresetSerializer, \
+    MetadataTableTemplateSerializer
 from cc.utils import user_metadata, staff_metadata
 
 
@@ -2089,8 +2090,25 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
             return Response(data, status=status.HTTP_200_OK)
         return Response(data, status=status.HTTP_200_OK)
 
-
-
+    @action(detail=True, methods=['post'])
+    def delay_usage(self, request, pk=None):
+        instrument = self.get_object()
+        if not self.request.user.is_staff:
+            i_permissions = InstrumentPermission.objects.filter(instrument=instrument, user=request.user)
+            if not i_permissions.exists():
+                return Response(status=status.HTTP_401_UNAUTHORIZED)
+            else:
+                if not i_permissions.first().can_manage:
+                    return Response(status=status.HTTP_401_UNAUTHORIZED)
+        delay_start_time = request.data['start_date']
+        # get usage that is active during or after the delay_start_time
+        usage = InstrumentUsage.objects.filter(instrument=instrument, time_started__gte=delay_start_time)
+        if usage.exists():
+            for u in usage:
+                u.time_started = u.time_started + timedelta(days=request.data['days'])
+                u.time_ended = u.time_ended + timedelta(days=request.data['days'])
+                u.save()
+        return Response(InstrumentSerializer(instrument, many=False).data, status=status.HTTP_200_OK)
 
 class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
     permission_classes = [InstrumentUsagePermission]
@@ -3123,7 +3141,8 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             return Response(status=status.HTTP_403_FORBIDDEN)
 
         using = []
-
+        old_sample_number = instrument_job.sample_number
+        new_sample_number = instrument_job.sample_number
         if 'job_name' in request.data:
             instrument_job.job_name = request.data['job_name']
             using.append('job_name')
@@ -3159,6 +3178,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             using.append('sample_type')
         if 'sample_number' in request.data:
             instrument_job.sample_number = request.data['sample_number']
+            new_sample_number = instrument_job.sample_number
             using.append('sample_number')
         if 'protocol' in request.data:
             protocol = ProtocolModel.objects.get(id=request.data['protocol'])
@@ -3183,10 +3203,25 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                 if 'id' in metadata:
                     if metadata['id']:
                         metadata_column = MetadataColumn.objects.get(id=metadata['id'])
-                        if metadata_column.value != metadata['value'] or metadata_column.modifiers != json.dumps(metadata['modifiers']):
-                            metadata_column.value = metadata['value']
-                            metadata_column.modifiers = json.dumps(metadata['modifiers'])
-                            metadata_column.save()
+                        if metadata_column.name == "Assay name":
+                            if old_sample_number and new_sample_number:
+                                if metadata_column.auto_generated and old_sample_number != new_sample_number:
+                                    # genereated modifiers for each sample index with the run number i.e run 1, run 2, run 3,...
+                                    modifiers = []
+                                    for i in range(1, new_sample_number + 1):
+                                        modifiers.append({'samples': str(i), 'value': f'run {i}'})
+                                    metadata_column.modifiers = json.dumps(modifiers)
+                                else:
+                                    metadata_column.modifiers = json.dumps(metadata['modifiers'])
+                                    metadata_column.value = metadata['value']
+                            else:
+                                metadata_column.modifiers = json.dumps(metadata['modifiers'])
+                                metadata_column.value = metadata['value']
+                        else:
+                            if metadata_column.value != metadata['value'] or metadata_column.modifiers != json.dumps(metadata['modifiers']):
+                                metadata_column.value = metadata['value']
+                                metadata_column.modifiers = json.dumps(metadata['modifiers'])
+                                metadata_column.save()
                         instrument_job.user_metadata.add(metadata_column)
                     else:
                         if 'modifiers' not in metadata:
@@ -3208,6 +3243,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                         modifiers=json.dumps(metadata['modifiers']),
                     )
                     instrument_job.user_metadata.add(metadata_column)
+
         instrument_job.save(update_fields=using)
         return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
 
@@ -3417,6 +3453,81 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
         job = export_excel_template.delay(request.user.id, request.data["instance_id"], instrument_job.id)
         return Response({"task_id": job.id}, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['post'])
+    def selected_template(self, request, pk=None):
+        instrument_job = self.get_object()
+        if not self.request.user.is_staff:
+            staff = instrument_job.staff.all()
+            if staff.count() == 0:
+                if instrument_job.service_lab_group:
+                    staff = instrument_job.service_lab_group.users.all()
+                    if self.request.user not in staff:
+                        return Response(status=status.HTTP_403_FORBIDDEN)
+            else:
+                if self.request.user not in staff:
+                    return Response(status=status.HTTP_403_FORBIDDEN)
+        template = request.data['template']
+        metadata_template = MetadataTableTemplate.objects.get(id=template)
+        for metadata in instrument_job.user_metadata.all():
+            metadata.delete()
+        for metadata in metadata_template.user_columns.all():
+            m = MetadataColumn(
+                name=metadata.name,
+                type=metadata.type,
+                value=metadata.value,
+                mandatory=metadata.mandatory,
+                column_position=metadata.column_position,
+                hidden=metadata.hidden,
+                auto_generated=metadata.auto_generated,
+                readonly=metadata.readonly,
+            )
+            if m.name == "Assay name" and m.auto_generated:
+                modifiers = []
+                for i in range(1, instrument_job.sample_number + 1):
+                    modifiers.append({'samples': str(i), 'value': f'run {i}'})
+                m.modifiers = json.dumps(modifiers)
+            m.save()
+            instrument_job.user_metadata.add(m)
+        for metadata in instrument_job.staff_metadata.all():
+            metadata.delete()
+        for metadata in metadata_template.staff_columns.all():
+            m = MetadataColumn(
+                name=metadata.name,
+                type=metadata.type,
+                value=metadata.value,
+                mandatory=metadata.mandatory,
+                column_position=metadata.column_position,
+                hidden=metadata.hidden,
+                auto_generated=metadata.auto_generated,
+                readonly=metadata.readonly,
+            )
+            m.save()
+            instrument_job.staff_metadata.add(m)
+        instrument_job.selected_template = metadata_template
+        instrument_job.save()
+        return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def remove_selected_template(self, request, pk=None):
+        instrument_job = self.get_object()
+        if not self.request.user.is_staff:
+            staff = instrument_job.staff.all()
+            if staff.count() == 0:
+                if instrument_job.service_lab_group:
+                    staff = instrument_job.service_lab_group.users.all()
+                    if self.request.user not in staff:
+                        return Response(status=status.HTTP_403_FORBIDDEN)
+            else:
+                if self.request.user not in staff:
+                    return Response(status=status.HTTP_403_FORBIDDEN)
+        for metadata in instrument_job.user_metadata.all():
+            metadata.delete()
+        for metadata in instrument_job.staff_metadata.all():
+            metadata.delete()
+        instrument_job.selected_template = None
+        instrument_job.save()
+        return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
+
 class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
     serializer_class = FavouriteMetadataOptionSerializer
     queryset = FavouriteMetadataOption.objects.all()
@@ -3535,3 +3646,234 @@ class PresetViewSet(ModelViewSet):
             return Response(status=status.HTTP_403_FORBIDDEN)
         preset.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class MetadataTableTemplateViewSets(FilterMixin, ModelViewSet):
+    queryset = MetadataTableTemplate.objects.all()
+    serializer_class = MetadataTableTemplateSerializer
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    parser_classes = (MultiPartParser, JSONParser)
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    ordering_fields = ['id', 'name', 'created_at']
+    search_fields = ['name']
+
+    def get_queryset(self):
+        user = self.request.user
+        query = Q()
+        mode = self.request.query_params.get('mode', 'user')
+
+        if mode == 'user':
+            query &= Q(user=user, lab_group__isnull=True, service_lab_group__isnull=True)
+        elif mode == 'service_lab_group':
+            lab_group_id = self.request.query_params.get('lab_group_id', None)
+            if lab_group_id:
+                lab_group = LabGroup.objects.get(id=lab_group_id, is_professional=True)
+                query &= Q(service_lab_group=lab_group)
+            else:
+                return Response(status=status.HTTP_400_BAD_REQUEST)
+        else:
+            if not user.is_staff:
+                return Response(status=status.HTTP_403_FORBIDDEN)
+        # add filter for only enabled templates that if not enabled will only be accessible by the user who created them
+        query &= (Q(enabled=True)|Q(user=user))
+        return self.queryset.filter(query)
+
+    def create(self, request, *args, **kwargs):
+        user = self.request.user
+        mode = request.data.get('mode', 'user')
+        name = request.data['name']
+        made_default = request.data.get('make_default', False)
+        user_columns = []
+        staff_columns = []
+        if made_default:
+            for column in user_metadata:
+                m = MetadataColumn(name=column['name'], type=column['type'])
+                if 'value' in column:
+                    m.value = column['value']
+                if 'auto_generated' in column:
+                    m.auto_generated = column['auto_generated']
+                if 'hidden' in column:
+                    m.hidden = column['hidden']
+                if 'readonly' in column:
+                    m.readonly = column['readonly']
+                m.save()
+                user_columns.append(m)
+            for column in staff_metadata:
+                m = MetadataColumn(name=column['name'], type=column['type'])
+                if 'value' in column:
+                    m.value = column['value']
+                if 'auto_generated' in column:
+                    m.auto_generated = column['auto_generated']
+                if 'hidden' in column:
+                    m.hidden = column['hidden']
+                if 'readonly' in column:
+                    m.readonly = column['readonly']
+                m.save()
+                staff_columns.append(m)
+        template = MetadataTableTemplate.objects.create(name=name, user=user)
+        template.user_columns.add(*user_columns)
+        template.staff_columns.add(*staff_columns)
+        if mode == 'service_lab_group':
+            lab_group_id = request.data.get('lab_group', None)
+            if lab_group_id:
+                lab_group = LabGroup.objects.get(id=lab_group_id, is_professional=True)
+                template.service_lab_group = lab_group
+                template.save()
+            else:
+                return Response(status=status.HTTP_400_BAD_REQUEST)
+        return Response(MetadataTableTemplateSerializer(template).data, status=status.HTTP_200_OK)
+
+    def update(self, request, *args, **kwargs):
+        template = self.get_object()
+        if template.user != request.user:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        if "name" in request.data:
+            template.name = request.data['name']
+        if "user_columns" in request.data:
+            columns = request.data['user_columns']
+            ids_from_submission = set()
+            for c in columns:
+                if 'id' in c:
+                    if c['id']:
+                        ids_from_submission.add(c['id'])
+                        column = MetadataColumn.objects.get(id=c['id'])
+                        column.name = c['name']
+                        column.type = c['type']
+                        column.auto_generated = c['auto_generated']
+                        column.hidden = c['hidden']
+                        column.readonly = c['readonly']
+                        column.value = c['value']
+                        if column.modifiers:
+                            column.modifiers = json.dumps(c['modifiers'])
+                        else:
+                            column.modifiers = json.dumps([])
+                        column.save()
+
+                    else:
+                        column = MetadataColumn(
+                            name=c['name'],
+                            type=c['type'],
+                            auto_generated=c['auto_generated'],
+                            hidden=c['hidden'],
+                            readonly=c['readonly'],
+                            value=c['value']
+                        )
+                        if c['modifiers']:
+                            column.modifiers = json.dumps(c['modifiers'])
+                        else:
+                            column.modifiers = json.dumps([])
+                        column.save()
+                    template.user_columns.add(column)
+                else:
+                    column = MetadataColumn(
+                        name=c['name'],
+                        type=c['type'],
+                        auto_generated=c['auto_generated'],
+                        hidden=c['hidden'],
+                        readonly=c['readonly'],
+                        value=c['value']
+                    )
+                    if c['modifiers']:
+                        column.modifiers = json.dumps(c['modifiers'])
+                    else:
+                        column.modifiers = json.dumps([])
+                    column.save()
+                    template.user_columns.add(column)
+            for column in template.user_columns.all():
+                if column.id not in ids_from_submission:
+                    template.user_columns.remove(column)
+                    column.delete()
+        if 'staff_columns' in request.data:
+            columns = request.data['staff_columns']
+            ids_from_submission = set()
+            for c in columns:
+                if 'id' in c:
+                    if c['id']:
+                        ids_from_submission.add(c['id'])
+                        column = MetadataColumn.objects.get(id=c['id'])
+                        column.name = c['name']
+                        column.type = c['type']
+                        column.auto_generated = c['auto_generated']
+                        column.hidden = c['hidden']
+                        column.readonly = c['readonly']
+                        column.value = c['value']
+                        if column.modifiers:
+                            column.modifiers = json.dumps(c['modifiers'])
+                        else:
+                            column.modifiers = json.dumps([])
+                        column.save()
+                    else:
+                        column = MetadataColumn(
+                            name=c['name'],
+                            type=c['type'],
+                            auto_generated=c['auto_generated'],
+                            hidden=c['hidden'],
+                            readonly=c['readonly'],
+                            value=c['value']
+                        )
+                        if c['modifiers']:
+                            column.modifiers = json.dumps(c['modifiers'])
+                        else:
+                            column.modifiers = json.dumps([])
+                        column.save()
+                    template.staff_columns.add(column)
+                else:
+                    column = MetadataColumn(
+                        name=c['name'],
+                        type=c['type'],
+                        auto_generated=c['auto_generated'],
+                        hidden=c['hidden'],
+                        readonly=c['readonly'],
+                        value=c['value']
+                    )
+                    if c['modifiers']:
+                        column.modifiers = json.dumps(c['modifiers'])
+                    else:
+                        column.modifiers = json.dumps([])
+                    column.save()
+                    template.staff_columns.add(column)
+            for column in template.staff_columns.all():
+                if column.id not in ids_from_submission:
+                    template.staff_columns.remove(column)
+                    column.delete()
+
+        if 'enabled' in request.data:
+            template.enabled = request.data['enabled']
+        template.save()
+        return Response(MetadataTableTemplateSerializer(template).data, status=status.HTTP_200_OK)
+
+    def destroy(self, request, *args, **kwargs):
+        template = self.get_object()
+        if template.user != request.user:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        template.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['post'])
+    def clone(self, request, pk=None):
+        template = self.get_object()
+        mode = request.data.get('mode', 'user')
+        if mode == 'service_lab_group':
+            lab_group_id = request.data.get('lab_group', None)
+            if lab_group_id:
+                lab_group = LabGroup.objects.get(id=lab_group_id, is_professional=True)
+                new_template = MetadataTableTemplate.objects.create(name=template.name, service_lab_group=lab_group, user=request.user)
+            else:
+                return Response(status=status.HTTP_400_BAD_REQUEST)
+        elif mode == 'user':
+            new_template = MetadataTableTemplate.objects.create(name=template.name, user=request.user)
+        else:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+        for column in template.columns.all():
+            new_column = MetadataColumn.objects.create(
+                name=column.name,
+                type=column.type,
+                auto_generated=column.auto_generated,
+                hidden=column.hidden,
+                readonly=column.readonly,
+                modifiers=column.modifiers
+            )
+            new_template.columns.add(new_column)
+        return Response(MetadataTableTemplateSerializer(new_template).data, status=status.HTTP_200_OK)
+

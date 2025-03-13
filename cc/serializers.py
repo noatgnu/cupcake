@@ -5,7 +5,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, StepVariation, Se
     ProtocolRating, Reagent, ProtocolReagent, StepReagent, StepTag, ProtocolTag, Tag, AnnotationFolder, Project, \
     Instrument, InstrumentUsage, StorageObject, StoredReagent, ReagentAction, LabGroup, MSUniqueVocabularies, \
     HumanDisease, Tissue, SubcellularLocation, MetadataColumn, Species, Unimod, InstrumentJob, FavouriteMetadataOption, \
-    Preset
+    Preset, MetadataTableTemplate
 
 
 class ProtocolModelSerializer(ModelSerializer):
@@ -341,7 +341,14 @@ class MetadataColumnSerializer(ModelSerializer):
 
     class Meta:
         model = MetadataColumn
-        fields = ["id", "name", "type", "column_position", "value", "stored_reagent", "created_at", "updated_at", "not_applicable", "mandatory", "modifiers"]
+        fields = [
+            "id",
+            "name",
+            "type",
+            "column_position",
+            "value",
+            "stored_reagent", "created_at", "updated_at", "not_applicable", "mandatory", "modifiers", "readonly", "hidden", "auto_generated"
+        ]
 
 class SubcellularLocationSerializer(ModelSerializer):
     class Meta:
@@ -386,6 +393,12 @@ class InstrumentJobSerializer(ModelSerializer):
     user_metadata = SerializerMethodField()
     staff_metadata = SerializerMethodField()
     service_lab_group = SerializerMethodField()
+    selected_template = SerializerMethodField()
+
+    def get_selected_template(self, obj):
+        if obj.selected_template:
+            return MetadataTableTemplateSerializer(obj.selected_template).data
+        return None
 
     def get_service_lab_group(self, obj):
         if obj.service_lab_group:
@@ -475,7 +488,8 @@ class InstrumentJobSerializer(ModelSerializer):
             'status',
             'funder',
             'cost_center',
-            'service_lab_group'
+            'service_lab_group',
+            'selected_template'
         ]
 
 class FavouriteMetadataOptionSerializer(ModelSerializer):
@@ -487,3 +501,49 @@ class PresetSerializer(ModelSerializer):
     class Meta:
         model = Preset
         fields = ['id', 'name', 'user', 'created_at', 'updated_at']
+
+class MetadataTableTemplateSerializer(ModelSerializer):
+    user_columns = SerializerMethodField()
+    staff_columns = SerializerMethodField()
+    hidden_user_columns = SerializerMethodField()
+    hidden_staff_columns = SerializerMethodField()
+
+    def get_user_columns(self, obj):
+        data = obj.user_columns.all()
+        if data.exists():
+            return MetadataColumnSerializer(data, many=True).data
+        return []
+
+    def get_staff_columns(self, obj):
+        data = obj.staff_columns.all()
+        if data.exists():
+            return MetadataColumnSerializer(data, many=True).data
+        return []
+
+    def get_hidden_user_columns(self, obj):
+        data = obj.user_columns.filter(hidden=True)
+        if data.exists():
+            return data.count()
+        return 0
+
+    def get_hidden_staff_columns(self, obj):
+        data = obj.staff_columns.filter(hidden=True)
+        if data.exists():
+            return data.count()
+        return 0
+
+    class Meta:
+        model = MetadataTableTemplate
+        fields = [
+            'id',
+            'name',
+            'user',
+            'created_at',
+            'updated_at',
+            'user_columns',
+            'hidden_user_columns',
+            'staff_columns',
+            'hidden_staff_columns',
+            'service_lab_group',
+            'lab_group'
+        ]

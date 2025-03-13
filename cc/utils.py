@@ -52,11 +52,23 @@ user_metadata = [
             {
                 "name": "Alkylation reagent", "type": "Comment", "mandatory": False
             },
+{
+        "name": "Sex", "type": "Characteristics", "mandatory": True
+    },
+    {
+        "name": "Developmental stage", "type": "Characteristics", "mandatory": True
+    },
+    {
+        "name": "Age", "type": "Characteristics", "mandatory": True
+    },
+{
+      "name": "Mass", "type": "Characteristics","mandatory": True
+    },
             {
-              "name": "Assay name", "type": "", "mandatory": True, "value": "run 1"
+              "name": "Assay name", "type": "", "mandatory": True, "value": "run 1", "hidden": True, "auto_generated": True
             },
             {
-                "name": "Technology type", "type": "", "mandatory": True, "value": "proteomic profiling by mass spectrometry"
+                "name": "Technology type", "type": "", "mandatory": True, "value": "proteomic profiling by mass spectrometry", "hidden": True
             },
             {
                 "name": "Technical replicate", "type": "Comment", "mandatory": True, "value": "1"
@@ -76,18 +88,7 @@ user_metadata = [
                 "name": "Cleavage agent details", "type": "Comment", "mandatory": True
             },
 
-    {
-        "name": "Sex", "type": "Characteristics", "mandatory": True
-    },
-    {
-        "name": "Developmental stage", "type": "Characteristics", "mandatory": True
-    },
-    {
-        "Age": "Age", "type": "Characteristics", "mandatory": True
-    },
-{
-      "name": "Mass", "type": "Characteristics","mandatory": True
-    },
+
     {
         "name": "Modification parameters", "type": "Comment", "mandatory": True
     }
@@ -113,9 +114,13 @@ staff_metadata = [
             {
                 "name": "MS1 scan range", "type": "Comment", "mandatory": True
             },
+{
+        "name": "Instrument", "type": "Comment", "mandatory": True, "hidden": True
+    },
             {
-                "name": "MS2 analyzer type", "type": "Comment", "mandatory": True
+                "name": "MS2 analyzer type", "type": "Comment", "mandatory": True, "hidden": True
             },
+
     {"name": "Dissociation method", "type": "Comment", "mandatory": True},
     {"name": "Precursor mass tolerance", "type": "Comment", "mandatory": True},
     {"name": "Fragment mass tolerance", "type": "Comment", "mandatory": True},

@@ -1082,6 +1082,9 @@ class MetadataColumn(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     modifiers = models.TextField(blank=True, null=True)
+    hidden = models.BooleanField(default=False)
+    auto_generated = models.BooleanField(default=False)
+    readonly = models.BooleanField(default=False)
 
     class Meta:
         ordering = ['id']
@@ -1225,13 +1228,14 @@ class InstrumentJob(models.Model):
     sample_type = models.CharField(max_length=20, choices=sample_type_choices, default='other')
     funder = models.TextField(blank=True, null=True)
     cost_center = models.TextField(blank=True, null=True)
-    injection_volume = models.FloatField(blank=True, null=True, default='uL')
-    injection_unit = models.TextField(blank=True, null=True)
+    injection_volume = models.FloatField(blank=True, null=True)
+    injection_unit = models.TextField(blank=True, null=True, default='uL')
     search_engine = models.TextField(blank=True, null=True)
     search_engine_version = models.TextField(blank=True, null=True)
     search_details = models.TextField(blank=True, null=True)
     location = models.TextField(blank=True, null=True)
     stored_reagent = models.ForeignKey(StoredReagent, on_delete=models.SET_NULL, related_name='instrument_jobs', blank=True, null=True)
+    selected_template = models.ForeignKey("MetadataTableTemplate", on_delete=models.SET_NULL, related_name='instrument_jobs', blank=True, null=True)
 
     class Meta:
         app_label = 'cc'
@@ -1259,6 +1263,21 @@ class FavouriteMetadataOption(models.Model):
     service_lab_group = models.ForeignKey(LabGroup, on_delete=models.SET_NULL, related_name='favourite_service_lab_group_metadata_options', blank=True, null=True)
     lab_group = models.ForeignKey(LabGroup, on_delete=models.SET_NULL, related_name='favourite_lab_group_metadata_options', blank=True, null=True)
     preset = models.ForeignKey(Preset, on_delete=models.SET_NULL, related_name='favourite_metadata_options', blank=True, null=True)
+
+    class Meta:
+        app_label = 'cc'
+        ordering = ['id']
+
+class MetadataTableTemplate(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name='metadata_table_templates', blank=True, null=True)
+    name = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    user_columns = models.ManyToManyField(MetadataColumn, related_name='metadata_table_templates', blank=True)
+    staff_columns = models.ManyToManyField(MetadataColumn, related_name='assigned_metadata_table_templates', blank=True)
+    service_lab_group = models.ForeignKey(LabGroup, on_delete=models.SET_NULL, related_name='service_lab_group_metadata_table_templates', blank=True, null=True)
+    lab_group = models.ForeignKey(LabGroup, on_delete=models.SET_NULL, related_name='lab_group_metadata_table_templates', blank=True, null=True)
+    enabled = models.BooleanField(default=False)
 
     class Meta:
         app_label = 'cc'

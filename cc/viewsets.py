@@ -2198,6 +2198,22 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         data = self.get_serializer(usage).data
         return Response(data, status=status.HTTP_201_CREATED)
 
+    @action(detail=True, methods=['get'])
+    def delay_usage(self, request, pk=None):
+        instance = self.get_object()
+        if not self.request.user.is_staff:
+            i_permissions = InstrumentPermission.objects.filter(instrument=instance.instrument, user=request.user)
+            if not i_permissions.exists():
+                return Response(status=status.HTTP_401_UNAUTHORIZED)
+            else:
+                if not i_permissions.first().can_manage:
+                    return Response(status=status.HTTP_401_UNAUTHORIZED)
+        days = request.data['days']
+        instance.time_started = instance.time_started + timedelta(days=days)
+        instance.time_ended = instance.time_ended + timedelta(days=days)
+        instance.save()
+        return Response(InstrumentUsageSerializer(instance, many=False).data, status=status.HTTP_200_OK)
+
 
 class StorageObjectViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticated]
@@ -3311,6 +3327,9 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
         if 'injection_unit' in request.data:
             instrument_job.injection_unit = request.data['injection_unit']
             using.append('injection_unit')
+        if 'method' in request.data:
+            instrument_job.method = request.data['method']
+            using.append('method')
         instrument_job.save(update_fields=using)
         return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
 
@@ -3337,6 +3356,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
         if instrument_job.status != 'draft':
             return Response(status=status.HTTP_400_BAD_REQUEST)
         instrument_job.status = 'submitted'
+        instrument_job.submitted_at = timezone.now()
         instrument_job.save()
         if settings.NOTIFICATION_EMAIL_FROM:
             staff = instrument_job.staff.all()
@@ -3345,6 +3365,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             recipient_list = [staff.email for staff in staff if staff.email]
             if recipient_list:
                 send_mail(subject, message, settings.NOTIFICATION_EMAIL_FROM, recipient_list)
+
 
         return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
 
@@ -3380,6 +3401,8 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                     return Response(status=status.HTTP_403_FORBIDDEN)
         status = request.data['status']
         instrument_job.status = status
+        if status == 'completed':
+            instrument_job.completed_at = timezone.now()
         instrument_job.save()
         return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
 

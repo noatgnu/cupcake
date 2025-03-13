@@ -1236,6 +1236,9 @@ class InstrumentJob(models.Model):
     location = models.TextField(blank=True, null=True)
     stored_reagent = models.ForeignKey(StoredReagent, on_delete=models.SET_NULL, related_name='instrument_jobs', blank=True, null=True)
     selected_template = models.ForeignKey("MetadataTableTemplate", on_delete=models.SET_NULL, related_name='instrument_jobs', blank=True, null=True)
+    submitted_at = models.DateTimeField(blank=True, null=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+    method = models.TextField(blank=True, null=True)
 
     class Meta:
         app_label = 'cc'

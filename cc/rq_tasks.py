@@ -1978,31 +1978,44 @@ def import_excel(file: str, user_id: int, instrument_job_id: int, instance_id: s
     :return:
     """
     wb = load_workbook(file)
-    ws = wb.active
-    headers = []
-    for row in ws.iter_rows(min_row=1, max_row=1):
-        for cell in row:
-            headers.append(cell.value)
-    data = []
-    for row in ws.iter_rows(min_row=2):
-        data.append([cell.value for cell in row])
+    main_ws = wb["main"]
+    hidden_ws = wb["hidden"]
+    main_headers = [cell.value for cell in main_ws[1]]
+    hidden_headers = [cell.value for cell in hidden_ws[1]]
+    main_data = [list(row) for row in main_ws.iter_rows(min_row=2, values_only=True)]
+    hidden_data = [list(row) for row in hidden_ws.iter_rows(min_row=2, values_only=True)]
+
+
     instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
     metadata_columns = []
-    user_metadata_field_map = {}
-    for i in user_metadata:
-        if i['type'] not in user_metadata_field_map:
-            user_metadata_field_map[i['type']] = {}
-        user_metadata_field_map[i['type']][i['name']] = i
-    staff_metadata_field_map = {}
-    for i in staff_metadata:
-        if i['type'] not in staff_metadata_field_map:
-            staff_metadata_field_map[i['type']] = {}
-        staff_metadata_field_map[i['type']][i['name']] = i
 
-    for i in range(len(headers)):
+    user_metadata_field_map = {}
+    staff_metadata_field_map = {}
+    if instrument_job.selected_template:
+        user_columns = list(instrument_job.user_metadata.all())
+        staff_columns = list(instrument_job.staff_metadata.all())
+        for i in user_columns:
+            if i.type not in user_metadata_field_map:
+                user_metadata_field_map[i.type] = {}
+            user_metadata_field_map[i.type][i.name] = {"id": i.id, "type": i.type, "name": i.name, "hidden": i.hidden, "value": i.value, "modifiers": i.modifiers}
+
+        for i in staff_columns:
+            if i.type not in staff_metadata_field_map:
+                staff_metadata_field_map[i.type] = {}
+            staff_metadata_field_map[i.type][i.name] = {"id": i.id, "type": i.type, "name": i.name, "hidden": i.hidden, "value": i.value, "modifiers": i.modifiers}
+    else:
+        for i in user_metadata:
+            if i['type'] not in user_metadata_field_map:
+                user_metadata_field_map[i['type']] = {}
+            user_metadata_field_map[i['type']][i['name']] = i
+        for i in staff_metadata:
+            if i['type'] not in staff_metadata_field_map:
+                staff_metadata_field_map[i['type']] = {}
+            staff_metadata_field_map[i['type']][i['name']] = i
+
+    for header in main_headers:
         metadata_column = MetadataColumn()
-        header = headers[i].lower()
-        #extract type from pattern <type>[<name>]
+        header = header.lower()
         if "[" in header:
             type = header.split("[")[0]
             name = header.split("[")[1].replace("]", "")
@@ -2013,7 +2026,28 @@ def import_excel(file: str, user_id: int, instrument_job_id: int, instance_id: s
             name = "tissue"
         metadata_column.name = name.capitalize()
         metadata_column.type = type.capitalize()
+        metadata_column.hidden = False
         metadata_columns.append(metadata_column)
+
+    for header in hidden_headers:
+        metadata_column = MetadataColumn()
+        header = header.lower()
+        if "[" in header:
+            type = header.split("[")[0]
+            name = header.split("[")[1].replace("]", "")
+        else:
+            type = ""
+            name = header
+        if name == "organism part":
+            name = "tissue"
+        metadata_column.name = name.capitalize()
+        metadata_column.type = type.capitalize()
+        metadata_column.hidden = True
+        metadata_columns.append(metadata_column)
+
+    headers = main_headers + hidden_headers
+    data = [main_row + hidden_row for main_row, hidden_row in zip(main_data, hidden_data)]
+
     if len(data) != instrument_job.sample_number:
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(
@@ -2130,13 +2164,13 @@ def import_excel(file: str, user_id: int, instrument_job_id: int, instance_id: s
         elif data_type == "staff_metadata":
             instrument_job.staff_metadata.add(metadata_columns[i])
         else:
-            if metadata_columns[i].type in user_metadata_field_map:
-                if metadata_columns[i].name in user_metadata_field_map[metadata_columns[i].type]:
-                    instrument_job.user_metadata.add(metadata_columns[i])
-                else:
+            if metadata_columns[i].type in staff_metadata_field_map:
+                if metadata_columns[i].name in staff_metadata_field_map[metadata_columns[i].type]:
                     instrument_job.staff_metadata.add(metadata_columns[i])
+                else:
+                    instrument_job.user_metadata.add(metadata_columns[i])
             else:
-                instrument_job.staff_metadata.add(metadata_columns[i])
+                instrument_job.user_metadata.add(metadata_columns[i])
 
     channel_layer = get_channel_layer()
     # notify user through channels that it has completed

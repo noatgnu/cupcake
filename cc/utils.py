@@ -62,7 +62,7 @@ user_metadata = [
         "name": "Age", "type": "Characteristics", "mandatory": True
     },
 {
-      "name": "Mass", "type": "Characteristics","mandatory": True
+      "name": "Mass", "type": "Characteristics","mandatory": True, "value": "0 ng"
     },
             {
               "name": "Assay name", "type": "", "mandatory": True, "value": "run 1", "hidden": True, "auto_generated": True

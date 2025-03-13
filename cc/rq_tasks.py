@@ -1909,6 +1909,8 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
         adjusted_width = (max_length + 2)
         hidden_ws.column_dimensions[column].width = adjusted_width
 
+
+
     for i, header in enumerate(result_main[0]):
         name_splitted = result_main[0][i].split("[")
         if len(name_splitted) > 1:

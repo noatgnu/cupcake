@@ -15,6 +15,7 @@ class ProtocolModelSerializer(ModelSerializer):
     duration_rating = SerializerMethodField()
     reagents = SerializerMethodField()
     tags = SerializerMethodField()
+    metadata_columns = SerializerMethodField()
 
     def get_steps(self, obj):
         return ProtocolStepSerializer(obj.get_step_in_order(), many=True).data
@@ -42,9 +43,32 @@ class ProtocolModelSerializer(ModelSerializer):
     def get_tags(self, obj):
         return ProtocolTagSerializer(obj.tags.all(), many=True).data
 
+    def get_metadata_columns(self, obj):
+        metadata_columns = obj.metadata_columns.all()
+        if metadata_columns.exists():
+            return MetadataColumnSerializer(metadata_columns, many=True).data
+        return []
+
     class Meta:
         model = ProtocolModel
-        fields = ['id', 'protocol_id', 'protocol_created_on', 'protocol_doi', 'protocol_title', 'protocol_description', 'protocol_url', 'protocol_version_uri', 'steps', 'sections', 'enabled', 'complexity_rating', 'duration_rating', 'reagents', 'tags']
+        fields = [
+            'id',
+            'protocol_id',
+            'protocol_created_on',
+            'protocol_doi',
+            'protocol_title',
+            'protocol_description',
+            'protocol_url',
+            'protocol_version_uri',
+            'steps',
+            'sections',
+            'enabled',
+            'complexity_rating',
+            'duration_rating',
+            'reagents',
+            'tags',
+            'metadata_columns'
+        ]
 
 class ProtocolStepSerializer(ModelSerializer):
     annotations = SerializerMethodField()

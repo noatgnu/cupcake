@@ -365,6 +365,20 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
         protocol.tags.remove(tag)
         return Response(status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['post'])
+    def add_metadata_columns(self, request, pk=None):
+        protocol = self.get_object()
+        metadata_columns = request.data['metadata_columns']
+        for metadata_column in metadata_columns:
+            metadata_column = MetadataColumn.objects.create(
+                protocol=protocol,
+                name=metadata_column['name'],
+                value=metadata_column['value'],
+                type=metadata_column['type']
+            )
+
+        return Response(ProtocolModelSerializer(protocol, many=False).data, status=status.HTTP_200_OK)
+
 class StepViewSet(ModelViewSet, FilterMixin):
     permission_classes = [OwnerOrReadOnly]
     queryset = ProtocolStep.objects.all()
@@ -2086,7 +2100,6 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
                 "can_manage": permission.can_manage,
                 "can_book": permission.can_book
             }
-            print(data)
             return Response(data, status=status.HTTP_200_OK)
         return Response(data, status=status.HTTP_200_OK)
 
@@ -2124,6 +2137,9 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         time_started = self.request.query_params.get('time_started', None)
         time_ended = self.request.query_params.get('time_ended', None)
         instrument = self.request.query_params.get('instrument', None)
+        users = self.request.query_params.get('users', None)
+        if users:
+            users = users.split(',')
 
         # filter for any usage where time_started or time_ended of the usage falls within the range of the query
         if not time_started:
@@ -2131,13 +2147,26 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
 
         if not time_ended:
             time_ended = datetime.now() + timedelta(days=1)
-
+        query = Q()
         query_time_started = Q(time_started__range=[time_started, time_ended])
         query_time_ended = Q(time_ended__range=[time_started, time_ended])
-
+        if users:
+            query &= Q(user__username__in=users)
         if instrument:
-            return self.queryset.filter((query_time_started | query_time_ended), instrument__id=instrument)
-        return self.queryset.filter((query_time_started | query_time_ended))
+            query &= Q(instrument__id=instrument)
+
+        # filter for only instruments that the user has permission to view
+        if not self.request.user.is_staff:
+            can_view = InstrumentPermission.objects.filter(instrument=instrument, user=self.request.user, can_view=True)
+            if not can_view.exists():
+                return InstrumentUsage.objects.none()
+            instruments_ids = [i.instrument.id for i in can_view]
+            query &= Q(instrument__id__in=instruments_ids)
+
+        if self.request.user.is_staff:
+            return self.queryset.filter((query_time_started | query_time_ended)&query)
+
+        return self.queryset.filter((query_time_started | query_time_ended)&query)
 
     def get_object(self):
         obj = super().get_object()
@@ -3196,14 +3225,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             instrument_job.sample_number = request.data['sample_number']
             new_sample_number = instrument_job.sample_number
             using.append('sample_number')
-        if 'protocol' in request.data:
-            protocol = ProtocolModel.objects.get(id=request.data['protocol'])
 
-            if not instrument_job.protocol:
-                instrument_job.protocol = protocol
-            elif instrument_job.protocol != protocol:
-                instrument_job.protocol = protocol
-            using.append('protocol')
         if 'stored_reagent' in request.data:
             stored_reagent = StoredReagent.objects.get(id=request.data['stored_reagent'])
             instrument_job.stored_reagent = stored_reagent
@@ -3309,6 +3331,14 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                         modifiers=json.dumps(metadata['modifiers']),
                     )
                     instrument_job.staff_metadata.add(metadata_column)
+        if 'protocol' in request.data:
+            protocol = ProtocolModel.objects.get(id=request.data['protocol'])
+
+            if not instrument_job.protocol:
+                instrument_job.protocol = protocol
+            elif instrument_job.protocol != protocol:
+                instrument_job.protocol = protocol
+            using.append('protocol')
         if 'search_engine' in request.data:
             instrument_job.search_engine = request.data['search_engine']
             using.append('search_engine')
@@ -3327,9 +3357,6 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
         if 'injection_unit' in request.data:
             instrument_job.injection_unit = request.data['injection_unit']
             using.append('injection_unit')
-        if 'method' in request.data:
-            instrument_job.method = request.data['method']
-            using.append('method')
         instrument_job.save(update_fields=using)
         return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
 
@@ -3377,9 +3404,13 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             paginator.default_limit = 10
             search_query = request.query_params.get('search', None)
             if field_name == 'cost_center' and search_query:
-                queryset = InstrumentJob.objects.filter(cost_center__startswith=search_query).values_list('cost_center', flat=True).distinct()
+                queryset = InstrumentJob.objects.filter(
+                    Q(cost_center__icontains=search_query)
+                ).values_list('cost_center', flat=True).distinct().order_by('cost_center')
             elif field_name == 'funder' and search_query:
-                queryset = InstrumentJob.objects.filter(funder__startswith=search_query).values_list('funder', flat=True).distinct()
+                queryset = InstrumentJob.objects.filter(
+                    Q(funder__icontains=search_query)
+                ).values_list('funder', flat=True).distinct().order_by('funder')
             page = paginator.paginate_queryset(queryset, request)
             return paginator.get_paginated_response(page)
         else:
@@ -3551,6 +3582,65 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
         instrument_job.save()
         return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['post'])
+    def copy_metadata_from_protocol(self, request, pk=None):
+        instrument_job = self.get_object()
+        if not self.request.user.is_staff:
+            staff = instrument_job.staff.all()
+            if staff.count() == 0:
+                if instrument_job.service_lab_group:
+                    staff = instrument_job.service_lab_group.users.all()
+                    if self.request.user not in staff:
+                        return Response(status=status.HTTP_403_FORBIDDEN)
+            else:
+                if self.request.user not in staff:
+                    return Response(status=status.HTTP_403_FORBIDDEN)
+        protocol = instrument_job.protocol
+        metadata_ids = request.data['metadata_ids']
+        metadata_columns = list(protocol.metadata_columns.filter(id__in=metadata_ids))
+        # step through job user_metadata to see if there is one with the same type and name. If there is, update the value with one from the protocol then pop the metadata from the list
+        used_metadata = {}
+        for metadata in instrument_job.user_metadata.all():
+            for protocol_metadata in metadata_columns:
+                if metadata not in used_metadata:
+                    if metadata.name == protocol_metadata.name and metadata.type == protocol_metadata.type:
+                        metadata.value = protocol_metadata.value
+                        metadata.save()
+                        used_metadata[metadata.id] = metadata
+        # remove the used metadata from the python array list not the database
+        new_columns = []
+        for metadata in metadata_columns:
+            if metadata.id not in used_metadata:
+                new_columns.append(metadata)
+
+        if new_columns:
+            # step through job staff_metadata to see if there is one with the same type and name. If there is, update the value with one from the protocol then pop the metadata from the list
+            used_metadata = {}
+            for metadata in instrument_job.staff_metadata.all():
+                for protocol_metadata in new_columns:
+                    if metadata not in used_metadata:
+                        if metadata.name == protocol_metadata.name and metadata.type == protocol_metadata.type:
+                            metadata.value = protocol_metadata.value
+                            metadata.save()
+                            used_metadata[metadata.id] = metadata
+
+            # remove the used metadata from the python array list not the database
+            for metadata in new_columns:
+                if metadata.id not in used_metadata:
+                    metadata_column = MetadataColumn.objects.create(
+                        name=metadata.name,
+                        type=metadata.type,
+                        value=metadata.value,
+                        mandatory=metadata.mandatory,
+                        column_position=metadata.column_position,
+                        hidden=metadata.hidden,
+                        auto_generated=metadata.auto_generated,
+                        readonly=metadata.readonly,
+                    )
+                    instrument_job.staff_metadata.add(metadata_column)
+
+        return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
+
 class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
     serializer_class = FavouriteMetadataOptionSerializer
     queryset = FavouriteMetadataOption.objects.all()
@@ -3616,7 +3706,6 @@ class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         option = FavouriteMetadataOption.objects.get(id=kwargs['pk'])
-        print(option)
         if option.service_lab_group:
             if not option.service_lab_group.users.filter(id=request.user.id).exists():
                 return Response(status=status.HTTP_403_FORBIDDEN)

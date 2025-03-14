@@ -1078,6 +1078,7 @@ class MetadataColumn(models.Model):
     stored_reagent = models.ForeignKey(StoredReagent, on_delete=models.CASCADE, related_name="metadata_columns", blank=True, null=True)
     instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name="metadata_columns", blank=True, null=True)
     annotation = models.ForeignKey(Annotation, on_delete=models.CASCADE, related_name="metadata_columns", blank=True, null=True)
+    protocol = models.ForeignKey(ProtocolModel, on_delete=models.CASCADE, related_name="metadata_columns", blank=True, null=True)
     mandatory = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

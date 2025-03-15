@@ -18,6 +18,7 @@ from django.core.files import File
 from django.core.management import call_command
 from django.core.signing import TimestampSigner
 from django.db.models import Q, QuerySet
+from django.utils import timezone
 from django_rq import job
 from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls
@@ -31,7 +32,8 @@ from sdrf_pipelines.sdrf.sdrf import SdrfDataFrame
 
 from cc.models import Annotation, ProtocolModel, ProtocolStep, StepVariation, ProtocolSection, Session, \
     AnnotationFolder, Reagent, ProtocolReagent, StepReagent, ProtocolTag, StepTag, Tag, Project, MetadataColumn, \
-    InstrumentJob, SubcellularLocation, Species, MSUniqueVocabularies, Unimod, FavouriteMetadataOption
+    InstrumentJob, SubcellularLocation, Species, MSUniqueVocabularies, Unimod, FavouriteMetadataOption, InstrumentUsage, \
+    LabGroup
 from django.conf import settings
 import numpy as np
 import subprocess
@@ -2186,8 +2188,145 @@ def import_excel(file: str, user_id: int, instrument_job_id: int, instance_id: s
         }
     )
 
+@job('export', timeout='3h')
+def export_instrument_usage(instrument_ids: list[int], lab_group_ids: list[int], user_ids: list[int], mode: str, instance_id: str, time_started: str = None, time_ended: str = None, calculate_duration_with_cutoff: bool = False, user_id: int = 0):
+    instrument_usages = InstrumentUsage.objects.filter(instrument__id__in=instrument_ids)
+    channel_layer = get_channel_layer()
+    if mode == 'service_lab_group':
+        lab_group = LabGroup.objects.filter(lab_group__id__in=lab_group_ids, is_professional=True)
+        if lab_group.exists():
+            users = User.objects.filter(lab_group__in=lab_group)
+            instrument_usages = instrument_usages.filter(user__in=users)
+        else:
+            async_to_sync(channel_layer.group_send)(
+                f"user_{user_id}_instrument_job",
+                {
+                    "type": "download_message",
+                    "message": {
+                        "instance_id": instance_id,
+                        "status": "error",
+                        "message": "Lab group not found"
+                    },
+                }
+            )
+            return
+    elif mode == 'lab_group':
+        lab_group = LabGroup.objects.filter(lab_group__id__in=lab_group_ids, is_professional=False)
+        if lab_group.exists():
+            users = User.objects.filter(lab_group__in=lab_group)
+            instrument_usages = instrument_usages.filter(user__in=users)
+        else:
+            async_to_sync(channel_layer.group_send)(
+                f"user_{user_id}_instrument_job",
+                {
+                    "type": "download_message",
+                    "message": {
+                        "instance_id": instance_id,
+                        "status": "error",
+                        "message": "Lab group not found"
+                    },
+                }
+            )
+            return
+    else:
+        if user_id != 0:
+            instrument_usages = instrument_usages.filter(user__id__in=user_ids)
 
+    print(time_started, time_ended)
 
+    instrument_usages = instrument_usages.filter(
+        Q(time_started__range=[time_started, time_ended]) | Q(time_ended__range=[time_started, time_ended])
+    )
+
+    if instrument_usages.exists():
+        if time_started:
+            time_started = timezone.make_aware(datetime.datetime.strptime(time_started, "%Y-%m-%dT%H:%M:%S.%fZ"))
+        if time_ended:
+            time_ended = timezone.make_aware(datetime.datetime.strptime(time_ended, "%Y-%m-%dT%H:%M:%S.%fZ"))
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "instrument_usage"
+        headers = ["Instrument", "User", "Time Started", "Time Ended", "Duration", "Description", "Associated Jobs"]
+        ws.append(headers)
+        for i in instrument_usages:
+            # check if instrument_usage time_started and time_ended are not splitted by the time_started and time_ended of the function
+            duration = i.time_ended - i.time_started
+            if calculate_duration_with_cutoff:
+                if time_ended:
+                    if i.time_ended > time_ended:
+                        # calculate the duration within the boundary
+                        if time_started:
+                            if i.time_started <= time_started:
+                                duration += time_ended - time_started
+                            else:
+                                duration += time_ended - i.time_started
+                        else:
+                            duration += time_ended - i.time_started
+                    else:
+                        if time_started:
+                            if i.time_started <= time_started:
+                                duration += i.time_ended - time_started
+                            else:
+                                duration += i.time_ended - i.time_started
+                        else:
+                            duration += i.time_ended - i.time_started
+                else:
+                    if time_started:
+                        if i.time_started <= time_started:
+                            duration += i.time_ended - time_started
+                        else:
+                            duration += i.time_ended - i.time_started
+
+            associated_jobs = i.instrument_jobs.all()
+            associated_jobs_information = []
+            for j in associated_jobs:
+                associated_jobs_information.append(f"{j.submitted_at} {j.job_name} ({j.user.username})")
+            # convert time to string for excel
+            exported_time_started = i.time_started.strftime("%Y-%m-%d")
+            exported_time_ended = i.time_ended.strftime("%Y-%m-%d")
+            exported_duration = duration.days
+
+            ws.append([i.instrument.instrument_name, i.user.username, exported_time_started, exported_time_ended, exported_duration, i.description, ";\n".join(associated_jobs_information)])
+
+        for col in ws.columns:
+            max_length = 0
+            column = col[0].column_letter
+            for cell in col:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(cell.value)
+                except:
+                    pass
+            adjusted_width = (max_length + 2)
+            ws.column_dimensions[column].width = adjusted_width
+
+        filename = str(uuid.uuid4())
+        xlsx_filepath = os.path.join(settings.MEDIA_ROOT, "temp", f"{filename}.xlsx")
+        wb.save(xlsx_filepath)
+        signer = TimestampSigner()
+        value = signer.sign(f"{filename}.xlsx")
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}_instrument_job",
+            {
+                "type": "download_message",
+                "message": {
+                    "signed_value": value,
+                    "instance_id": instance_id
+                },
+            }
+        )
+    else:
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}_instrument_job",
+            {
+                "type": "download_message",
+                "message": {
+                    "instance_id": instance_id,
+                    "status": "error",
+                    "message": "No instrument usage found"
+                },
+            }
+        )
 
 
 

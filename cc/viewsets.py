@@ -39,7 +39,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
-    import_sdrf_file, validate_sdrf_file, export_excel_template
+    import_sdrf_file, validate_sdrf_file, export_excel_template, export_instrument_usage
 from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, AnnotationSerializer, \
     SessionSerializer, StepVariationSerializer, TimeKeeperSerializer, ProtocolSectionSerializer, UserSerializer, \
     ProtocolRatingSerializer, ReagentSerializer, StepReagentSerializer, ProtocolReagentSerializer, \
@@ -2138,8 +2138,11 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         time_ended = self.request.query_params.get('time_ended', None)
         instrument = self.request.query_params.get('instrument', None)
         users = self.request.query_params.get('users', None)
+        search_type = self.request.query_params.get('search_type', 'usage')
         if users:
             users = users.split(',')
+        if instrument:
+            instrument = instrument.split(',')
 
         # filter for any usage where time_started or time_ended of the usage falls within the range of the query
         if not time_started:
@@ -2148,25 +2151,28 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         if not time_ended:
             time_ended = datetime.now() + timedelta(days=1)
         query = Q()
-        query_time_started = Q(time_started__range=[time_started, time_ended])
-        query_time_ended = Q(time_ended__range=[time_started, time_ended])
+
         if users:
             query &= Q(user__username__in=users)
-        if instrument:
-            query &= Q(instrument__id=instrument)
 
+        query_time_started = Q(time_started__range=[time_started, time_ended])
+        query_time_ended = Q(time_ended__range=[time_started, time_ended])
+        if search_type == "logs":
+            query_time_started = Q(created_at__range=[time_started, time_ended])
+            query_time_ended = Q(created_at__range=[time_started, time_ended])
         # filter for only instruments that the user has permission to view
         if not self.request.user.is_staff:
-            can_view = InstrumentPermission.objects.filter(instrument=instrument, user=self.request.user, can_view=True)
+            can_view = InstrumentPermission.objects.filter(instrument__id__in=instrument, user=self.request.user, can_view=True)
             if not can_view.exists():
                 return InstrumentUsage.objects.none()
             instruments_ids = [i.instrument.id for i in can_view]
             query &= Q(instrument__id__in=instruments_ids)
-
+        else:
+            query &= Q(instrument__id__in=instrument)
         if self.request.user.is_staff:
-            return self.queryset.filter((query_time_started | query_time_ended)&query)
+            return self.queryset.filter((query_time_started | query_time_ended)&query).order_by('-created_at')
 
-        return self.queryset.filter((query_time_started | query_time_ended)&query)
+        return self.queryset.filter((query_time_started | query_time_ended)&query).order_by('-created_at')
 
     def get_object(self):
         obj = super().get_object()
@@ -2242,6 +2248,32 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         instance.time_ended = instance.time_ended + timedelta(days=days)
         instance.save()
         return Response(InstrumentUsageSerializer(instance, many=False).data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'])
+    def export_usage(self, request):
+        instruments = request.data.get('instruments', [])
+        usage = InstrumentUsage.objects.all()
+        if instruments:
+            usage = usage.filter(instrument__id__in=instruments)
+        if not request.user.is_staff:
+            can_manage = InstrumentPermission.objects.filter(user=request.user, can_manage=True)
+            if instruments:
+                can_manage = can_manage.filter(instrument__id__in=instruments)
+            if not can_manage.exists():
+                return Response(status=status.HTTP_401_UNAUTHORIZED)
+
+            usage = usage.filter(instrument__id__in=[i.instrument.id for i in can_manage])
+
+        instrument_ids = list(set([u.instrument.id for u in usage]))
+        lab_group_id = request.data.get('lab_group', [])
+        user_id = request.data.get('user', [])
+        time_started = request.data.get('time_started', None)
+        time_ended = request.data.get('time_ended', None)
+        mode = request.data.get('mode', 'user')
+        calculate_duration_with_cutoff = request.data.get('calculate_duration_with_cutoff', False)
+        instance_id = request.data.get('instance_id', None)
+        job = export_instrument_usage.delay(instrument_ids, lab_group_id, user_id, mode, instance_id, time_started, time_ended, calculate_duration_with_cutoff, request.user.id)
+        return Response({'job_id': job.id}, status=status.HTTP_200_OK)
 
 
 class StorageObjectViewSet(ModelViewSet, FilterMixin):

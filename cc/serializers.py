@@ -265,7 +265,17 @@ class InstrumentUsageSerializer(ModelSerializer):
 
     class Meta:
         model = InstrumentUsage
-        fields = ['id', 'instrument', 'annotation', 'created_at', 'updated_at', 'time_started', 'time_ended', 'user', 'description']
+        fields = [
+            'id',
+            'instrument',
+            'annotation',
+            'created_at',
+            'updated_at',
+            'time_started',
+            'time_ended',
+            'user',
+            'description'
+        ]
 
 class StorageObjectSerializer(ModelSerializer):
     stored_reagents = SerializerMethodField()
@@ -514,6 +524,8 @@ class InstrumentJobSerializer(ModelSerializer):
             'cost_center',
             'service_lab_group',
             'selected_template'
+            'submitted_at',
+            'completed_at',
         ]
 
 class FavouriteMetadataOptionSerializer(ModelSerializer):

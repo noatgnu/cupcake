@@ -2189,7 +2189,7 @@ def import_excel(file: str, user_id: int, instrument_job_id: int, instance_id: s
     )
 
 @job('export', timeout='3h')
-def export_instrument_usage(instrument_ids: list[int], lab_group_ids: list[int], user_ids: list[int], mode: str, instance_id: str, time_started: str = None, time_ended: str = None, calculate_duration_with_cutoff: bool = False, user_id: int = 0):
+def export_instrument_usage(instrument_ids: list[int], lab_group_ids: list[int], user_ids: list[int], mode: str, instance_id: str, time_started: str = None, time_ended: str = None, calculate_duration_with_cutoff: bool = False, user_id: int = 0, file_format: str = "xlsx"):
     instrument_usages = InstrumentUsage.objects.filter(instrument__id__in=instrument_ids)
     channel_layer = get_channel_layer()
     if mode == 'service_lab_group':
@@ -2232,25 +2232,40 @@ def export_instrument_usage(instrument_ids: list[int], lab_group_ids: list[int],
         if user_id != 0:
             instrument_usages = instrument_usages.filter(user__id__in=user_ids)
 
-    print(time_started, time_ended)
-
     instrument_usages = instrument_usages.filter(
         Q(time_started__range=[time_started, time_ended]) | Q(time_ended__range=[time_started, time_ended])
     )
 
     if instrument_usages.exists():
+        filename = str(uuid.uuid4())
         if time_started:
             time_started = timezone.make_aware(datetime.datetime.strptime(time_started, "%Y-%m-%dT%H:%M:%S.%fZ"))
         if time_ended:
             time_ended = timezone.make_aware(datetime.datetime.strptime(time_ended, "%Y-%m-%dT%H:%M:%S.%fZ"))
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "instrument_usage"
+        if file_format == "xlsx":
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "instrument_usage"
+            filename = filename + ".xlsx"
+            filepath = os.path.join(settings.MEDIA_ROOT, "temp", filename)
+        elif file_format == "csv" or file_format == "tsv":
+            filename = filename + f".{file_format}"
+            filepath = os.path.join(settings.MEDIA_ROOT, "temp", filename)
+            infile = open(filepath, "wt", encoding="utf-8", newline="")
+            if file_format == "csv":
+                writer = csv.writer(infile)
+            else:
+                writer = csv.writer(infile, delimiter="\t")
+
         headers = ["Instrument", "User", "Time Started", "Time Ended", "Duration", "Description", "Associated Jobs"]
-        ws.append(headers)
+        if file_format == "xlsx":
+            ws.append(headers)
+        elif file_format == "csv" or file_format == "tsv":
+            writer.writerow(headers)
         for i in instrument_usages:
             # check if instrument_usage time_started and time_ended are not splitted by the time_started and time_ended of the function
             duration = i.time_ended - i.time_started
+            print(duration)
             if calculate_duration_with_cutoff:
                 if time_ended:
                     if i.time_ended > time_ended:
@@ -2277,34 +2292,36 @@ def export_instrument_usage(instrument_ids: list[int], lab_group_ids: list[int],
                         else:
                             duration += i.time_ended - i.time_started
 
-            associated_jobs = i.instrument_jobs.all()
+            associated_jobs = i.annotation.assigned_instrument_jobs.all()
             associated_jobs_information = []
             for j in associated_jobs:
                 associated_jobs_information.append(f"{j.submitted_at} {j.job_name} ({j.user.username})")
             # convert time to string for excel
             exported_time_started = i.time_started.strftime("%Y-%m-%d")
             exported_time_ended = i.time_ended.strftime("%Y-%m-%d")
-            exported_duration = duration.days
+            exported_duration = duration.days+1
+            if file_format == "xlsx":
+                ws.append([i.instrument.instrument_name, i.user.username, exported_time_started, exported_time_ended, exported_duration, i.description, ";\n".join(associated_jobs_information)])
+            if file_format == "csv" or file_format == "tsv":
+                writer.writerow([i.instrument.instrument_name, i.user.username, exported_time_started, exported_time_ended, exported_duration, i.description, ";".join(associated_jobs_information)])
+        if file_format == "xlsx":
+            for col in ws.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(cell.value)
+                    except:
+                        pass
+                adjusted_width = (max_length + 2)
+                ws.column_dimensions[column].width = adjusted_width
 
-            ws.append([i.instrument.instrument_name, i.user.username, exported_time_started, exported_time_ended, exported_duration, i.description, ";\n".join(associated_jobs_information)])
 
-        for col in ws.columns:
-            max_length = 0
-            column = col[0].column_letter
-            for cell in col:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(cell.value)
-                except:
-                    pass
-            adjusted_width = (max_length + 2)
-            ws.column_dimensions[column].width = adjusted_width
-
-        filename = str(uuid.uuid4())
-        xlsx_filepath = os.path.join(settings.MEDIA_ROOT, "temp", f"{filename}.xlsx")
-        wb.save(xlsx_filepath)
+        if file_format == "xlsx":
+            wb.save(filepath)
         signer = TimestampSigner()
-        value = signer.sign(f"{filename}.xlsx")
+        value = signer.sign(filename)
         async_to_sync(channel_layer.group_send)(
             f"user_{user_id}_instrument_job",
             {

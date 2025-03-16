@@ -665,7 +665,7 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
                 time_started = request.data['time_started']
                 time_ended = request.data['time_ended']
                 # check if the instrument is available at this time by checking if submitted time_started is between the object time_started and time_ended or time_ended is between the object time_started and time_ended
-                if time_started and time_ended:
+                if time_started and time_ended and not settings.ALLOW_OVERLAP_BOOKINGS:
                     if InstrumentUsage.objects.filter(instrument=instrument, time_started__range=[time_started, time_ended]).exists() or InstrumentUsage.objects.filter(instrument=instrument, time_ended__range=[time_started, time_ended]).exists():
                         return Response(status=status.HTTP_409_CONFLICT)
         annotation.save()
@@ -712,11 +712,18 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
                     metadata_columns = annotation.metadata_columns.all()
                     for meta_col in metadata_columns:
                         instrument_job_staff_metadata = instrument_job.staff_metadata.filter(name=meta_col.name, type=meta_col.type)
-                        if instrument_job_instrument_metadata.exists():
-                            instrument_job_instrument_metadata = instrument_job_instrument_metadata.first()
+                        if instrument_job_staff_metadata.exists():
+                            instrument_job_instrument_metadata = instrument_job_staff_metadata.first()
                             if not instrument_job_instrument_metadata.value:
                                 instrument_job_instrument_metadata.value = meta_col.value
                                 instrument_job_instrument_metadata.save()
+                        else:
+                            metadata_col = MetadataColumn.objects.create(
+                                name=meta_col.name,
+                                value=meta_col.value,
+                                type=meta_col.type,
+                            )
+                            instrument_job.staff_metadata.add(metadata_col)
 
             elif request.data['instrument_user_type'] == "user_annotation":
                 instrument_job.user_annotations.add(annotation)
@@ -2270,9 +2277,10 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         time_started = request.data.get('time_started', None)
         time_ended = request.data.get('time_ended', None)
         mode = request.data.get('mode', 'user')
+        file_format = request.data.get('file_format', 'xlsx')
         calculate_duration_with_cutoff = request.data.get('calculate_duration_with_cutoff', False)
         instance_id = request.data.get('instance_id', None)
-        job = export_instrument_usage.delay(instrument_ids, lab_group_id, user_id, mode, instance_id, time_started, time_ended, calculate_duration_with_cutoff, request.user.id)
+        job = export_instrument_usage.delay(instrument_ids, lab_group_id, user_id, mode, instance_id, time_started, time_ended, calculate_duration_with_cutoff, request.user.id, file_format)
         return Response({'job_id': job.id}, status=status.HTTP_200_OK)
 
 
@@ -3429,7 +3437,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
         return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'])
-    def individual_field_typeahead(selfself, request):
+    def individual_field_typeahead(self, request):
         field_name = request.query_params.get('field_name', None)
         if field_name in ['cost_center', 'funder']:
             paginator = LimitOffsetPagination()

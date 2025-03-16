@@ -2193,10 +2193,14 @@ def export_instrument_usage(instrument_ids: list[int], lab_group_ids: list[int],
     instrument_usages = InstrumentUsage.objects.filter(instrument__id__in=instrument_ids)
     channel_layer = get_channel_layer()
     if mode == 'service_lab_group':
-        lab_group = LabGroup.objects.filter(lab_group__id__in=lab_group_ids, is_professional=True)
+        lab_group = LabGroup.objects.filter(id__in=lab_group_ids, is_professional=True)
         if lab_group.exists():
-            users = User.objects.filter(lab_group__in=lab_group)
-            instrument_usages = instrument_usages.filter(user__in=users)
+            users = User.objects.filter(lab_groups__in=lab_group)
+            instrument_jobs = InstrumentJob.objects.filter(service_lab_group__in=lab_group)
+            instrument_usages = instrument_usages.filter(
+                Q(user__in=users)|Q(annotation__instrument_jobs__in=instrument_jobs)
+            )
+
         else:
             async_to_sync(channel_layer.group_send)(
                 f"user_{user_id}_instrument_job",

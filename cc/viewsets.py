@@ -3916,6 +3916,7 @@ class MetadataTableTemplateViewSets(FilterMixin, ModelViewSet):
                         else:
                             column.modifiers = json.dumps([])
                         column.save()
+                        ids_from_submission.add(column.id)
                     template.user_columns.add(column)
                 else:
                     column = MetadataColumn(
@@ -3984,6 +3985,7 @@ class MetadataTableTemplateViewSets(FilterMixin, ModelViewSet):
                     else:
                         column.modifiers = json.dumps([])
                     column.save()
+                    ids_from_submission.add(column.id)
                     template.staff_columns.add(column)
             for column in template.staff_columns.all():
                 if column.id not in ids_from_submission:

@@ -2169,13 +2169,19 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
             query_time_ended = Q(created_at__range=[time_started, time_ended])
         # filter for only instruments that the user has permission to view
         if not self.request.user.is_staff:
-            can_view = InstrumentPermission.objects.filter(instrument__id__in=instrument, user=self.request.user, can_view=True)
+            if instrument:
+                can_view = InstrumentPermission.objects.filter(instrument__id__in=instrument, user=self.request.user, can_view=True)
+            else:
+                can_view = InstrumentPermission.objects.filter(user=self.request.user, can_view=True)
             if not can_view.exists():
                 return InstrumentUsage.objects.none()
             instruments_ids = [i.instrument.id for i in can_view]
-            query &= Q(instrument__id__in=instruments_ids)
+            if instruments_ids:
+                query &= Q(instrument__id__in=instruments_ids)
         else:
-            query &= Q(instrument__id__in=instrument)
+            if instrument:
+                query &= Q(instrument__id__in=instrument)
+
         if self.request.user.is_staff:
             return self.queryset.filter((query_time_started | query_time_ended)&query).order_by('-created_at')
 

@@ -1979,7 +1979,7 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
     )
 
 @job('import-data', timeout='3h')
-def import_excel(file: str, user_id: int, instrument_job_id: int, instance_id: str = None, data_type: str = "user_metadata"):
+def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, instance_id: str = None, data_type: str = "user_metadata"):
     """
     Import excel file
     :param file:
@@ -1988,7 +1988,8 @@ def import_excel(file: str, user_id: int, instrument_job_id: int, instance_id: s
     :param instance_id:
     :return:
     """
-    wb = load_workbook(file)
+    annotation = Annotation.objects.get(id=annotation_id)
+    wb = load_workbook(annotation.file.path)
     main_ws = wb["main"]
     main_headers = [cell.value for cell in main_ws[1]]
     main_data = [list(row) for row in main_ws.iter_rows(min_row=2, values_only=True)]
@@ -2115,6 +2116,8 @@ def import_excel(file: str, user_id: int, instrument_job_id: int, instance_id: s
         metadata_value_map = {}
         for j in range(len(data)):
             name = metadata_columns[i].name.lower()
+            if data[j][i] is None:
+                data[j][i] = ""
             if data[j][i] == "":
                 continue
             if data[j][i] == "not applicable":

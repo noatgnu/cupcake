@@ -3495,7 +3495,9 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                         return Response(status=status.HTTP_403_FORBIDDEN)
             else:
                 if self.request.user not in staff:
-                    return Response(status=status.HTTP_403_FORBIDDEN)
+                    if instrument_job.user != self.request.user:
+                        return Response(status=status.HTTP_403_FORBIDDEN)
+
         job = export_instrument_job_metadata.delay(instrument_job.id, request.data["data_type"], request.user.id, request.data["instance_id"])
         return Response({"task_id": job.id}, status=status.HTTP_200_OK)
 
@@ -3511,8 +3513,16 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                         return Response(status=status.HTTP_403_FORBIDDEN)
             else:
                 if self.request.user not in staff:
-                    return Response(status=status.HTTP_403_FORBIDDEN)
-        job = import_sdrf_file.delay(request.data["annotation"], request.user.id, instrument_job.id, request.data["instance_id"], request.data["data_type"])
+                    if instrument_job.user != self.request.user:
+                        return Response(status=status.HTTP_403_FORBIDDEN)
+                    else:
+                        if request.data["data_type"] != 'user_metadata':
+                            return Response(status=status.HTTP_403_FORBIDDEN)
+        if request.data["data_type"].endswith('excel'):
+            job = import_excel.delay(request.data["annotation"], request.user.id, instrument_job.id,  request.data["instance_id"], request.data["data_type"].replace("_excel", ""))
+        else:
+            job = import_sdrf_file.delay(request.data["annotation"], request.user.id, instrument_job.id, request.data["instance_id"], request.data["data_type"])
+
         return Response({"task_id": job.id}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'])
@@ -3555,26 +3565,6 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                         if request.data["export_type"] != 'user_metadata':
                             return Response(status=status.HTTP_403_FORBIDDEN)
         job = export_excel_template.delay(request.user.id, request.data["instance_id"], instrument_job.id, request.data["export_type"])
-        return Response({"task_id": job.id}, status=status.HTTP_200_OK)
-
-    @action(detail=True, methods=['post'])
-    def import_excel_template(self, request, pk=None):
-        instrument_job = self.get_object()
-        if not self.request.user.is_staff:
-            staff = instrument_job.staff.all()
-            if staff.count() == 0:
-                if instrument_job.service_lab_group:
-                    staff = instrument_job.service_lab_group.users.all()
-                    if self.request.user not in staff:
-                        return Response(status=status.HTTP_403_FORBIDDEN)
-            else:
-                if self.request.user not in staff:
-                    if instrument_job.user != self.request.user:
-                        return Response(status=status.HTTP_403_FORBIDDEN)
-                    else:
-                        if request.data["import_type"] != 'user_metadata':
-                            return Response(status=status.HTTP_403_FORBIDDEN)
-        job = import_excel.delay(request.user.id, request.data["instance_id"], instrument_job.id, request.data["import_type"])
         return Response({"task_id": job.id}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'])

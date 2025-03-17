@@ -1846,7 +1846,7 @@ def validate_sdrf_file(metadata_column_ids: list[int], sample_number: int, user_
         )
 
 @job('export', timeout='3h')
-def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int):
+def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int, export_type: str = "user_metadata"):
     """
     Export excel template
     :param user_id:
@@ -1855,11 +1855,19 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
     :return:
     """
     instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
-    metadata = list(instrument_job.user_metadata.all()) + list(instrument_job.staff_metadata.all())
+    metadata = []
+    if export_type=="user_metadata":
+        metadata = list(instrument_job.user_metadata.all())
+    elif export_type=="staff_metadata":
+        metadata = list(instrument_job.staff_metadata.all())
+    else:
+        metadata = list(instrument_job.user_metadata.all()) + list(instrument_job.staff_metadata.all())
     main_metadata = [m for m in metadata if not m.hidden]
     hidden_metadata = [m for m in metadata if m.hidden]
     result_main = sort_metadata(main_metadata, instrument_job.sample_number)
-    result_hidden = sort_metadata(hidden_metadata, instrument_job.sample_number)
+    result_hidden = []
+    if hidden_metadata:
+        result_hidden = sort_metadata(hidden_metadata, instrument_job.sample_number)
     # get favourites for each metadata column
     favourites = {}
     user_favourite = FavouriteMetadataOption.objects.filter(user_id=user_id, service_lab_group__isnull=True, lab_group__isnull=True)
@@ -1896,20 +1904,21 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
         main_ws.column_dimensions[column].width = adjusted_width
 
     # Append headers and data to the hidden worksheet
-    hidden_ws.append(result_hidden[0])
-    for row in result_hidden[1:]:
-        hidden_ws.append(row)
-    for col in hidden_ws.columns:
-        max_length = 0
-        column = col[0].column_letter  # Get the column name
-        for cell in col:
-            try:
-                if len(str(cell.value)) > max_length:
-                    max_length = len(cell.value)
-            except:
-                pass
-        adjusted_width = (max_length + 2)
-        hidden_ws.column_dimensions[column].width = adjusted_width
+    if len(result_hidden) > 1:
+        hidden_ws.append(result_hidden[0])
+        for row in result_hidden[1:]:
+            hidden_ws.append(row)
+        for col in hidden_ws.columns:
+            max_length = 0
+            column = col[0].column_letter  # Get the column name
+            for cell in col:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(cell.value)
+                except:
+                    pass
+            adjusted_width = (max_length + 2)
+            hidden_ws.column_dimensions[column].width = adjusted_width
 
 
 
@@ -1930,24 +1939,24 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
             col_letter = get_column_letter(i + 1)
             main_ws.add_data_validation(dv)
             dv.add(f"{col_letter}2:{col_letter}{instrument_job.sample_number + 1}")
-
-    for i, header in enumerate(result_hidden[0]):
-        name_splitted = result_hidden[0][i].split("[")
-        if len(name_splitted) > 1:
-            name = name_splitted[1].replace("]", "")
-        else:
-            name = name_splitted[0]
-        if name == "organism part":
-            name = "tissue"
-        if name.lower() in favourites:
-            dv = DataValidation(
-                type="list",
-                formula1=f'"{",".join(favourites[name.lower()])}"',
-                showDropDown=False
-            )
-            col_letter = get_column_letter(i + 1)
-            hidden_ws.add_data_validation(dv)
-            dv.add(f"{col_letter}2:{col_letter}{instrument_job.sample_number + 1}")
+    if len(result_hidden) > 1:
+        for i, header in enumerate(result_hidden[0]):
+            name_splitted = result_hidden[0][i].split("[")
+            if len(name_splitted) > 1:
+                name = name_splitted[1].replace("]", "")
+            else:
+                name = name_splitted[0]
+            if name == "organism part":
+                name = "tissue"
+            if name.lower() in favourites:
+                dv = DataValidation(
+                    type="list",
+                    formula1=f'"{",".join(favourites[name.lower()])}"',
+                    showDropDown=False
+                )
+                col_letter = get_column_letter(i + 1)
+                hidden_ws.add_data_validation(dv)
+                dv.add(f"{col_letter}2:{col_letter}{instrument_job.sample_number + 1}")
 
     # save the file
     filename = str(uuid.uuid4())
@@ -1981,12 +1990,19 @@ def import_excel(file: str, user_id: int, instrument_job_id: int, instance_id: s
     """
     wb = load_workbook(file)
     main_ws = wb["main"]
-    hidden_ws = wb["hidden"]
     main_headers = [cell.value for cell in main_ws[1]]
-    hidden_headers = [cell.value for cell in hidden_ws[1]]
     main_data = [list(row) for row in main_ws.iter_rows(min_row=2, values_only=True)]
-    hidden_data = [list(row) for row in hidden_ws.iter_rows(min_row=2, values_only=True)]
-
+    hidden_ws = None
+    hidden_headers = []
+    hidden_data = []
+    if "hidden" in wb.sheetnames:
+        hidden_ws = wb["hidden"]
+        # check if there is any data in the hidden sheet
+        if hidden_ws.max_row == 1:
+            hidden_ws = None
+        else:
+            hidden_headers = [cell.value for cell in hidden_ws[1]]
+            hidden_data = [list(row) for row in hidden_ws.iter_rows(min_row=2, values_only=True)]
 
     instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
     metadata_columns = []
@@ -2046,10 +2062,12 @@ def import_excel(file: str, user_id: int, instrument_job_id: int, instance_id: s
         metadata_column.type = type.capitalize()
         metadata_column.hidden = True
         metadata_columns.append(metadata_column)
-
-    headers = main_headers + hidden_headers
-    data = [main_row + hidden_row for main_row, hidden_row in zip(main_data, hidden_data)]
-
+    if len(hidden_data) > 0:
+        headers = main_headers + hidden_headers
+        data = [main_row + hidden_row for main_row, hidden_row in zip(main_data, hidden_data)]
+    else:
+        headers = main_headers
+        data = main_data
     if len(data) != instrument_job.sample_number:
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(

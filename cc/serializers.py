@@ -523,7 +523,7 @@ class InstrumentJobSerializer(ModelSerializer):
             'funder',
             'cost_center',
             'service_lab_group',
-            'selected_template'
+            'selected_template',
             'submitted_at',
             'completed_at',
         ]

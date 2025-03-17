@@ -1921,7 +1921,7 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
             hidden_ws.column_dimensions[column].width = adjusted_width
 
 
-
+    print(favourites)
     for i, header in enumerate(result_main[0]):
         name_splitted = result_main[0][i].split("[")
         if len(name_splitted) > 1:
@@ -1938,6 +1938,7 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
             )
             col_letter = get_column_letter(i + 1)
             main_ws.add_data_validation(dv)
+            print(f'"{",".join(favourites[name.lower()])}"')
             dv.add(f"{col_letter}2:{col_letter}{instrument_job.sample_number + 1}")
     if len(result_hidden) > 1:
         for i, header in enumerate(result_hidden[0]):

@@ -8,6 +8,7 @@ import uuid
 from datetime import time
 import csv
 import ffmpeg
+import pandas as pd
 import webvtt
 from PIL import Image
 from asgiref.sync import async_to_sync
@@ -1811,13 +1812,20 @@ def validate_sdrf_file(metadata_column_ids: list[int], sample_number: int, user_
 
     metadata_column = MetadataColumn.objects.filter(id__in=metadata_column_ids)
     result = sort_metadata(metadata_column, sample_number)
-    df = SdrfDataFrame.parse(io.StringIO("\n".join(["\t".join(i) for i in result])))
+    # check if there is NoneType in the result
+    df = pd.DataFrame()
+
     try:
-        errors = df.validate("default", True)
-    except Exception as e:
-        errors = [str(e)]
-    errors = errors + df.validate("mass_spectrometry", True)
-    errors = errors + df.validate_experimental_design()
+        df = SdrfDataFrame.parse(io.StringIO("\n".join(["\t".join(i) for i in result])))
+    except TypeError:
+        errors = ["Invalid data in the SDRF file"]
+    if isinstance(df, SdrfDataFrame):
+        try:
+            errors = df.validate("default", True)
+        except Exception as e:
+            errors = [str(e)]
+        errors = errors + df.validate("mass_spectrometry", True)
+        errors = errors + df.validate_experimental_design()
     channel_layer = get_channel_layer()
     if errors:
         async_to_sync(channel_layer.group_send)(

@@ -53,13 +53,13 @@ user_metadata = [
                 "name": "Alkylation reagent", "type": "Comment", "mandatory": False
             },
 {
-        "name": "Sex", "type": "Characteristics", "mandatory": True
+        "name": "Sex", "type": "Characteristics", "mandatory": False
     },
     {
-        "name": "Developmental stage", "type": "Characteristics", "mandatory": True
+        "name": "Developmental stage", "type": "Characteristics", "mandatory": False
     },
     {
-        "name": "Age", "type": "Characteristics", "mandatory": True
+        "name": "Age", "type": "Characteristics", "mandatory": False
     },
 {
       "name": "Mass", "type": "Characteristics","mandatory": True, "value": "0 ng"
@@ -109,8 +109,13 @@ staff_metadata = [
             {
                 "name": "Label",
                 "type": "Comment",
-                "mandatory": True
+                "mandatory": True,
+
             },
+    {
+        "name": "Fraction identifier", "type": "Comment", "mandatory": True, "value": "1",
+                "hidden": True
+    },
             {
                 "name": "MS1 scan range", "type": "Comment", "mandatory": True
             },

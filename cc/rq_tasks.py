@@ -1880,6 +1880,7 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
     favourites = {}
     user_favourite = FavouriteMetadataOption.objects.filter(user_id=user_id, service_lab_group__isnull=True, lab_group__isnull=True)
     facility_recommended = FavouriteMetadataOption.objects.filter(service_lab_group=instrument_job.service_lab_group)
+    global_recommendations = FavouriteMetadataOption.objects.filter(is_global=True)
     for r in list(user_favourite):
         if r.name.lower() not in favourites:
             favourites[r.name.lower()] = []
@@ -1888,6 +1889,10 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
         if r.name.lower() not in favourites:
             favourites[r.name.lower()] = []
         favourites[r.name.lower()].append(f"{r.display_value}[**]")
+    for r in list(global_recommendations):
+        if r.name.lower() not in favourites:
+            favourites[r.name.lower()] = []
+        favourites[r.name.lower()].append(f"{r.display_value}[***]")
 
     # based on column name from result, contruct an excel file with the appropriate rows beside the header row where the cell with the same name in favourite can have preset selection options dropdown related to that column
     wb = Workbook()
@@ -1928,8 +1933,6 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
             adjusted_width = (max_length + 2)
             hidden_ws.column_dimensions[column].width = adjusted_width
 
-
-    print(favourites)
     for i, header in enumerate(result_main[0]):
         name_splitted = result_main[0][i].split("[")
         if len(name_splitted) > 1:
@@ -2141,6 +2144,12 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
             elif data[j][i].endswith("[**]"):
                 value = data[j][i].replace("[**]", "")
                 value_query = FavouriteMetadataOption.objects.filter(name=name, service_lab_group=instrument_job.service_lab_group, display_value=value)
+                if value_query.exists():
+                    value = value_query.first().value
+                value = convert_sdrf_to_metadata(name, value)
+            elif data[j][i].endswith("[***]"):
+                value = data[j][i].replace("[***]", "")
+                value_query = FavouriteMetadataOption.objects.filter(name=name, is_global=True, display_value=value)
                 if value_query.exists():
                     value = value_query.first().value
                 value = convert_sdrf_to_metadata(name, value)

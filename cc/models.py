@@ -1267,6 +1267,7 @@ class FavouriteMetadataOption(models.Model):
     service_lab_group = models.ForeignKey(LabGroup, on_delete=models.SET_NULL, related_name='favourite_service_lab_group_metadata_options', blank=True, null=True)
     lab_group = models.ForeignKey(LabGroup, on_delete=models.SET_NULL, related_name='favourite_lab_group_metadata_options', blank=True, null=True)
     preset = models.ForeignKey(Preset, on_delete=models.SET_NULL, related_name='favourite_metadata_options', blank=True, null=True)
+    is_global = models.BooleanField(default=False)
 
     class Meta:
         app_label = 'cc'

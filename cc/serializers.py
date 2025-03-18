@@ -531,7 +531,7 @@ class InstrumentJobSerializer(ModelSerializer):
 class FavouriteMetadataOptionSerializer(ModelSerializer):
     class Meta:
         model = FavouriteMetadataOption
-        fields = ['id', 'user', 'name', 'type', 'value', 'display_value', 'service_lab_group', 'lab_group', 'preset', 'created_at', 'updated_at']
+        fields = ['id', 'user', 'name', 'type', 'value', 'display_value', 'service_lab_group', 'lab_group', 'preset', 'created_at', 'updated_at', 'is_global']
 
 class PresetSerializer(ModelSerializer):
     class Meta:

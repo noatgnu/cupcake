@@ -100,7 +100,7 @@ staff_metadata = [
                 "name": "Data file", "type": "Comment", "mandatory": True
             },
             {
-                "name": "File uri", "type": "Comment", "mandatory": True
+                "name": "File uri", "type": "Comment", "mandatory": False, "hidden": True, "value": "not available"
             },
             {
                 "name": "Proteomics data acquisition method", "type": "Comment", "mandatory": True
@@ -127,6 +127,6 @@ staff_metadata = [
             },
 
     {"name": "Dissociation method", "type": "Comment", "mandatory": True},
-    {"name": "Precursor mass tolerance", "type": "Comment", "mandatory": True},
-    {"name": "Fragment mass tolerance", "type": "Comment", "mandatory": True},
+    {"name": "Precursor mass tolerance", "type": "Comment", "mandatory": True, "value": "0 ppm"},
+    {"name": "Fragment mass tolerance", "type": "Comment", "mandatory": True, "value": "0 Da"},
         ]

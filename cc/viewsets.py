@@ -3741,6 +3741,15 @@ class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
         value = request.data.get('value', None)
         display_name = request.data.get('display_name', None)
         preset = request.data.get('preset', None)
+        is_global = request.data.get('is_global', False)
+        if not request.user.is_staff and is_global:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+
+        if is_global:
+            # check if there is already the same display_name
+            if FavouriteMetadataOption.objects.filter(display_value=display_name, is_global=True).exists():
+                return Response(status=status.HTTP_409_CONFLICT)
+
         if preset:
             preset = Preset.objects.get(id=preset)
         if mode == 'service_lab_group':
@@ -3749,20 +3758,40 @@ class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
             if not lab_group.users.filter(id=user.id).exists():
                 return Response(status=status.HTTP_403_FORBIDDEN)
             else:
-                option = FavouriteMetadataOption.objects.create(name=metadata_name, type=metadata_type, value=value, display_value=display_name, service_lab_group=lab_group, preset=preset, user=user)
+                option = FavouriteMetadataOption.objects.create(name=metadata_name, type=metadata_type, value=value, display_value=display_name, service_lab_group=lab_group, preset=preset, user=user, is_global=is_global)
         elif mode == 'lab_group':
             lab_group = LabGroup.objects.get(id=lab_group)
             if not lab_group.users.filter(id=user.id).exists():
                 return Response(status=status.HTTP_403_FORBIDDEN)
             else:
-                option = FavouriteMetadataOption.objects.create(name=metadata_name, type=metadata_type, value=value, display_value=display_name, lab_group=lab_group, preset=preset, user=user)
+                option = FavouriteMetadataOption.objects.create(name=metadata_name, type=metadata_type, value=value, display_value=display_name, lab_group=lab_group, preset=preset, user=user, is_global=is_global)
         else:
-            option = FavouriteMetadataOption.objects.create(name=metadata_name, type=metadata_type, value=value, display_value=display_name, user=user, preset=preset)
+            option = FavouriteMetadataOption.objects.create(name=metadata_name, type=metadata_type, value=value, display_value=display_name, user=user, preset=preset, is_global=is_global)
 
         return Response(FavouriteMetadataOptionSerializer(option).data, status=status.HTTP_200_OK)
 
     def update(self, request, *args, **kwargs):
-        return Response(status=status.HTTP_405_METHOD_NOT_ALLOWED)
+        instance = self.get_object()
+        if not request.user.is_staff:
+            if instance.service_lab_group:
+                if not instance.service_lab_group.users.filter(id=request.user.id).exists():
+                    return Response(status=status.HTTP_403_FORBIDDEN)
+            elif instance.lab_group:
+                if not instance.lab_group.users.filter(id=request.user.id).exists():
+                    return Response(status=status.HTTP_403_FORBIDDEN)
+            elif instance.user != request.user:
+                return Response(status=status.HTTP_403_FORBIDDEN)
+
+        if 'value' in request.data:
+            instance.value = request.data['value']
+        if 'display_value' in request.data:
+            instance.display_value = request.data['display_value']
+        if 'is_global' in request.data:
+            instance.is_global = request.data['is_global']
+        instance.save()
+
+        return Response(FavouriteMetadataOptionSerializer(instance).data, status=status.HTTP_200_OK)
+
 
     def destroy(self, request, *args, **kwargs):
         option = FavouriteMetadataOption.objects.get(id=kwargs['pk'])

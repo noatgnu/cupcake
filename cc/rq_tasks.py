@@ -2337,11 +2337,12 @@ def export_instrument_usage(instrument_ids: list[int], lab_group_ids: list[int],
                             duration += i.time_ended - time_started
                         else:
                             duration += i.time_ended - i.time_started
-
-            associated_jobs = i.annotation.assigned_instrument_jobs.all()
             associated_jobs_information = []
-            for j in associated_jobs:
-                associated_jobs_information.append(f"{j.submitted_at} {j.job_name} ({j.user.username})")
+            if i.annotation:
+                associated_jobs = i.annotation.assigned_instrument_jobs.all()
+                for j in associated_jobs:
+                    associated_jobs_information.append(f"{j.submitted_at} {j.job_name} ({j.user.username})")
+
             # convert time to string for excel
             exported_time_started = i.time_started.strftime("%Y-%m-%d")
             exported_time_ended = i.time_ended.strftime("%Y-%m-%d")
@@ -2362,7 +2363,6 @@ def export_instrument_usage(instrument_ids: list[int], lab_group_ids: list[int],
                         pass
                 adjusted_width = (max_length + 2)
                 ws.column_dimensions[column].width = adjusted_width
-
 
         if file_format == "xlsx":
             wb.save(filepath)

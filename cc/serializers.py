@@ -252,7 +252,7 @@ class InstrumentSerializer(ModelSerializer):
 
     class Meta:
         model = Instrument
-        fields = ['id', 'instrument_name', 'instrument_description', 'created_at', 'updated_at', 'enabled', 'metadata_columns']
+        fields = ['id', 'max_days_ahead_pre_approval', 'max_days_within_usage_pre_approval', 'instrument_name', 'instrument_description', 'created_at', 'updated_at', 'enabled', 'metadata_columns']
 
 
 class InstrumentUsageSerializer(ModelSerializer):
@@ -274,7 +274,8 @@ class InstrumentUsageSerializer(ModelSerializer):
             'time_started',
             'time_ended',
             'user',
-            'description'
+            'description',
+            'approved'
         ]
 
 class StorageObjectSerializer(ModelSerializer):

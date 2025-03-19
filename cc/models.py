@@ -639,7 +639,8 @@ class Instrument(models.Model):
     enabled = models.BooleanField(default=True)
     remote_id = models.BigIntegerField(blank=True, null=True)
     remote_host = models.ForeignKey("RemoteHost", on_delete=models.CASCADE, related_name="instruments", blank=True, null=True)
-
+    max_days_ahead_pre_approval = models.IntegerField(blank=True, null=True, default=0)
+    max_days_within_usage_pre_approval = models.IntegerField(blank=True, null=True, default=0)
 
 class InstrumentUsage(models.Model):
     instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name="instrument_usage")
@@ -652,6 +653,12 @@ class InstrumentUsage(models.Model):
     description = models.TextField(blank=True, null=True)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="instrument_usage", blank=True, null=True)
     remote_host = models.ForeignKey("RemoteHost", on_delete=models.CASCADE, related_name="instrument_usages", blank=True, null=True)
+    approved = models.BooleanField(default=False)
+
+    class Meta:
+        app_label = "cc"
+        ordering = ["id"]
+
 
 
 class InstrumentPermission(models.Model):
@@ -1282,7 +1289,7 @@ class MetadataTableTemplate(models.Model):
     staff_columns = models.ManyToManyField(MetadataColumn, related_name='assigned_metadata_table_templates', blank=True)
     service_lab_group = models.ForeignKey(LabGroup, on_delete=models.SET_NULL, related_name='service_lab_group_metadata_table_templates', blank=True, null=True)
     lab_group = models.ForeignKey(LabGroup, on_delete=models.SET_NULL, related_name='lab_group_metadata_table_templates', blank=True, null=True)
-    enabled = models.BooleanField(default=False)
+    enabled = models.BooleanField(default=True)
 
     class Meta:
         app_label = 'cc'

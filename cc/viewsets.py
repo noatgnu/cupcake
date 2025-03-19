@@ -2023,7 +2023,10 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
             instance.instrument_name = request.data['name']
         if "description" in request.data:
             instance.instrument_description = request.data['description']
-
+        if 'max_days_ahead_pre_approval' in request.data:
+            instance.max_days_ahead_pre_approval = request.data['max_days_ahead_pre_approval']
+        if 'max_days_within_usage_pre_approval' in request.data:
+            instance.max_days_within_usage_pre_approval = request.data['max_days_within_usage_pre_approval']
         instance.save()
         data = self.get_serializer(instance).data
         return Response(data, status=status.HTTP_200_OK)
@@ -2145,50 +2148,58 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         time_ended = self.request.query_params.get('time_ended', None)
         instrument = self.request.query_params.get('instrument', None)
         users = self.request.query_params.get('users', None)
-        search_type = self.request.query_params.get('search_type', 'usage')
+        search_type = self.request.query_params.get('search_type', None)
         if users:
             users = users.split(',')
         if instrument:
             instrument = instrument.split(',')
-
+        if search_type in ['logs', 'usage']:
         # filter for any usage where time_started or time_ended of the usage falls within the range of the query
-        if not time_started:
-            time_started = datetime.now() - timedelta(days=1)
+            if not time_started:
+                time_started = timezone.now() - timedelta(days=1)
 
-        if not time_ended:
-            time_ended = datetime.now() + timedelta(days=1)
-        query = Q()
+            if not time_ended:
+                time_ended = timezone.now() + timedelta(days=1)
+            query = Q()
 
-        if users:
-            query &= Q(user__username__in=users)
+            if users:
+                query &= Q(user__username__in=users)
 
-        query_time_started = Q(time_started__range=[time_started, time_ended])
-        query_time_ended = Q(time_ended__range=[time_started, time_ended])
-        if search_type == "logs":
-            query_time_started = Q(created_at__range=[time_started, time_ended])
-            query_time_ended = Q(created_at__range=[time_started, time_ended])
-        # filter for only instruments that the user has permission to view
-        if not self.request.user.is_staff:
-            if instrument:
-                can_view = InstrumentPermission.objects.filter(instrument__id__in=instrument, user=self.request.user, can_view=True)
+            query_time_started = Q(time_started__range=[time_started, time_ended])
+            query_time_ended = Q(time_ended__range=[time_started, time_ended])
+            if search_type == "logs":
+                query_time_started = Q(created_at__range=[time_started, time_ended])
+                query_time_ended = Q(created_at__range=[time_started, time_ended])
+            # filter for only instruments that the user has permission to view
+            if not self.request.user.is_staff:
+                if instrument:
+                    can_view = InstrumentPermission.objects.filter(instrument__id__in=instrument, user=self.request.user, can_view=True)
+                else:
+                    can_view = InstrumentPermission.objects.filter(user=self.request.user, can_view=True)
+                if not can_view.exists():
+                    return InstrumentUsage.objects.none()
+                instruments_ids = [i.instrument.id for i in can_view]
+                if instruments_ids:
+                    query &= Q(instrument__id__in=instruments_ids)
             else:
-                can_view = InstrumentPermission.objects.filter(user=self.request.user, can_view=True)
+                if instrument:
+                    query &= Q(instrument__id__in=instrument)
+
+            if self.request.user.is_staff:
+                return self.queryset.filter((query_time_started | query_time_ended)&query).order_by('-created_at')
+
+            return self.queryset.filter((query_time_started | query_time_ended)&query).order_by('-created_at')
+        if not self.request.user.is_staff:
+            can_view = InstrumentPermission.objects.filter(user=self.request.user, can_view=True)
             if not can_view.exists():
                 return InstrumentUsage.objects.none()
             instruments_ids = [i.instrument.id for i in can_view]
-            if instruments_ids:
-                query &= Q(instrument__id__in=instruments_ids)
-        else:
-            if instrument:
-                query &= Q(instrument__id__in=instrument)
-
-        if self.request.user.is_staff:
-            return self.queryset.filter((query_time_started | query_time_ended)&query).order_by('-created_at')
-
-        return self.queryset.filter((query_time_started | query_time_ended)&query).order_by('-created_at')
+            return self.queryset.filter(instrument__id__in=instruments_ids).order_by('-created_at')
+        return self.queryset.order_by('-created_at')
 
     def get_object(self):
         obj = super().get_object()
+        print(obj)
         return obj
 
     @action(detail=False, methods=['get'])
@@ -2208,6 +2219,10 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
             instance.time_started = time_started
         if "time_ended" in request.data:
             instance.time_ended = time_ended
+        if request.user.is_staff:
+            if "approved" in request.data:
+                instance.approved = request.data['approved']
+
         instance.save()
         data = self.get_serializer(instance).data
         return Response(data, status=status.HTTP_200_OK)
@@ -2242,13 +2257,22 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         usage.time_started = time_started
         usage.time_ended = time_ended
         usage.description = request.data['description']
+        duration = usage.time_ended - usage.time_started
+
+        day_ahead = usage.time_started - timezone.now()
+
+        if (duration.days +1 <= instrument.max_days_within_usage_pre_approval or instrument.max_days_within_usage_pre_approval == 0) and (day_ahead.days+1 <= instrument.max_days_ahead_pre_approval or instrument.max_days_ahead_pre_approval == 0):
+            usage.approved = True
+        else:
+            usage.approved = False
+
         usage.save()
         data = self.get_serializer(usage).data
         return Response(data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['get'])
     def delay_usage(self, request, pk=None):
-        instance = self.get_object()
+        instance = InstrumentUsage.objects.get(id=pk)
         if not self.request.user.is_staff:
             i_permissions = InstrumentPermission.objects.filter(instrument=instance.instrument, user=request.user)
             if not i_permissions.exists():
@@ -2288,6 +2312,26 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         instance_id = request.data.get('instance_id', None)
         job = export_instrument_usage.delay(instrument_ids, lab_group_id, user_id, mode, instance_id, time_started, time_ended, calculate_duration_with_cutoff, request.user.id, file_format)
         return Response({'job_id': job.id}, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def approve_usage_toggle(self, request, pk=None):
+        instance = self.get_object()
+        if not self.request.user.is_staff:
+            i_permissions = InstrumentPermission.objects.filter(instrument=instance.instrument, user=request.user, can_manage=True)
+            if not i_permissions.exists():
+                return Response(status=status.HTTP_401_UNAUTHORIZED)
+        instance.approved = not instance.approved
+        instance.save()
+        if instance.approved:
+            # send email to user
+            if instance.user.email and settings.NOTIFICATION_EMAIL_FROM:
+                send_mail(
+                    'Instrument Usage Approved',
+                    f'Your usage of {instance.instrument.instrument_name} from {instance.time_started} to {instance.time_ended} has been approved',
+                    settings.NOTIFICATION_EMAIL_FROM,
+                    [instance.user.email]
+                )
+        return Response(InstrumentUsageSerializer(instance, many=False).data, status=status.HTTP_200_OK)
 
 
 class StorageObjectViewSet(ModelViewSet, FilterMixin):

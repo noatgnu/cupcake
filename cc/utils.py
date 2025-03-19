@@ -1,4 +1,3 @@
-from sdrf_pipelines.sdrf.sdrf_schema import SDRFSchema
 
 default_columns = [{
             "name": "Source name", "type": "", "mandatory": True

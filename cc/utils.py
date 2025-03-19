@@ -40,6 +40,9 @@ user_metadata = [
             {
                 "name": "Organism", "type": "Characteristics", "mandatory": True
             },
+        {
+            "name": "Disease", "type": "Characteristics", "mandatory": True
+        },
             {
                 "name": "Tissue", "type": "Characteristics", "mandatory": True
             },

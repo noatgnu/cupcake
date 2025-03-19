@@ -1,3 +1,5 @@
+from sdrf_pipelines.sdrf.sdrf_schema import SDRFSchema
+
 default_columns = [{
             "name": "Source name", "type": "", "mandatory": True
         },
@@ -130,3 +132,35 @@ staff_metadata = [
     {"name": "Precursor mass tolerance", "type": "Comment", "mandatory": True, "value": "0 ppm"},
     {"name": "Fragment mass tolerance", "type": "Comment", "mandatory": True, "value": "0 Da"},
         ]
+
+required_metadata = [
+    "source name",
+    "characteristics[organism]",
+    "characteristics[disease]",
+    "characteristics[organism part]",
+    "characteristics[cell type]",
+    "assay name",
+    "comment[fraction identifier]",
+    "comment[label]",
+    "comment[instrument]",
+    "instrument",
+    "comment[technical replicate]",
+    "characteristics[biological replicate]",
+    "comment[cleavage agent details]",
+]
+
+required_metadata_name = [
+    "source name",
+    "organism",
+    "disease",
+    "organism part",
+    "cell type",
+    "assay name",
+    "fraction identifier",
+    "label",
+    "instrument",
+    "technical replicate",
+    "biological replicate",
+    "cleavage agent details",
+]
+

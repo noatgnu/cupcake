@@ -50,7 +50,7 @@ import re
 from docx.shared import Inches, RGBColor
 import re
 
-from cc.utils import user_metadata, staff_metadata
+from cc.utils import user_metadata, staff_metadata, required_metadata_name
 
 capture_language = re.compile(r"auto-detected language: (\w+)")
 
@@ -1323,6 +1323,9 @@ def convert_metadata_column_value_to_sdrf(column_name: str, value: str):
     :param value:
     :return:
     """
+    if value == "" and column_name in required_metadata_name:
+        return "not applicable"
+
     if column_name == "subcellular location":
         if value:
             v = SubcellularLocation.objects.filter(location_identifier=value)

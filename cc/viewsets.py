@@ -3478,7 +3478,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
         if settings.NOTIFICATION_EMAIL_FROM:
             staff = instrument_job.staff.all()
             subject = 'Instrument Job Submitted'
-            message = f'Instrument Job {instrument_job.job_name} has been submitted by {instrument_job.user.username}'
+            message = f'Instrument Job {instrument_job.job_name} {settings.FRONTEND_URL}/#/instruments/{instrument_job.id} has been submitted by {instrument_job.user.username}'
             recipient_list = [staff.email for staff in staff if staff.email]
             if recipient_list:
                 send_mail(subject, message, settings.NOTIFICATION_EMAIL_FROM, recipient_list)

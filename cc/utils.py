@@ -78,7 +78,7 @@ user_metadata = [
                 "name": "Technical replicate", "type": "Comment", "mandatory": True, "value": "1"
             },
             {
-                "name": "Biological replicate", "type": "Comment", "mandatory": True, "value": "1"
+                "name": "Biological replicate", "type": "Characteristics", "mandatory": True, "value": "1"
             }
             ,
             {

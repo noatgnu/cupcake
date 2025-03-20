@@ -25,6 +25,7 @@ from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls
 from drf_chunked_upload.models import ChunkedUpload
 from openpyxl.reader.excel import load_workbook
+from openpyxl.styles import PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
 from openpyxl.workbook import Workbook
 from openpyxl.worksheet.datavalidation import DataValidation
@@ -1866,13 +1867,14 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
     :return:
     """
     instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
-    metadata = []
+
     if export_type=="user_metadata":
         metadata = list(instrument_job.user_metadata.all())
     elif export_type=="staff_metadata":
         metadata = list(instrument_job.staff_metadata.all())
     else:
         metadata = list(instrument_job.user_metadata.all()) + list(instrument_job.staff_metadata.all())
+
     main_metadata = [m for m in metadata if not m.hidden]
     hidden_metadata = [m for m in metadata if m.hidden]
     result_main = sort_metadata(main_metadata, instrument_job.sample_number)
@@ -1892,6 +1894,8 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
         if r.name.lower() not in favourites:
             favourites[r.name.lower()] = []
         favourites[r.name.lower()].append(f"{r.display_value}[**]")
+        if r.name.lower() == "tissue" or r.name.lower() in required_metadata_name:
+            favourites[r.name.lower()].append("not applicable")
     for r in list(global_recommendations):
         if r.name.lower() not in favourites:
             favourites[r.name.lower()] = []
@@ -1903,10 +1907,21 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
     main_ws.title = "main"
     hidden_ws = wb.create_sheet(title="hidden")
 
+    fill = PatternFill(start_color="FFFF99", end_color="FFFF99", fill_type="solid")
+    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'),
+                         bottom=Side(style='thin'))
+
     # Append headers and data to the main worksheet
     main_ws.append(result_main[0])
+    main_work_area = f"A1:{get_column_letter(len(result_main[0]))}{instrument_job.sample_number + 1}"
+
     for row in result_main[1:]:
         main_ws.append(row)
+    for row in main_ws[main_work_area]:
+        for cell in row:
+            cell.fill = fill
+            cell.border = thin_border
+
     for col in main_ws.columns:
         max_length = 0
         column = col[0].column_letter  # Get the column name
@@ -1919,11 +1934,25 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
         adjusted_width = (max_length + 2)
         main_ws.column_dimensions[column].width = adjusted_width
 
+    note_row = instrument_job.sample_number + 2
+    note_text = "Note: Cells that are empty will automatically be filled with 'not applicable' or 'no available' depending on the column when submitted."
+    main_ws.merge_cells(start_row=note_row, start_column=1, end_row=note_row, end_column=len(result_main[0]))
+    note_cell = main_ws.cell(row=note_row, column=1)
+    note_cell.value = note_text
+    note_cell.alignment = Alignment(horizontal='left', vertical='center')
+
     # Append headers and data to the hidden worksheet
+    hidden_work_area = f"A1:{get_column_letter(len(result_hidden[0]))}{instrument_job.sample_number + 1}"
     if len(result_hidden) > 1:
         hidden_ws.append(result_hidden[0])
         for row in result_hidden[1:]:
             hidden_ws.append(row)
+
+        for row in hidden_ws[hidden_work_area]:
+            for cell in row:
+                cell.fill = fill
+                cell.border = thin_border
+
         for col in hidden_ws.columns:
             max_length = 0
             column = col[0].column_letter  # Get the column name
@@ -1938,22 +1967,32 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
 
     for i, header in enumerate(result_main[0]):
         name_splitted = result_main[0][i].split("[")
+        required_column = False
         if len(name_splitted) > 1:
             name = name_splitted[1].replace("]", "")
         else:
             name = name_splitted[0]
+        if name in required_metadata_name:
+            required_column = True
         if name == "organism part":
             name = "tissue"
+
+        option_list = []
+        if required_column:
+            option_list.append(f"not applicable")
+        else:
+            option_list.append("not available")
+
         if name.lower() in favourites:
-            dv = DataValidation(
-                type="list",
-                formula1=f'"{",".join(favourites[name.lower()])}"',
-                showDropDown=False
-            )
-            col_letter = get_column_letter(i + 1)
-            main_ws.add_data_validation(dv)
-            print(f'"{",".join(favourites[name.lower()])}"')
-            dv.add(f"{col_letter}2:{col_letter}{instrument_job.sample_number + 1}")
+            option_list = option_list + favourites[name.lower()]
+        dv = DataValidation(
+            type="list",
+            formula1=f'"{",".join(option_list)}"',
+            showDropDown=False
+        )
+        col_letter = get_column_letter(i + 1)
+        main_ws.add_data_validation(dv)
+        dv.add(f"{col_letter}2:{col_letter}{instrument_job.sample_number + 1}")
     if len(result_hidden) > 1:
         for i, header in enumerate(result_hidden[0]):
             name_splitted = result_hidden[0][i].split("[")
@@ -1961,17 +2000,26 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
                 name = name_splitted[1].replace("]", "")
             else:
                 name = name_splitted[0]
+            required_column = False
+            if name in required_metadata_name:
+                required_column = True
             if name == "organism part":
                 name = "tissue"
+            option_list = []
+            if required_column:
+                option_list.append(f"not applicable")
+            else:
+                option_list.append("not available")
             if name.lower() in favourites:
-                dv = DataValidation(
-                    type="list",
-                    formula1=f'"{",".join(favourites[name.lower()])}"',
-                    showDropDown=False
-                )
-                col_letter = get_column_letter(i + 1)
-                hidden_ws.add_data_validation(dv)
-                dv.add(f"{col_letter}2:{col_letter}{instrument_job.sample_number + 1}")
+                option_list = option_list + favourites[name.lower()]
+            dv = DataValidation(
+                type="list",
+                formula1=f'"{",".join(option_list)}"',
+                showDropDown=False
+            )
+            col_letter = get_column_letter(i + 1)
+            hidden_ws.add_data_validation(dv)
+            dv.add(f"{col_letter}2:{col_letter}{instrument_job.sample_number + 1}")
 
     # save the file
     filename = str(uuid.uuid4())
@@ -2134,11 +2182,13 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
             if data[j][i] is None:
                 data[j][i] = ""
             if data[j][i] == "":
-                continue
-            if data[j][i] == "not applicable":
-                metadata_columns[i].not_applicable = True
-                continue
-            if data[j][i].endswith("[*]"):
+                if name == "tissue" or name in required_metadata_name:
+                    data[j][i] = "not applicable"
+                else:
+                    data[j][i] = "not available"
+            if data[j][i] == "not applicable" or data[j][i] == "not available":
+                value = data[j][i]
+            elif data[j][i].endswith("[*]"):
                 value = data[j][i].replace("[*]", "")
                 value_query = FavouriteMetadataOption.objects.filter(user_id=user_id, name=name, display_value=value, service_lab_group__isnull=True, lab_group__isnull=True)
                 if value_query.exists():

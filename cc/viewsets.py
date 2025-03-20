@@ -15,6 +15,7 @@ from django.db.models import Q, Max
 from django.db.models.expressions import result
 from django.http import HttpResponse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django_filters.views import FilterMixin
 from drf_chunked_upload.models import ChunkedUpload
 from rest_framework.decorators import action
@@ -2246,9 +2247,18 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
     def create(self, request, *args, **kwargs):
         instrument = Instrument.objects.get(id=request.data['instrument'])
         user = self.request.user
-        time_started = request.data['time_started']
-        time_ended = request.data['time_ended']
-        if InstrumentUsage.objects.filter(time_started__range=[time_started,time_ended]).exists() or InstrumentUsage.objects.filter(time_ended__range=[time_started, time_ended]).exists():
+        time_started = parse_datetime(request.data['time_started'])
+        time_ended = parse_datetime(request.data['time_ended'])
+
+        if time_started and time_ended:
+            if timezone.is_naive(time_started):
+                time_started = timezone.make_aware(time_started, timezone.get_current_timezone())
+            if timezone.is_naive(time_ended):
+                time_ended = timezone.make_aware(time_ended, timezone.get_current_timezone())
+
+        if (InstrumentUsage.objects.filter(time_started__range=[time_started,time_ended]).exists()
+                or
+                InstrumentUsage.objects.filter(time_ended__range=[time_started, time_ended]).exists()):
             if not settings.ALLOW_OVERLAP_BOOKINGS:
                 return Response(status=status.HTTP_409_CONFLICT)
         usage = InstrumentUsage()

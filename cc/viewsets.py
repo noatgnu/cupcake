@@ -3780,7 +3780,8 @@ class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
             query &= Q(lab_group=lab_group)
         elif mode == 'user':
             query &= Q(user=user, lab_group__isnull=True, service_lab_group__isnull=True)
-
+        else:
+            query &= Q(user=user)
         if metadata_name:
             query &= Q(name=metadata_name)
 
@@ -3841,7 +3842,8 @@ class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
         if 'display_value' in request.data:
             instance.display_value = request.data['display_value']
         if 'is_global' in request.data:
-            instance.is_global = request.data['is_global']
+            if request.user.is_staff:
+                instance.is_global = request.data['is_global']
         instance.save()
 
         return Response(FavouriteMetadataOptionSerializer(instance).data, status=status.HTTP_200_OK)

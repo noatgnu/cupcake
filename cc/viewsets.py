@@ -3778,7 +3778,7 @@ class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
         elif mode == 'lab_group' and lab_group:
             lab_group = LabGroup.objects.get(id=lab_group)
             query &= Q(lab_group=lab_group)
-        else:
+        elif mode == 'user':
             query &= Q(user=user, lab_group__isnull=True, service_lab_group__isnull=True)
 
         if metadata_name:

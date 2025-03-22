@@ -3769,6 +3769,7 @@ class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
         mode = self.request.query_params.get('mode', None)
         metadata_name = self.request.query_params.get('name', None)
         lab_group = self.request.query_params.get('lab_group_id', None)
+        user_id = self.request.query_params.get('user_id', None)
         query = Q()
 
         if mode == 'service_lab_group' and lab_group:

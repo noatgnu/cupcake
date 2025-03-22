@@ -31,7 +31,8 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.pagination import LimitOffsetPagination
 
-from cc.filters import UnimodFilter
+from cc.filters import UnimodFilter, UnimodSearchFilter, MSUniqueVocabulariesSearchFilter, HumanDiseaseSearchFilter, \
+    TissueSearchFilter, SubcellularLocationSearchFilter, SpeciesSearchFilter
 from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVariation, TimeKeeper, ProtocolSection, \
     ProtocolRating, Reagent, StepReagent, ProtocolReagent, ProtocolTag, StepTag, Tag, AnnotationFolder, Project, \
     Instrument, InstrumentUsage, InstrumentPermission, StorageObject, StoredReagent, ReagentAction, LabGroup, Species, \
@@ -2904,7 +2905,7 @@ class SpeciesViewSet(ModelViewSet, FilterMixin):
     authentication_classes = [TokenAuthentication, SessionAuthentication]
     parser_classes = (MultiPartParser, JSONParser)
     pagination_class = LimitOffsetPagination
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [DjangoFilterBackend, SpeciesSearchFilter, OrderingFilter]
     ordering_fields = ['id', 'taxon', 'official_name', 'code', 'common_name', 'synonym']
     filterset_fields = ['taxon', 'official_name', 'code', 'common_name', 'synonym']
     search_fields = ['^common_name', '^official_name']
@@ -2943,7 +2944,7 @@ class SubcellularLocationViewSet(ModelViewSet, FilterMixin):
     authentication_classes = [TokenAuthentication, SessionAuthentication]
     parser_classes = (MultiPartParser, JSONParser)
     pagination_class = LimitOffsetPagination
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [DjangoFilterBackend, SubcellularLocationSearchFilter, OrderingFilter]
     ordering_fields = ['location_identifier', 'synonyms']
     search_fields = ['^location_identifier', '^synonyms']
 
@@ -2957,7 +2958,7 @@ class TissueViewSet(ModelViewSet, FilterMixin):
     authentication_classes = [TokenAuthentication, SessionAuthentication]
     parser_classes = (MultiPartParser, JSONParser)
     pagination_class = LimitOffsetPagination
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [DjangoFilterBackend, TissueSearchFilter, OrderingFilter]
     ordering_fields = ['identifier', 'synonyms']
     search_fields = ['^identifier', '^synonyms']
 
@@ -2972,7 +2973,7 @@ class HumanDiseaseViewSet(ModelViewSet, FilterMixin):
     authentication_classes = [TokenAuthentication, SessionAuthentication]
     parser_classes = (MultiPartParser, JSONParser)
     pagination_class = LimitOffsetPagination
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [DjangoFilterBackend, HumanDiseaseSearchFilter, OrderingFilter]
     ordering_fields = ['identifier', 'synonyms']
     search_fields = ['^identifier', '^synonyms', '^acronym']
 
@@ -3087,18 +3088,15 @@ class MSUniqueVocabulariesViewSet(FilterMixin, ModelViewSet):
     permission_classes = [IsAuthenticatedOrReadOnly]
     authentication_classes = [TokenAuthentication, SessionAuthentication]
     parser_classes = (MultiPartParser, JSONParser)
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [DjangoFilterBackend, MSUniqueVocabulariesSearchFilter, OrderingFilter]
     ordering_fields = ['accession', 'name']
     search_fields = ['^name']
     pagination_class = LimitOffsetPagination
 
     def get_queryset(self):
         term_type = self.request.query_params.get('term_type', None)
-        print(term_type)
-        print(self.request)
         if term_type:
             result = self.queryset.filter(term_type__iexact=term_type)
-            print(result)
             return result
         return self.queryset
 
@@ -3135,11 +3133,12 @@ class UnimodViewSets(FilterMixin, ModelViewSet):
     permission_classes = [IsAuthenticatedOrReadOnly]
     authentication_classes = [TokenAuthentication, SessionAuthentication]
     parser_classes = (MultiPartParser, JSONParser)
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [DjangoFilterBackend, UnimodSearchFilter, OrderingFilter]
     filterset_class = UnimodFilter
     ordering_fields = ['accession', 'name']
     search_fields = ['^name', '^definition','^accession']
     pagination_class = LimitOffsetPagination
+
 
     def get_queryset(self):
         return super().get_queryset()

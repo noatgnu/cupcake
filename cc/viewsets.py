@@ -3762,7 +3762,7 @@ class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
     parser_classes = (MultiPartParser, JSONParser)
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     ordering_fields = ['id', 'name', 'created_at']
-    search_fields = ['value']
+    search_fields = ['value', 'display_value']
 
     def get_queryset(self):
         user = self.request.user

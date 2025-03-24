@@ -1056,9 +1056,6 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
         {
             "name": "Technical replicate", "type": "Comment", "mandatory": True
         },
-        {
-            "name": "Biological replicate", "type": "Comment", "mandatory": True
-        },
         {"name": "Cleavage agent details", "type": "Comment", "mandatory": True},
         {"name": "Modification parameters", "type": "Comment", "mandatory": True},
         {"name": "Dissociation method", "type": "Comment", "mandatory": True},

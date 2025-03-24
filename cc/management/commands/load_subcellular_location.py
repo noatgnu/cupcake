@@ -27,6 +27,8 @@ def parse_subcellular_location_file(filename=None):
             elif line.startswith("ID"):
                 entry = SubcellularLocation()
                 entry.location_identifier = line[5:].strip()
+                if entry.location_identifier.endswith("."):
+                    entry.location_identifier = entry.location_identifier[:-1]
             elif line.startswith("IT") and entry:
                 entry.topology_identifier = line[5:].strip()
             elif line.startswith("IO") and entry:

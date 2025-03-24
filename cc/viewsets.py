@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import hmac
+import io
 import json
 import time
 import uuid
@@ -30,6 +31,7 @@ from rest_framework.authentication import TokenAuthentication, SessionAuthentica
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.pagination import LimitOffsetPagination
+from sdrf_pipelines.sdrf.sdrf import SdrfDataFrame
 
 from cc.filters import UnimodFilter, UnimodSearchFilter, MSUniqueVocabulariesSearchFilter, HumanDiseaseSearchFilter, \
     TissueSearchFilter, SubcellularLocationSearchFilter, SpeciesSearchFilter
@@ -41,7 +43,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
-    import_sdrf_file, validate_sdrf_file, export_excel_template, export_instrument_usage, import_excel
+    import_sdrf_file, validate_sdrf_file, export_excel_template, export_instrument_usage, import_excel, sdrf_validate
 from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, AnnotationSerializer, \
     SessionSerializer, StepVariationSerializer, TimeKeeperSerializer, ProtocolSectionSerializer, UserSerializer, \
     ProtocolRatingSerializer, ReagentSerializer, StepReagentSerializer, ProtocolReagentSerializer, \
@@ -2800,7 +2802,7 @@ class ReagentActionViewSet(ModelViewSet, FilterMixin):
         return permission
 
 class LabGroupViewSet(ModelViewSet, FilterMixin):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticatedOrReadOnly]
     queryset = LabGroup.objects.all()
     authentication_classes = [TokenAuthentication, SessionAuthentication]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
@@ -3757,7 +3759,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
 class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
     serializer_class = FavouriteMetadataOptionSerializer
     queryset = FavouriteMetadataOption.objects.all()
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticatedOrReadOnly]
     authentication_classes = [TokenAuthentication, SessionAuthentication]
     parser_classes = (MultiPartParser, JSONParser)
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
@@ -3770,21 +3772,24 @@ class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
         metadata_name = self.request.query_params.get('name', None)
         lab_group = self.request.query_params.get('lab_group_id', None)
         user_id = self.request.query_params.get('user_id', None)
-        query = Q()
+        get_global = self.request.query_params.get('get_global', 'false')
 
-        if mode == 'service_lab_group' and lab_group:
-            lab_group = LabGroup.objects.get(id=lab_group, is_professional=True)
-            query &= Q(service_lab_group=lab_group)
-        elif mode == 'lab_group' and lab_group:
-            lab_group = LabGroup.objects.get(id=lab_group)
-            query &= Q(lab_group=lab_group)
-        elif mode == 'user':
-            query &= Q(user=user, lab_group__isnull=True, service_lab_group__isnull=True)
+        query = Q()
+        if get_global != 'true':
+            if mode == 'service_lab_group' and lab_group:
+                lab_group = LabGroup.objects.get(id=lab_group, is_professional=True)
+                query &= Q(service_lab_group=lab_group)
+            elif mode == 'lab_group' and lab_group:
+                lab_group = LabGroup.objects.get(id=lab_group)
+                query &= Q(lab_group=lab_group)
+            elif mode == 'user':
+                query &= Q(user=user, lab_group__isnull=True, service_lab_group__isnull=True)
+            else:
+                query &= Q(user=user)
         else:
-            query &= Q(user=user)
+            query &= Q(is_global=True)
         if metadata_name:
             query &= Q(name=metadata_name)
-
         return self.queryset.filter(query)
 
     def create(self, request, *args, **kwargs):
@@ -3843,6 +3848,9 @@ class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
             instance.display_value = request.data['display_value']
         if 'is_global' in request.data:
             if request.user.is_staff:
+                if instance.is_global != request.data['is_global'] and request.data['is_global']:
+                    if FavouriteMetadataOption.objects.filter(display_value=instance.display_value, is_global=True).exists():
+                        return Response(status=status.HTTP_409_CONFLICT)
                 instance.is_global = request.data['is_global']
         instance.save()
 
@@ -3908,7 +3916,7 @@ class PresetViewSet(ModelViewSet):
 class MetadataTableTemplateViewSets(FilterMixin, ModelViewSet):
     queryset = MetadataTableTemplate.objects.all()
     serializer_class = MetadataTableTemplateSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticatedOrReadOnly]
     authentication_classes = [TokenAuthentication, SessionAuthentication]
     parser_classes = (MultiPartParser, JSONParser)
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
@@ -3919,6 +3927,8 @@ class MetadataTableTemplateViewSets(FilterMixin, ModelViewSet):
         user = self.request.user
         query = Q()
         mode = self.request.query_params.get('mode', 'user')
+        self_only = self.request.query_params.get('self_only', 'false')
+        self_only = self_only.lower() == 'true'
 
         if mode == 'user':
             query &= Q(user=user, lab_group__isnull=True, service_lab_group__isnull=True)
@@ -3933,7 +3943,9 @@ class MetadataTableTemplateViewSets(FilterMixin, ModelViewSet):
             if not user.is_staff:
                 return Response(status=status.HTTP_403_FORBIDDEN)
         # add filter for only enabled templates that if not enabled will only be accessible by the user who created them
-        query &= (Q(enabled=True)|Q(user=user))
+        # query &= (Q(enabled=True)|Q(user=user))
+        if self_only and user.is_authenticated:
+            query &= Q(user=user)
         return self.queryset.filter(query)
 
     def create(self, request, *args, **kwargs):
@@ -4135,4 +4147,11 @@ class MetadataTableTemplateViewSets(FilterMixin, ModelViewSet):
             )
             new_template.columns.add(new_column)
         return Response(MetadataTableTemplateSerializer(new_template).data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], permission_classes=[AllowAny])
+    def validate_sdrf_metadata(self, request):
+        sdrf = request.data['sdrf']
+        print(sdrf)
+        errors = sdrf_validate(sdrf)
+        return Response({"errors": [str(e) for e in errors]}, status=status.HTTP_200_OK)
 

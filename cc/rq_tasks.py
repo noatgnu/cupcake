@@ -35,7 +35,7 @@ from sdrf_pipelines.sdrf.sdrf import SdrfDataFrame
 from cc.models import Annotation, ProtocolModel, ProtocolStep, StepVariation, ProtocolSection, Session, \
     AnnotationFolder, Reagent, ProtocolReagent, StepReagent, ProtocolTag, StepTag, Tag, Project, MetadataColumn, \
     InstrumentJob, SubcellularLocation, Species, MSUniqueVocabularies, Unimod, FavouriteMetadataOption, InstrumentUsage, \
-    LabGroup
+    LabGroup, Tissue
 from django.conf import settings
 import numpy as np
 import subprocess
@@ -1074,8 +1074,21 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
     material_type_metadata = None
     technology_type_metadata = None
     factor_value_columns = []
+    metadata_cache = {}
     for m in metadata:
-        m.value = convert_metadata_column_value_to_sdrf(m.name.lower(), m.value)
+        if m.name not in metadata_cache:
+            metadata_cache[m.name] = {}
+        if m.value not in metadata_cache[m.name]:
+            metadata_cache[m.name][m.value] = convert_metadata_column_value_to_sdrf(m.name.lower(), m.value)
+        m.value = metadata_cache[m.name][m.value]
+        if m.modifiers:
+            m.modifiers = json.loads(m.modifiers)
+            for n, mod in enumerate(m.modifiers):
+                if mod["value"] not in metadata_cache[m.name]:
+                    metadata_cache[m.name][mod["value"]] = convert_metadata_column_value_to_sdrf(m.name.lower(), mod["value"])
+                m.modifiers[n]["value"] = metadata_cache[m.name][mod["value"]]
+        else:
+            m.modifiers = []
         if m.type != "Factor value":
             if m.name not in metadata_column_map:
                 metadata_column_map[m.name] = []
@@ -1126,7 +1139,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
     if source_name_metadata:
         headers.append("source name")
         if source_name_metadata.modifiers:
-            modifiers = json.loads(source_name_metadata.modifiers)
+            modifiers = source_name_metadata.modifiers
             for m in modifiers:
                 samples = parse_sample_indices_from_modifier_string(m["samples"])
                 for s in samples:
@@ -1144,7 +1157,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
             else:
                 headers.append(f"characteristics[{m.name.lower()}]")
             if m.modifiers:
-                modifiers = json.loads(m.modifiers)
+                modifiers = m.modifiers
                 if modifiers:
                     for mod in modifiers:
                         samples = parse_sample_indices_from_modifier_string(mod["samples"])
@@ -1160,7 +1173,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
         if m.type == "Characteristics":
             headers.append(f"characteristics[{m.name.lower()}]")
             if m.modifiers:
-                modifiers = json.loads(m.modifiers)
+                modifiers = m.modifiers
                 if modifiers:
                     for mod in modifiers:
                         samples = parse_sample_indices_from_modifier_string(mod["samples"])
@@ -1175,7 +1188,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
     if material_type_metadata:
         headers.append("material type")
         if material_type_metadata.modifiers:
-            modifiers = json.loads(material_type_metadata.modifiers)
+            modifiers = material_type_metadata.modifiers
             if modifiers:
                 for m in modifiers:
                     samples = parse_sample_indices_from_modifier_string(m["samples"])
@@ -1189,7 +1202,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
     if assay_name_metadata:
         headers.append("assay name")
         if assay_name_metadata.modifiers:
-            modifiers = json.loads(assay_name_metadata.modifiers)
+            modifiers = assay_name_metadata.modifiers
             if modifiers:
                 for m in modifiers:
                     samples = parse_sample_indices_from_modifier_string(m["samples"])
@@ -1203,7 +1216,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
     if technology_type_metadata:
         headers.append("technology type")
         if technology_type_metadata.modifiers:
-            modifiers = json.loads(technology_type_metadata.modifiers)
+            modifiers = technology_type_metadata.modifiers
             if modifiers:
                 for m in modifiers:
                     samples = parse_sample_indices_from_modifier_string(m["samples"])
@@ -1219,7 +1232,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
         if m.type == "":
             headers.append(m.name.lower())
             if m.modifiers:
-                modifiers = json.loads(m.modifiers)
+                modifiers = m.modifiers
                 if modifiers:
                     for mod in modifiers:
                         samples = parse_sample_indices_from_modifier_string(mod["samples"])
@@ -1234,8 +1247,9 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
     for i in range(0, len(non_default_columns)):
         m = non_default_columns[i]
         if m.type == "":
+            headers.append(m.name.lower())
             if m.modifiers:
-                modifiers = json.loads(m.modifiers)
+                modifiers = m.modifiers
                 if modifiers:
                     for mod in modifiers:
                         samples = parse_sample_indices_from_modifier_string(mod["samples"])
@@ -1253,7 +1267,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
             headers.append(f"comment[{m.name.lower()}]")
 
             if m.modifiers:
-                modifiers = json.loads(m.modifiers)
+                modifiers = m.modifiers
                 if modifiers:
                     for mod in modifiers:
                         samples = parse_sample_indices_from_modifier_string(mod["samples"])
@@ -1270,7 +1284,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
             headers.append(f"comment[{m.name.lower()}]")
 
             if m.modifiers:
-                modifiers = json.loads(m.modifiers)
+                modifiers = m.modifiers
                 if modifiers:
                     for mod in modifiers:
                         samples = parse_sample_indices_from_modifier_string(mod["samples"])
@@ -1288,10 +1302,9 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
             m.name = "Organism part"
         headers.append(f"factor value[{m.name.lower()}]")
         if m.modifiers:
-            modifiers = json.loads(m.modifiers)
+            modifiers = m.modifiers
             if modifiers:
                 for mod in modifiers:
-
                     samples = parse_sample_indices_from_modifier_string(mod["samples"])
                     for s in samples:
                         data[s][last_comment] = mod["value"]
@@ -1471,15 +1484,23 @@ def read_sdrf_file(file: str):
 
 def convert_sdrf_to_metadata(name: str, value: str):
     data = value.split(";")
-
-    if name == "subcellular location":
+    if name == "tissue" or name == "organism part":
         for i in data:
             if "NT=" in i:
+                metadata_nt = i.split("=")[1]
+                v = Tissue.objects.filter(identifier=metadata_nt)
+                if v.exists():
+                    return v.first().identifier
+
+        return value
+    if name == "subcellular location":
+        for i in data:
+            if "NT=" in i.upper():
                 metadata_nt = i.split("=")[1]
                 v = SubcellularLocation.objects.filter(location_identifier=metadata_nt)
                 if v.exists():
                     return v.first().location_identifier
-            if "AC=" in i:
+            if "AC=" in i.upper():
                 metadata_ac = i.split("=")[1]
                 v = SubcellularLocation.objects.filter(accession=metadata_ac)
                 if v.exists():
@@ -1817,19 +1838,7 @@ def validate_sdrf_file(metadata_column_ids: list[int], sample_number: int, user_
     metadata_column = MetadataColumn.objects.filter(id__in=metadata_column_ids)
     result = sort_metadata(metadata_column, sample_number)
     # check if there is NoneType in the result
-    df = pd.DataFrame()
-
-    try:
-        df = SdrfDataFrame.parse(io.StringIO("\n".join(["\t".join(i) for i in result])))
-    except TypeError:
-        errors = ["Invalid data in the SDRF file"]
-    if isinstance(df, SdrfDataFrame):
-        try:
-            errors = df.validate("default", True)
-        except Exception as e:
-            errors = [str(e)]
-        errors = errors + df.validate("mass_spectrometry", True)
-        errors = errors + df.validate_experimental_design()
+    errors = sdrf_validate(result)
     channel_layer = get_channel_layer()
     if errors:
         async_to_sync(channel_layer.group_send)(
@@ -1857,6 +1866,23 @@ def validate_sdrf_file(metadata_column_ids: list[int], sample_number: int, user_
             }
         )
 
+
+def sdrf_validate(result):
+    df = pd.DataFrame()
+    try:
+        df = SdrfDataFrame.parse(io.StringIO("\n".join(["\t".join(i) for i in result])))
+    except TypeError:
+        errors = ["Invalid data in the SDRF file"]
+    if isinstance(df, SdrfDataFrame):
+        try:
+            errors = df.validate("default", True)
+        except Exception as e:
+            errors = [str(e)]
+        errors = errors + df.validate("mass_spectrometry", True)
+        errors = errors + df.validate_experimental_design()
+    return errors
+
+
 @job('export', timeout='3h')
 def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int, export_type: str = "user_metadata"):
     """
@@ -1881,6 +1907,7 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
     result_hidden = []
     if hidden_metadata:
         result_hidden = sort_metadata(hidden_metadata, instrument_job.sample_number)
+
     # get favourites for each metadata column
     favourites = {}
     user_favourite = FavouriteMetadataOption.objects.filter(user_id=user_id, service_lab_group__isnull=True, lab_group__isnull=True)
@@ -1942,28 +1969,29 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
     note_cell.alignment = Alignment(horizontal='left', vertical='center')
 
     # Append headers and data to the hidden worksheet
-    hidden_work_area = f"A1:{get_column_letter(len(result_hidden[0]))}{instrument_job.sample_number + 1}"
-    if len(result_hidden) > 1:
-        hidden_ws.append(result_hidden[0])
-        for row in result_hidden[1:]:
-            hidden_ws.append(row)
+    if len(result_hidden) > 0:
+        hidden_work_area = f"A1:{get_column_letter(len(result_hidden[0]))}{instrument_job.sample_number + 1}"
+        if len(result_hidden) > 1:
+            hidden_ws.append(result_hidden[0])
+            for row in result_hidden[1:]:
+                hidden_ws.append(row)
 
-        for row in hidden_ws[hidden_work_area]:
-            for cell in row:
-                cell.fill = fill
-                cell.border = thin_border
+            for row in hidden_ws[hidden_work_area]:
+                for cell in row:
+                    cell.fill = fill
+                    cell.border = thin_border
 
-        for col in hidden_ws.columns:
-            max_length = 0
-            column = col[0].column_letter  # Get the column name
-            for cell in col:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(cell.value)
-                except:
-                    pass
-            adjusted_width = (max_length + 2)
-            hidden_ws.column_dimensions[column].width = adjusted_width
+            for col in hidden_ws.columns:
+                max_length = 0
+                column = col[0].column_letter  # Get the column name
+                for cell in col:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(cell.value)
+                    except:
+                        pass
+                adjusted_width = (max_length + 2)
+                hidden_ws.column_dimensions[column].width = adjusted_width
 
     for i, header in enumerate(result_main[0]):
         name_splitted = result_main[0][i].split("[")
@@ -2079,21 +2107,32 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
         for i in user_columns:
             if i.type not in user_metadata_field_map:
                 user_metadata_field_map[i.type] = {}
-            user_metadata_field_map[i.type][i.name] = {"id": i.id, "type": i.type, "name": i.name, "hidden": i.hidden, "value": i.value, "modifiers": i.modifiers}
+            if i.name not in user_metadata_field_map[i.type]:
+                user_metadata_field_map[i.type][i.name] = []
+            um = {"id": i.id, "type": i.type, "name": i.name, "hidden": i.hidden, "value": i.value, "modifiers": i.modifiers}
+            user_metadata_field_map[i.type][i.name].append(um)
 
         for i in staff_columns:
             if i.type not in staff_metadata_field_map:
                 staff_metadata_field_map[i.type] = {}
-            staff_metadata_field_map[i.type][i.name] = {"id": i.id, "type": i.type, "name": i.name, "hidden": i.hidden, "value": i.value, "modifiers": i.modifiers}
+            if i.name not in staff_metadata_field_map[i.type]:
+                staff_metadata_field_map[i.type][i.name] = []
+
+            sm = {"id": i.id, "type": i.type, "name": i.name, "hidden": i.hidden, "value": i.value, "modifiers": i.modifiers}
+            staff_metadata_field_map[i.type][i.name].append(sm)
     else:
         for i in user_metadata:
             if i['type'] not in user_metadata_field_map:
                 user_metadata_field_map[i['type']] = {}
-            user_metadata_field_map[i['type']][i['name']] = i
+            if i['name'] not in user_metadata_field_map[i['type']]:
+                user_metadata_field_map[i['type']][i['name']] = []
+            user_metadata_field_map[i['type']][i['name']].append(i)
         for i in staff_metadata:
             if i['type'] not in staff_metadata_field_map:
                 staff_metadata_field_map[i['type']] = {}
-            staff_metadata_field_map[i['type']][i['name']] = i
+            if i['name'] not in staff_metadata_field_map[i['type']]:
+                staff_metadata_field_map[i['type']][i['name']] = []
+            staff_metadata_field_map[i['type']][i['name']].push(i)
 
     for header in main_headers:
         metadata_column = MetadataColumn()

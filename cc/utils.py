@@ -145,10 +145,11 @@ required_metadata = [
     "comment[fraction identifier]",
     "comment[label]",
     "comment[instrument]",
-    "instrument",
     "comment[technical replicate]",
     "characteristics[biological replicate]",
     "comment[cleavage agent details]",
+    "comment[data file]"
+    "technology type",
 ]
 
 required_metadata_name = [

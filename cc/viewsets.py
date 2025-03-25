@@ -4151,7 +4151,6 @@ class MetadataTableTemplateViewSets(FilterMixin, ModelViewSet):
     @action(detail=False, methods=['post'], permission_classes=[AllowAny])
     def validate_sdrf_metadata(self, request):
         sdrf = request.data['sdrf']
-        print(sdrf)
         errors = sdrf_validate(sdrf)
         return Response({"errors": [str(e) for e in errors]}, status=status.HTTP_200_OK)
 

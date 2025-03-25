@@ -1870,6 +1870,8 @@ def sdrf_validate(result):
         df = SdrfDataFrame.parse(io.StringIO("\n".join(["\t".join(i) for i in result])))
     except TypeError:
         errors = ["Invalid data in the SDRF file"]
+    except KeyError:
+        errors = ["Missing required columns in the SDRF file"]
     if isinstance(df, SdrfDataFrame):
         try:
             errors = df.validate("default", True)

@@ -17,6 +17,7 @@ from django.db.models.expressions import result
 from django.http import HttpResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
+from django.views.decorators.csrf import ensure_csrf_cookie, csrf_protect
 from django_filters.views import FilterMixin
 from drf_chunked_upload.models import ChunkedUpload
 from rest_framework.decorators import action
@@ -4147,6 +4148,7 @@ class MetadataTableTemplateViewSets(FilterMixin, ModelViewSet):
             )
             new_template.columns.add(new_column)
         return Response(MetadataTableTemplateSerializer(new_template).data, status=status.HTTP_200_OK)
+
 
     @action(detail=False, methods=['post'], permission_classes=[AllowAny])
     def validate_sdrf_metadata(self, request):

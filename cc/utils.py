@@ -129,6 +129,9 @@ staff_metadata = [
             {
                 "name": "MS2 analyzer type", "type": "Comment", "mandatory": True, "hidden": True
             },
+    {
+      "name": "Position", "type": "Comment", "mandatory": True
+    },
 
     {"name": "Dissociation method", "type": "Comment", "mandatory": True},
     {"name": "Precursor mass tolerance", "type": "Comment", "mandatory": True, "value": "0 ppm"},

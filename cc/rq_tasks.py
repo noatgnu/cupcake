@@ -993,7 +993,7 @@ def export_instrument_job_metadata(instrument_job_id: int, data_type: str, user_
         metadata = instrument_job.staff_metadata.all()
     else:
         metadata = list(instrument_job.user_metadata.all()) + list(instrument_job.staff_metadata.all())
-    result = sort_metadata(metadata, instrument_job.sample_number)
+    result, _ = sort_metadata(metadata, instrument_job.sample_number)
     # create tsv file from result
     filename = str(uuid.uuid4())
     tsv_filepath = os.path.join(settings.MEDIA_ROOT, "temp", f"{filename}.tsv")
@@ -1020,6 +1020,7 @@ def export_instrument_job_metadata(instrument_job_id: int, data_type: str, user_
 
 
 def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
+    id_metadata_column_map = {}
     headers = []
     default_columns_list = [{
         "name": "Source name", "type": "", "mandatory": True
@@ -1144,6 +1145,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
         for i in range(sample_number):
             if data[i][0] == "":
                 data[i][0] = source_name_metadata.value
+        id_metadata_column_map[source_name_metadata.id] = {"column": 0, "name": "source name", "type": "", "hidden": source_name_metadata.hidden}
         last_characteristics += 1
     # fill characteristics
     for i in range(0, len(new_metadata)):
@@ -1163,6 +1165,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
             for j in range(sample_number):
                 if data[j][last_characteristics] == "":
                     data[j][last_characteristics] = m.value
+            id_metadata_column_map[m.id] = {"column": last_characteristics, "name": headers[-1], "type": "characteristics", "hidden": m.hidden}
             last_characteristics += 1
     # fill characteristics from non default columns
     for i in range(0, len(non_default_columns)):
@@ -1179,6 +1182,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
             for j in range(sample_number):
                 if data[j][last_characteristics] == "":
                     data[j][last_characteristics] = m.value
+            id_metadata_column_map[m.id] = {"column": last_characteristics, "name": headers[-1], "type": "characteristics", "hidden": m.hidden}
             last_characteristics += 1
     # fill material type column
     last_non_type = last_characteristics
@@ -1194,6 +1198,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
         for i in range(sample_number):
             if data[i][last_non_type] == "":
                 data[i][last_non_type] = material_type_metadata.value
+        id_metadata_column_map[material_type_metadata.id] = {"column": last_non_type, "name": "material type", "type": "", "hidden": material_type_metadata.hidden}
         last_non_type += 1
     # fill assay name column
     if assay_name_metadata:
@@ -1208,6 +1213,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
         for i in range(sample_number):
             if data[i][last_non_type] == "":
                 data[i][last_non_type] = assay_name_metadata.value
+        id_metadata_column_map[assay_name_metadata.id] = {"column": last_non_type, "name": "assay name", "type": "", "hidden": assay_name_metadata.hidden}
         last_non_type += 1
     # fill technology type column
     if technology_type_metadata:
@@ -1222,6 +1228,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
         for i in range(sample_number):
             if data[i][last_non_type] == "":
                 data[i][last_non_type] = technology_type_metadata.value
+        id_metadata_column_map[technology_type_metadata.id] = {"column": last_non_type, "name": "technology type", "type": "", "hidden": technology_type_metadata.hidden}
         last_non_type += 1
     # fill non type column
     for i in range(0, len(new_metadata)):
@@ -1239,6 +1246,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
             for j in range(sample_number):
                 if data[j][last_non_type] == "":
                     data[j][last_non_type] = m.value
+            id_metadata_column_map[m.id] = {"column": last_non_type, "name": headers[-1], "type": "", "hidden": m.hidden}
             last_non_type += 1
     # fill non type from non default columns
     for i in range(0, len(non_default_columns)):
@@ -1255,6 +1263,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
             for j in range(sample_number):
                 if data[j][last_non_type] == "":
                     data[j][last_non_type] = m.value
+            id_metadata_column_map[m.id] = {"column": last_non_type, "name": headers[-1], "type": "", "hidden": m.hidden}
             last_non_type += 1
     # fill comment column
     last_comment = last_non_type
@@ -1273,6 +1282,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
             for j in range(sample_number):
                 if data[j][last_comment] == "":
                     data[j][last_comment] = m.value
+            id_metadata_column_map[m.id] = {"column": last_comment, "name": headers[-1], "type": "comment", "hidden": m.hidden}
             last_comment += 1
     # fill comment from non default columns
     for i in range(0, len(non_default_columns)):
@@ -1290,6 +1300,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
             for j in range(sample_number):
                 if data[j][last_comment] == "":
                     data[j][last_comment] = m.value
+            id_metadata_column_map[m.id] = {"column": last_comment, "name": headers[-1], "type": "comment",  "hidden": m.hidden}
             last_comment += 1
     # write factor values
 
@@ -1308,8 +1319,9 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
         for j in range(sample_number):
             if data[j][last_comment] == "":
                 data[j][last_comment] = m.value
+        id_metadata_column_map[m.id] = {"column": last_comment, "name": headers[-1], "type": "factor value", "hidden": m.hidden}
         last_comment += 1
-    return [headers, *data]
+    return [headers, *data], id_metadata_column_map
 
 def parse_sample_indices_from_modifier_string(samples: str):
     """
@@ -1697,7 +1709,7 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
             name = header
         if name == "organism part":
             name = "tissue"
-        metadata_column.name = name.capitalize()
+        metadata_column.name = name.capitalize().replace("Ms1", "MS1").replace("Ms2", "MS2")
         metadata_column.type = type.capitalize()
         metadata_columns.append(metadata_column)
     if len(data) != instrument_job.sample_number:
@@ -1833,7 +1845,7 @@ def validate_sdrf_file(metadata_column_ids: list[int], sample_number: int, user_
     """
 
     metadata_column = MetadataColumn.objects.filter(id__in=metadata_column_ids)
-    result = sort_metadata(metadata_column, sample_number)
+    result, _ = sort_metadata(metadata_column, sample_number)
     # check if there is NoneType in the result
     errors = sdrf_validate(result)
     channel_layer = get_channel_layer()
@@ -1902,10 +1914,11 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
 
     main_metadata = [m for m in metadata if not m.hidden]
     hidden_metadata = [m for m in metadata if m.hidden]
-    result_main = sort_metadata(main_metadata, instrument_job.sample_number)
+    result_main, id_map_main = sort_metadata(main_metadata, instrument_job.sample_number)
     result_hidden = []
+    id_map_hidden = {}
     if hidden_metadata:
-        result_hidden = sort_metadata(hidden_metadata, instrument_job.sample_number)
+        result_hidden, id_map_hidden = sort_metadata(hidden_metadata, instrument_job.sample_number)
 
     # get favourites for each metadata column
     favourites = {}
@@ -1932,6 +1945,14 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
     main_ws = wb.active
     main_ws.title = "main"
     hidden_ws = wb.create_sheet(title="hidden")
+    id_metadata_column_map_ws = wb.create_sheet(title="id_metadata_column_map")
+    # fill in the id_metadata_column_map_ws with 3 columns: id, name, type
+    id_metadata_column_map_ws.append(["id", "column", "name", "type", "hidden"])
+
+    for k, v in id_map_main.items():
+        id_metadata_column_map_ws.append([k, v["column"], v["name"], v["type"], v["hidden"]])
+    for k, v in id_map_hidden.items():
+        id_metadata_column_map_ws.append([k, v["column"], v["name"], v["type"], v["hidden"]])
 
     fill = PatternFill(start_color="FFFF99", end_color="FFFF99", fill_type="solid")
     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'),
@@ -2086,6 +2107,11 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
     hidden_ws = None
     hidden_headers = []
     hidden_data = []
+    id_metadata_column_map_ws = wb["id_metadata_column_map"]
+    id_metadata_column_map_list = [list(row) for row in id_metadata_column_map_ws.iter_rows(min_row=2, values_only=True)]
+    id_metadata_column_map = {}
+    for row in id_metadata_column_map_list:
+        id_metadata_column_map[int(row[0])] = {"column": row[1], "name": row[2], "type": row[3], "hidden": row[4]}
     if "hidden" in wb.sheetnames:
         hidden_ws = wb["hidden"]
         # check if there is any data in the hidden sheet
@@ -2100,6 +2126,7 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
 
     user_metadata_field_map = {}
     staff_metadata_field_map = {}
+    read_only_metadata_map = {}
     if instrument_job.selected_template:
         user_columns = list(instrument_job.user_metadata.all())
         staff_columns = list(instrument_job.staff_metadata.all())
@@ -2110,6 +2137,7 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
                 user_metadata_field_map[i.type][i.name] = []
             um = {"id": i.id, "type": i.type, "name": i.name, "hidden": i.hidden, "value": i.value, "modifiers": i.modifiers}
             user_metadata_field_map[i.type][i.name].append(um)
+
 
         for i in staff_columns:
             if i.type not in staff_metadata_field_map:
@@ -2133,36 +2161,55 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
                 staff_metadata_field_map[i['type']][i['name']] = []
             staff_metadata_field_map[i['type']][i['name']].push(i)
 
-    for header in main_headers:
-        metadata_column = MetadataColumn()
-        header = header.lower()
-        if "[" in header:
-            type = header.split("[")[0]
-            name = header.split("[")[1].replace("]", "")
+    for n, header in enumerate(main_headers):
+        id_from_map = 0
+        for row in id_metadata_column_map_list:
+            row_data = id_metadata_column_map[int(row[0])]
+            if row_data["column"] == n and not row_data["hidden"]:
+                id_from_map = int(row[0])
+                break
+        if id_from_map != 0:
+            metadata_column = MetadataColumn.objects.get(id=id_from_map)
         else:
-            type = ""
-            name = header
-        if name == "organism part":
-            name = "tissue"
-        metadata_column.name = name.capitalize()
-        metadata_column.type = type.capitalize()
-        metadata_column.hidden = False
+            metadata_column = MetadataColumn()
+            header = header.lower()
+            if "[" in header:
+                type = header.split("[")[0]
+                name = header.split("[")[1].replace("]", "")
+            else:
+                type = ""
+                name = header
+            if name == "organism part":
+                name = "tissue"
+            metadata_column.name = name.capitalize().replace("Ms1", "MS1").replace("Ms2", "MS2")
+            metadata_column.type = type.capitalize()
+            metadata_column.hidden = False
         metadata_columns.append(metadata_column)
 
-    for header in hidden_headers:
-        metadata_column = MetadataColumn()
-        header = header.lower()
-        if "[" in header:
-            type = header.split("[")[0]
-            name = header.split("[")[1].replace("]", "")
+    for n, header in enumerate(hidden_headers):
+        id_from_map = 0
+        for row in id_metadata_column_map_list:
+            row_data = id_metadata_column_map[int(row[0])]
+            if row_data["column"] == n and row_data["hidden"]:
+                id_from_map = int(row[0])
+                break
+
+        if id_from_map != 0:
+            metadata_column = MetadataColumn.objects.get(id=id_from_map)
         else:
-            type = ""
-            name = header
-        if name == "organism part":
-            name = "tissue"
-        metadata_column.name = name.capitalize()
-        metadata_column.type = type.capitalize()
-        metadata_column.hidden = True
+            metadata_column = MetadataColumn()
+            header = header.lower()
+            if "[" in header:
+                type = header.split("[")[0]
+                name = header.split("[")[1].replace("]", "")
+            else:
+                type = ""
+                name = header
+            if name == "organism part":
+                name = "tissue"
+            metadata_column.name = name.capitalize().replace("Ms1", "MS1").replace("Ms2", "MS2")
+            metadata_column.type = type.capitalize()
+            metadata_column.hidden = True
         metadata_columns.append(metadata_column)
     if len(hidden_data) > 0:
         headers = main_headers + hidden_headers
@@ -2214,6 +2261,17 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
         instrument_job.staff_metadata.clear()
 
     for i in range(len(metadata_columns)):
+        if metadata_columns[i].readonly:
+            # check if the metadata column exists in the read_only_metadata_map then remove the reference from the map
+            if data_type == "user_metadata":
+                check_and_remove_metadata_from_map(i, metadata_columns, user_metadata_field_map)
+
+            elif data_type == "staff_metadata":
+                check_and_remove_metadata_from_map(i, metadata_columns, staff_metadata_field_map)
+            else:
+                check_and_remove_metadata_from_map(i, metadata_columns, user_metadata_field_map)
+                check_and_remove_metadata_from_map(i, metadata_columns, staff_metadata_field_map)
+            continue
         metadata_value_map = {}
         for j in range(len(data)):
             name = metadata_columns[i].name.lower()
@@ -2290,19 +2348,49 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
                 modifiers.append(modifier)
         if modifiers:
             metadata_columns[i].modifiers = json.dumps(modifiers)
-        metadata_columns[i].save()
+
         if data_type == "user_metadata":
-            instrument_job.user_metadata.add(metadata_columns[i])
+            if metadata_columns[i].id:
+                metadata_columns[i].save()
+                check_and_remove_metadata_from_map(i, metadata_columns, user_metadata_field_map)
+            else:
+                # check if the metadata column exists in the user_metadata_field_map then remove the reference from the map
+                check_metadata_column_create_then_remove_from_map(i, instrument_job, metadata_columns,
+                                                                  user_metadata_field_map)
         elif data_type == "staff_metadata":
-            instrument_job.staff_metadata.add(metadata_columns[i])
+            if metadata_columns[i].id:
+                metadata_columns[i].save()
+                check_and_remove_metadata_from_map(i, metadata_columns, staff_metadata_field_map)
+            else:
+                # check if the metadata column exists in the staff_metadata_field_map then remove the reference from the map
+                check_metadata_column_create_then_remove_from_map(i, instrument_job, metadata_columns,
+                                                                  staff_metadata_field_map)
         else:
             if metadata_columns[i].type in staff_metadata_field_map:
                 if metadata_columns[i].name in staff_metadata_field_map[metadata_columns[i].type]:
-                    instrument_job.staff_metadata.add(metadata_columns[i])
+                    first_column = staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name][0]
+                    first_column.value = metadata_columns[i].value
+                    first_column.modifiers = metadata_columns[i].modifiers
+                    first_column.save()
+                    staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name].remove(first_column)
+                    if not staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]:
+                        del staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]
                 else:
-                    instrument_job.user_metadata.add(metadata_columns[i])
+                    check_metadata_column_create_then_remove_from_map(i, instrument_job, metadata_columns,
+                                                                      user_metadata_field_map)
             else:
-                instrument_job.user_metadata.add(metadata_columns[i])
+                check_metadata_column_create_then_remove_from_map(i, instrument_job, metadata_columns,
+                                                                  user_metadata_field_map)
+    # check if there are any metadata columns left in the user_metadata_field_map and staff_metadata_field_map
+
+    for d_type in user_metadata_field_map:
+        for name in user_metadata_field_map[d_type]:
+            for i in user_metadata_field_map[d_type][name]:
+                i.delete()
+    for d_type in staff_metadata_field_map:
+        for name in staff_metadata_field_map[d_type]:
+            for i in staff_metadata_field_map[d_type][name]:
+                i.delete()
 
     channel_layer = get_channel_layer()
     # notify user through channels that it has completed
@@ -2317,6 +2405,33 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
             },
         }
     )
+
+
+def check_metadata_column_create_then_remove_from_map(i, instrument_job, metadata_columns, metadata_field_map):
+    if metadata_columns[i].type in metadata_field_map:
+        if metadata_columns[i].name in metadata_field_map[metadata_columns[i].type]:
+            first_column = metadata_field_map[metadata_columns[i].type][metadata_columns[i].name][0]
+            first_column.value = metadata_columns[i].value
+            first_column.modifiers = metadata_columns[i].modifiers
+            first_column.save()
+            metadata_field_map[metadata_columns[i].type][metadata_columns[i].name].remove(first_column)
+            if not metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]:
+                del metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]
+        else:
+            metadata_columns[i].save()
+            instrument_job.user_metadata.add(metadata_columns[i])
+    else:
+        metadata_columns[i].save()
+        instrument_job.user_metadata.add(metadata_columns[i])
+
+
+def check_and_remove_metadata_from_map(i, metadata_columns, metadata_field_map):
+    if metadata_columns[i].type in metadata_field_map:
+        if metadata_columns[i].name in metadata_field_map[metadata_columns[i].type]:
+            first_column = metadata_field_map[metadata_columns[i].type][metadata_columns[i].name][0]
+            metadata_field_map[metadata_columns[i].type][metadata_columns[i].name].remove(first_column)
+            if not metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]:
+                del metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]
 
 @job('export', timeout='3h')
 def export_instrument_usage(instrument_ids: list[int], lab_group_ids: list[int], user_ids: list[int], mode: str, instance_id: str, time_started: str = None, time_ended: str = None, calculate_duration_with_cutoff: bool = False, user_id: int = 0, file_format: str = "xlsx"):

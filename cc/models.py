@@ -654,6 +654,8 @@ class InstrumentUsage(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="instrument_usage", blank=True, null=True)
     remote_host = models.ForeignKey("RemoteHost", on_delete=models.CASCADE, related_name="instrument_usages", blank=True, null=True)
     approved = models.BooleanField(default=False)
+    maintenance = models.BooleanField(default=False)
+    approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="approved_by_instrument_usage", blank=True, null=True)
 
     class Meta:
         app_label = "cc"

@@ -642,6 +642,7 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
             if request.data['session'] != "":
                 session = Session.objects.get(unique_id=request.data['session'])
                 annotation.session = session
+        maintenance = request.data.get('maintenance', False)
         annotation.annotation = request.data['annotation']
         annotation.annotation_type = request.data['annotation_type']
         annotation.user = request.user
@@ -660,19 +661,35 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
                     adding_metadata_columns.append(
                         MetadataColumn(value=meta_col.value, type=meta_col.type, name=meta_col.name, annotation=annotation)
                     )
-            instrument_permission = InstrumentPermission.objects.filter(instrument=instrument, user=request.user)
-            if not instrument_permission.exists():
-                return Response(status=status.HTTP_401_UNAUTHORIZED)
-            instrument_permission = instrument_permission.first()
-            if not instrument_permission.can_manage and not instrument_permission.can_book:
-                return Response(status=status.HTTP_401_UNAUTHORIZED)
+            if not request.user.is_staff:
+                instrument_permission = InstrumentPermission.objects.filter(instrument=instrument, user=request.user)
+                if not instrument_permission.exists():
+                    return Response(status=status.HTTP_401_UNAUTHORIZED)
+                instrument_permission = instrument_permission.first()
+                if not instrument_permission.can_manage and not instrument_permission.can_book:
+                    return Response(status=status.HTTP_401_UNAUTHORIZED)
+                if maintenance:
+                    if not instrument_permission.can_manage:
+                        return Response(status=status.HTTP_401_UNAUTHORIZED)
             if "time_started" in request.data and "time_ended" in request.data:
                 time_started = request.data['time_started']
                 time_ended = request.data['time_ended']
                 # check if the instrument is available at this time by checking if submitted time_started is between the object time_started and time_ended or time_ended is between the object time_started and time_ended
-                if time_started and time_ended and not settings.ALLOW_OVERLAP_BOOKINGS:
-                    if InstrumentUsage.objects.filter(instrument=instrument, time_started__range=[time_started, time_ended]).exists() or InstrumentUsage.objects.filter(instrument=instrument, time_ended__range=[time_started, time_ended]).exists():
+                if time_started and time_ended:
+                    time_started_overlap = InstrumentUsage.objects.filter(instrument=instrument,
+                                                                          time_started__range=[time_started,
+                                                                                               time_ended])
+                    time_ended_overlap = InstrumentUsage.objects.filter(instrument=instrument, time_ended__range=[time_started, time_ended])
+                    has_maintenance_started = time_started_overlap.filter(maintenance=True).exists()
+                    has_maintenance_ended = time_ended_overlap.filter(maintenance=True).exists()
+                    if has_maintenance_started or has_maintenance_ended:
                         return Response(status=status.HTTP_409_CONFLICT)
+                    else:
+                        if (time_started_overlap.exists() or time_ended_overlap.exists()) and not settings.ALLOW_OVERLAP_BOOKINGS:
+                            return Response(status=status.HTTP_409_CONFLICT)
+
+
+
         annotation.save()
         if adding_metadata_columns:
             # sort the metadata columns first by type, characteristics first, then none, then comment type
@@ -707,7 +724,8 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
                 time_started=time_started,
                 time_ended=time_ended,
                 user=request.user,
-                description=annotation.annotation
+                description=annotation.annotation,
+                maintenance=maintenance
             )
         if 'instrument_job' in request.data and 'instrument_user_type' in request.data:
             instrument_job = InstrumentJob.objects.get(id=request.data['instrument_job'])
@@ -2227,6 +2245,15 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         if request.user.is_staff:
             if "approved" in request.data:
                 instance.approved = request.data['approved']
+            if "maintenance" in request.data:
+                instance.maintenance = request.data['maintenance']
+        else:
+            can_manage_permission = InstrumentPermission.objects.filter(instrument=instance.instrument, user=request.user, can_manage=True)
+            if can_manage_permission.exists():
+                if "approved" in request.data:
+                    instance.approved = request.data['approved']
+                if "maintenance" in request.data:
+                    instance.maintenance = request.data['maintenance']
 
         instance.save()
         data = self.get_serializer(instance).data
@@ -2243,7 +2270,15 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         # else:
         #     if not permission.first().can_manage:
         #         return Response(status=status.HTTP_401_UNAUTHORIZED)
-
+        instrument = instance.instrument
+        if not self.request.user.is_staff:
+            if not self.request.user == instance.user:
+                i_permissions = InstrumentPermission.objects.filter(instrument=instrument, user=self.request.user)
+                if not i_permissions.exists():
+                    return Response(status=status.HTTP_401_UNAUTHORIZED)
+                else:
+                    if not i_permissions.first().can_manage:
+                        return Response(status=status.HTTP_401_UNAUTHORIZED)
         instance.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -2253,7 +2288,7 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         user = self.request.user
         time_started = parse_datetime(request.data['time_started'])
         time_ended = parse_datetime(request.data['time_ended'])
-
+        usage = InstrumentUsage()
         if time_started and time_ended:
             if timezone.is_naive(time_started):
                 time_started = timezone.make_aware(time_started, timezone.get_current_timezone())
@@ -2265,7 +2300,7 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
                 InstrumentUsage.objects.filter(time_ended__range=[time_started, time_ended]).exists()):
             if not settings.ALLOW_OVERLAP_BOOKINGS:
                 return Response(status=status.HTTP_409_CONFLICT)
-        usage = InstrumentUsage()
+
         usage.instrument = instrument
         usage.user = user
         usage.time_started = time_started
@@ -2275,10 +2310,26 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
 
         day_ahead = usage.time_started - timezone.now()
 
-        if (duration.days +1 <= instrument.max_days_within_usage_pre_approval or instrument.max_days_within_usage_pre_approval == 0) and (day_ahead.days+1 <= instrument.max_days_ahead_pre_approval or instrument.max_days_ahead_pre_approval == 0):
+        if (
+                duration.days +1
+                <= instrument.max_days_within_usage_pre_approval or
+                instrument.max_days_within_usage_pre_approval == 0
+        ) and (
+                day_ahead.days+1 <=
+                instrument.max_days_ahead_pre_approval or
+                instrument.max_days_ahead_pre_approval == 0
+        ):
             usage.approved = True
         else:
             usage.approved = False
+
+        if 'maintenance' in request.data:
+            usage.maintenance = request.data['maintenance']
+            if usage.maintenance:
+                if not request.user.is_staff:
+                    can_manage = InstrumentPermission.objects.filter(instrument=instrument, user=request.user, can_manage=True)
+                    if not can_manage.exists():
+                        return Response(status=status.HTTP_401_UNAUTHORIZED)
 
         usage.save()
         data = self.get_serializer(usage).data
@@ -2337,6 +2388,8 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         instance.approved = not instance.approved
         instance.save()
         if instance.approved:
+            instance.approved_by = request.user
+            instance.save()
             # send email to user
             if instance.user.email and settings.NOTIFICATION_EMAIL_FROM:
                 send_mail(

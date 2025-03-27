@@ -275,7 +275,9 @@ class InstrumentUsageSerializer(ModelSerializer):
             'time_ended',
             'user',
             'description',
-            'approved'
+            'approved',
+            'maintenance',
+            'approved_by'
         ]
 
 class StorageObjectSerializer(ModelSerializer):

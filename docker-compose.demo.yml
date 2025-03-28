@@ -1,0 +1,144 @@
+# a docker-compose file with a postgres 14 service
+
+#version: '3.8'
+services:
+  ccnginx:
+    build:
+      context: .
+      dockerfile: ./dockerfiles/Dockerfile-nginx
+    container_name: ccnginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./media:/media/
+      - ./staticfiles:/static/
+      - ssl:/certs
+    depends_on:
+      - cc
+      - ssl
+    networks:
+      - cc-net
+  ssl:
+    build:
+      context: .
+      dockerfile: ./dockerfiles/Dockerfile-ssl
+    volumes:
+      - ssl:/certs
+  cc:
+    build:
+        context: .
+        dockerfile: ./dockerfiles/Dockerfile
+        network: host
+    ports:
+      - "8001:8000"
+    container_name: cc
+    volumes:
+      - ./media:/app/media/
+    env_file:
+      - .env
+    networks:
+        - cc-net
+  ccdocx:
+    build:
+        context: .
+        dockerfile: dockerfiles/Dockerfile-export-worker
+        network: host
+    container_name: ccdocx
+    volumes:
+      - ./media:/app/media/
+    env_file:
+      - .env
+    networks:
+      - cc-net
+  ccimport:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile-import-data-worker
+      network: host
+    container_name: ccimport
+    volumes:
+      - ./media:/app/media/
+    env_file:
+      - .env
+    networks:
+      - cc-net
+
+  ccworker:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile-transcribe-worker
+      network: host
+    container_name: ccworker
+    volumes:
+      - ./media:/app/media/
+    env_file:
+      - .env
+    networks:
+      - cc-net
+  ccocr:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile-ocr
+      network: host
+    container_name: ccocr
+    volumes:
+      - ./media:/app/media/
+    env_file:
+      - .env
+    networks:
+      - cc-net
+  ccdb:
+    container_name: ccdb
+    image: postgres:14
+    restart: always
+    shm_size: '2gb'
+    env_file:
+      - .env
+    ports:
+    - "5433:5432"
+    volumes:
+    - ./data2:/var/lib/postgresql/data
+    networks:
+        - cc-net
+  ccredis:
+    build:
+      context: .
+      dockerfile: ./dockerfiles/Dockerfile-redis
+      network: host
+    container_name: ccredis
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - "6380:6379"
+    networks:
+      - cc-net
+  ccllama:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile-llama-worker
+      network: host
+    container_name: ccllama
+    env_file:
+      - .env
+    networks:
+      - cc-net
+#  llama:
+#    build:
+#      context: .
+#      dockerfile: ./dockerfiles/Dockerfile-llama
+#      network: host
+#    container_name: llama
+#    restart: always
+#    ports:
+#      - "8080:8080"
+#    volumes:
+#      - ./models:/models
+#    entrypoint: ./server -m /models/capybarahermes-2.5-mistral-7b.Q5_K_M.gguf --host 0.0.0.0 --port 8080 -t 16 -c 2048
+volumes:
+  ssl:
+
+networks:
+    cc-net:

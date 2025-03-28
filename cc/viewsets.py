@@ -756,6 +756,9 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
+        if not request.user.is_staff:
+            if not instance.check_for_right(request.user, "edit"):
+                return Response(status=status.HTTP_401_UNAUTHORIZED)
         if 'annotation' in request.data:
             instance.annotation = request.data['annotation']
         if 'file' in request.data:
@@ -769,7 +772,11 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
         return Response(data, status=status.HTTP_200_OK)
 
     def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
+        instance: Annotation = self.get_object()
+        if not request.user.is_staff:
+            if not instance.check_for_right(request.user, "delete"):
+                return Response(status=status.HTTP_401_UNAUTHORIZED)
+
         instance.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -798,21 +805,29 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
         return response
 
     def get_object(self):
-        obj = super().get_object()
+        obj: Annotation = super().get_object()
         user = self.request.user
-
-        if obj.user == user or obj.session.user == user:
+        if obj.user == user:
             return obj
-
-        if obj.session.viewers.filter(id=user.id).exists():
+        if obj.session:
+            if obj.session.user == user:
+                return obj
+            if obj.session.viewers.filter(id=user.id).exists():
+                return obj
+            if obj.session.editors.filter(id=user.id).exists():
+                return obj
+            if obj.session.enabled:
+                return obj
+        if obj.folder:
+            if obj.folder.instrument:
+                i_permission = InstrumentPermission.objects.filter(instrument=obj.folder.instrument, user=user)
+                if i_permission.exists():
+                    i_permission = i_permission.first()
+                    if i_permission.can_book or i_permission.can_manage or i_permission.can_view:
+                        return obj
+        instrument_jobs = obj.instrument_jobs.all()
+        if instrument_jobs.exists():
             return obj
-
-        if obj.session.editors.filter(id=user.id).exists():
-            return obj
-
-        if obj.session.enabled:
-            return obj
-
         raise PermissionDenied
 
     @action(detail=True, methods=['post'])
@@ -822,34 +837,43 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
         user = self.request.user
         file = {'file': annotation.file.name, 'id': annotation.id}
         signed_token = signer.sign_object(file)
-        if annotation.session:
-            if annotation.session.enabled:
-                if not annotation.scratched:
-                    return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
-
-        if user.is_authenticated:
-            if annotation.session:
-                if user in annotation.session.viewers.all() or user in annotation.session.editors.all() or user == annotation.session.user or user == annotation.user:
-                    if annotation.scratched:
-                        if user not in annotation.session.editors.all() and user != annotation.user and user != annotation.session.user:
-                            return Response(status=status.HTTP_401_UNAUTHORIZED)
-                    else:
-                        return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
-                    return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
-            else:
-                instrument_jobs = annotation.instrument_jobs.all()
-                for instrument_job in instrument_jobs:
-                    if user == instrument_job.user:
-                        return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
-                    else:
-                        lab_group = instrument_job.service_lab_group
-                        staff =  instrument_job.staff.all()
-                        if staff.count() > 0:
-                            if user in staff:
-                                return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
-                        else:
-                            if user in lab_group.users.all():
-                                return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
+        if annotation.check_for_right(user, "view"):
+            return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
+        # if annotation.session:
+        #     if annotation.session.enabled:
+        #         if not annotation.scratched:
+        #             return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
+        #
+        # if user.is_authenticated:
+        #     if annotation.session:
+        #         if user in annotation.session.viewers.all() or user in annotation.session.editors.all() or user == annotation.session.user or user == annotation.user:
+        #             if annotation.scratched:
+        #                 if user not in annotation.session.editors.all() and user != annotation.user and user != annotation.session.user:
+        #                     return Response(status=status.HTTP_401_UNAUTHORIZED)
+        #             else:
+        #                 return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
+        #             return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
+        #     if annotation.folder:
+        #         if annotation.folder.instrument:
+        #             i_permission = InstrumentPermission.objects.filter(instrument=annotation.folder.instrument, user=user)
+        #             if i_permission.exists():
+        #                 i_permission = i_permission.first()
+        #                 if i_permission.can_book or i_permission.can_manage or i_permission.can_view:
+        #                     return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
+        #     else:
+        #         instrument_jobs = annotation.instrument_jobs.all()
+        #         for instrument_job in instrument_jobs:
+        #             if user == instrument_job.user:
+        #                 return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
+        #             else:
+        #                 lab_group = instrument_job.service_lab_group
+        #                 staff =  instrument_job.staff.all()
+        #                 if staff.count() > 0:
+        #                     if user in staff:
+        #                         return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
+        #                 else:
+        #                     if user in lab_group.users.all():
+        #                         return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
         return Response(status=status.HTTP_401_UNAUTHORIZED)
 
 
@@ -877,6 +901,8 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
     def retranscribe(self, request, pk=None):
         annotation = self.get_object()
         language = "auto"
+        if not annotation.check_for_right(request.user, "edit"):
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
         if "language" in request.data:
             language = request.data['language']
         if annotation.annotation_type == "video":
@@ -893,6 +919,8 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
             return Response(status=status.HTTP_400_BAD_REQUEST)
         annotation: Annotation = self.get_object()
         custom_id = self.request.META.get('HTTP_X_CUPCAKE_INSTANCE_ID', None)
+        if not annotation.check_for_right(request.user, "edit"):
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
         if annotation.annotation_type == "sketch":
             with open(annotation.file.path, "rb") as f:
                 json_data = json.load(f)
@@ -984,6 +1012,8 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
         upload.delete()
         data = self.get_serializer(annotation).data
         return Response(data, status=status.HTTP_201_CREATED)
+
+
 
 
 class SessionViewSet(ModelViewSet, FilterMixin):
@@ -1520,6 +1550,20 @@ class UserViewSet(ModelViewSet, FilterMixin):
                     permission['delete'] = True
                 elif request.user in a.session.viewers.all() or a.session.enabled:
                     permission['view'] = True
+
+            elif a.folder:
+                if a.folder.instrument:
+                    i_permission = InstrumentPermission.objects.filter(instrument=a.folder.instrument, user=request.user)
+                    if i_permission.exists():
+                        p = i_permission.first()
+                        if p.can_manage:
+                            permission['edit'] = True
+                            permission['view'] = True
+                            permission['delete'] = True
+                        elif p.can_book:
+                            permission['view'] = True
+                        elif p.can_view:
+                            permission['view'] = True
 
             permission_list.append({"permission": permission, "annotation": a.id})
         return Response(permission_list, status=status.HTTP_200_OK)

@@ -642,6 +642,26 @@ class Instrument(models.Model):
     max_days_ahead_pre_approval = models.IntegerField(blank=True, null=True, default=0)
     max_days_within_usage_pre_approval = models.IntegerField(blank=True, null=True, default=0)
 
+    def __str__(self):
+        return self.instrument_name
+    def __repr__(self):
+        return self.instrument_name
+
+    class Meta:
+        app_label = "cc"
+        ordering = ["id"]
+
+    def create_default_folders(self):
+        """
+        Create default folders for the instrument
+        :return:
+        """
+        current_folder = self.annotation_folders.all()
+        if current_folder.exists():
+            return
+        manual_folder = AnnotationFolder.objects.create(folder_name="Manuals", instrument=self)
+        certificate_folder = AnnotationFolder.objects.create(folder_name="Certificates", instrument=self)
+
 class InstrumentUsage(models.Model):
     instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name="instrument_usage")
     annotation = models.ForeignKey("Annotation", on_delete=models.CASCADE, related_name="instrument_usage", blank=True, null=True)
@@ -726,8 +746,68 @@ class Annotation(models.Model):
             self.file.delete()
         super(Annotation, self).delete(using=using, keep_parents=keep_parents)
 
+    def check_for_right(self, user, right: str) -> bool:
+        if self.session:
+            if self.session.enabled:
+                if not self.scratched:
+                    if right == "view":
+                        return True
+
+        if user.is_authenticated:
+            if self.session:
+                if right == "view":
+                    if user in self.session.viewers.all() or user in self.session.editors.all() or user == self.session.user or user == self.user:
+                        if self.scratched:
+                            if user not in self.session.editors.all() and user != self.user and user != self.session.user:
+                                return False
+                        return True
+                elif right == "delete" or right == "edit":
+                    if user in self.session.editors.all() or user == self.session.user:
+                        return True
+            if self.folder:
+                if self.folder.instrument:
+                    i_permission = InstrumentPermission.objects.filter(instrument=self.folder.instrument, user=user)
+                    if i_permission.exists():
+                        i_permission = i_permission.first()
+                        if right == "view":
+                            if i_permission.can_book or i_permission.can_manage or i_permission.can_view:
+                                    return True
+                        if right == "delete" or right == "edit":
+                            if i_permission.can_manage:
+                                return True
+            else:
+                instrument_jobs = self.instrument_jobs.all()
+                for instrument_job in instrument_jobs:
+                    if right == "view":
+                        if user == instrument_job.user:
+                            return True
+                        else:
+                            lab_group = instrument_job.service_lab_group
+                            staff =  instrument_job.staff.all()
+                            if staff.count() > 0:
+                                if user in staff:
+                                    return True
+                            else:
+                                if user in lab_group.users.all():
+                                    return True
+                    if right == "delete" or right == "edit":
+                        if user == instrument_job.user:
+                            return True
+                        else:
+                            lab_group = instrument_job.service_lab_group
+                            staff =  instrument_job.staff.all()
+                            if staff.count() > 0:
+                                if user in staff:
+                                    return True
+                            else:
+                                if user in lab_group.users.all():
+                                    return True
+        return False
+
 class AnnotationFolder(models.Model):
-    session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="annotation_folders")
+    session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="annotation_folders", blank=True, null=True)
+    instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name="annotation_folders", blank=True, null=True)
+    stored_reagent = models.ForeignKey("StoredReagent", on_delete=models.CASCADE, related_name="annotation_folders", blank=True, null=True)
     folder_name = models.TextField(blank=False, null=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1031,6 +1111,17 @@ class StoredReagent(models.Model):
                 quantity -= i.quantity
         return quantity
 
+    def create_default_folders(self):
+        """
+        Create default folders for the stored reagent
+        :return:
+        """
+        current_folder = self.annotation_folders.all()
+        if current_folder.exists():
+            return
+        manual_folder = AnnotationFolder.objects.create(folder_name="Manuals", stored_reagent=self)
+        certificate_folder = AnnotationFolder.objects.create(folder_name="Certificates", stored_reagent=self)
+
 
 class ReagentAction(models.Model):
     action_type_choices = [
@@ -1307,3 +1398,13 @@ def create_protocol_hash(sender, instance=None, created=False, **kwargs):
     if created:
         instance.model_hash = instance.calculate_protocol_hash()
         instance.save()
+
+@receiver(post_save, sender=Instrument)
+def create_instrument_annotation_folders(sender, instance=None, created=False, **kwargs):
+    if created:
+        instance.create_default_folders()
+
+@receiver(post_save, sender=StoredReagent)
+def create_stored_reagent_annotation_folders(sender, instance=None, created=False, **kwargs):
+    if created:
+        instance.create_default_folders()

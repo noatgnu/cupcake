@@ -226,7 +226,7 @@ class TagSerializer(ModelSerializer):
 class AnnotationFolderSerializer(ModelSerializer):
     class Meta:
         model = AnnotationFolder
-        fields = ['id', 'folder_name', 'created_at', 'updated_at', 'parent_folder', 'session']
+        fields = ['id', 'folder_name', 'created_at', 'updated_at', 'parent_folder', 'session', 'instrument', 'stored_reagent']
 
 class ProjectSerializer(ModelSerializer):
     sessions = SerializerMethodField()
@@ -245,14 +245,33 @@ class ProjectSerializer(ModelSerializer):
 
 class InstrumentSerializer(ModelSerializer):
     metadata_columns = SerializerMethodField()
+    annotation_folders = SerializerMethodField()
+
     def get_metadata_columns(self, obj):
         if obj.metadata_columns:
             return MetadataColumnSerializer(obj.metadata_columns.all(), many=True).data
         return []
 
+    def get_annotation_folders(self, obj):
+        folders = obj.annotation_folders.all()
+        if folders.exists():
+            return AnnotationFolderSerializer(folders, many=True).data
+        return []
+
     class Meta:
         model = Instrument
-        fields = ['id', 'max_days_ahead_pre_approval', 'max_days_within_usage_pre_approval', 'instrument_name', 'instrument_description', 'created_at', 'updated_at', 'enabled', 'metadata_columns']
+        fields = [
+            'id',
+            'max_days_ahead_pre_approval',
+            'max_days_within_usage_pre_approval',
+            'instrument_name',
+            'instrument_description',
+            'created_at',
+            'updated_at',
+            'enabled',
+            'metadata_columns',
+            'annotation_folders'
+        ]
 
 
 class InstrumentUsageSerializer(ModelSerializer):

@@ -7,3 +7,5 @@ __pycache__
 models
 *.gz
 docker-compose.yml
+*.cloudflared
+docker-compose.cloudflared.yml

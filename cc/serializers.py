@@ -270,7 +270,8 @@ class InstrumentSerializer(ModelSerializer):
             'updated_at',
             'enabled',
             'metadata_columns',
-            'annotation_folders'
+            'annotation_folders',
+            'image'
         ]
 
 

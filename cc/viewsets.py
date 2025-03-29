@@ -2085,7 +2085,12 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
         if not self.request.user.is_staff:
-            return Response(status=status.HTTP_401_UNAUTHORIZED)
+            i_permission = InstrumentPermission.objects.filter(instrument=instance, user=self.request.user)
+            if i_permission.exists():
+                if not i_permission.first().can_manage:
+                    return Response(status=status.HTTP_401_UNAUTHORIZED)
+            else:
+                return Response(status=status.HTTP_401_UNAUTHORIZED)
         if "name" in request.data:
             instance.instrument_name = request.data['name']
         if "description" in request.data:
@@ -2094,6 +2099,8 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
             instance.max_days_ahead_pre_approval = request.data['max_days_ahead_pre_approval']
         if 'max_days_within_usage_pre_approval' in request.data:
             instance.max_days_within_usage_pre_approval = request.data['max_days_within_usage_pre_approval']
+        if 'image' in request.data:
+            instance.image = request.data['image']
         instance.save()
         data = self.get_serializer(instance).data
         return Response(data, status=status.HTTP_200_OK)

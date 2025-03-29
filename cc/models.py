@@ -634,6 +634,7 @@ class Session(models.Model):
 class Instrument(models.Model):
     instrument_name = models.TextField(blank=False, null=False)
     instrument_description = models.TextField(blank=True, null=True)
+    image = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     enabled = models.BooleanField(default=True)

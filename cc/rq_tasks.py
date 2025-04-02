@@ -2393,13 +2393,17 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
     # check if there are any metadata columns left in the user_metadata_field_map and staff_metadata_field_map
     print(user_metadata_field_map)
     print(staff_metadata_field_map)
+    print(instrument_job.user_metadata.all())
+    print(instrument_job.staff_metadata.all())
     for d_type in user_metadata_field_map:
         for name in user_metadata_field_map[d_type]:
             for i in user_metadata_field_map[d_type][name]:
+                print(i)
                 i.delete()
     for d_type in staff_metadata_field_map:
         for name in staff_metadata_field_map[d_type]:
             for i in staff_metadata_field_map[d_type][name]:
+                print(i)
                 i.delete()
 
     channel_layer = get_channel_layer()

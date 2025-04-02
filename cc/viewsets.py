@@ -3469,12 +3469,16 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                                 metadata_column.modifiers = json.dumps(metadata['modifiers'])
                                 metadata_column.value = metadata['value']
                         else:
+                            if is_staff:
+                                if metadata_column.hidden != metadata['hidden']:
+                                    metadata_column.hidden = metadata['hidden']
+                                if metadata_column.readonly != metadata['readonly']:
+                                    metadata_column.readonly = metadata['readonly']
+                                metadata.save()
                             if metadata_column.value != metadata['value'] or metadata_column.modifiers != json.dumps(metadata['modifiers']):
                                 metadata_column.value = metadata['value']
                                 metadata_column.modifiers = json.dumps(metadata['modifiers'])
-                                if is_staff:
-                                    metadata_column.hidden = metadata['hidden']
-                                    metadata_column.readonly = metadata['readonly']
+
                                 metadata_column.save()
                         instrument_job.user_metadata.add(metadata_column)
                     else:
@@ -3526,11 +3530,16 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                 if 'id' in metadata:
                     if metadata['id']:
                         metadata_column = MetadataColumn.objects.get(id=metadata['id'])
+                        if metadata_column.hidden != metadata['hidden']:
+                            metadata_column.hidden = metadata['hidden']
+                            metadata_column.save()
+                        if metadata_column.readonly != metadata['readonly']:
+                            metadata_column.readonly = metadata['readonly']
+                            metadata_column.save()
                         if metadata_column.value != metadata['value'] or metadata_column.modifiers != json.dumps(metadata['modifiers']):
                             metadata_column.value = metadata['value']
                             metadata_column.modifiers = json.dumps(metadata['modifiers'])
-                            metadata_column.hidden = metadata['hidden']
-                            metadata_column.readonly = metadata['readonly']
+
                             metadata_column.save()
                         instrument_job.staff_metadata.add(metadata_column)
                     else:

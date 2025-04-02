@@ -2369,7 +2369,7 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
             if metadata_columns[i].type in staff_metadata_field_map:
                 if metadata_columns[i].name in staff_metadata_field_map[metadata_columns[i].type]:
                     first_column = staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name][0]
-                    if metadata_column[i].id:
+                    if metadata_columns[i].id:
                         metadata_columns[i].save()
                     else:
                         first_column["value"] = metadata_columns[i].value

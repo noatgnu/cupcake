@@ -2369,10 +2369,7 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
             if metadata_columns[i].type in staff_metadata_field_map:
                 if metadata_columns[i].name in staff_metadata_field_map[metadata_columns[i].type]:
                     first_column = staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name][0]
-                    first_column["value"] = metadata_columns[i].value
-                    first_column["modifiers"] = metadata_columns[i].modifiers
-                    col = MetadataColumn.objects.get(id=first_column["id"])
-                    col.save()
+                    metadata_columns[i].save()
                     staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name].remove(first_column)
                     if not staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]:
                         del staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]
@@ -2412,10 +2409,8 @@ def check_metadata_column_create_then_remove_from_map(i, instrument_job, metadat
     if metadata_columns[i].type in metadata_field_map:
         if metadata_columns[i].name in metadata_field_map[metadata_columns[i].type]:
             first_column = metadata_field_map[metadata_columns[i].type][metadata_columns[i].name][0]
-            first_column["value"] = metadata_columns[i].value
-            first_column["modifiers"] = metadata_columns[i].modifiers
             metadata_columns[i].save()
-            metadata_field_map[metadata_columns[i].type][metadata_columns[i].name].remove(first_column)
+            metadata_field_map[metadata_columns[i].type][metadata_columns[i].name].pop(0)
             if not metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]:
                 del metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]
         else:
@@ -2430,7 +2425,7 @@ def check_and_remove_metadata_from_map(i, metadata_columns, metadata_field_map):
     if metadata_columns[i].type in metadata_field_map:
         if metadata_columns[i].name in metadata_field_map[metadata_columns[i].type]:
             first_column = metadata_field_map[metadata_columns[i].type][metadata_columns[i].name][0]
-            metadata_field_map[metadata_columns[i].type][metadata_columns[i].name].remove(first_column)
+            metadata_field_map[metadata_columns[i].type][metadata_columns[i].name].pop(0)
             if not metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]:
                 del metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]
 

@@ -2369,8 +2369,15 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
             if metadata_columns[i].type in staff_metadata_field_map:
                 if metadata_columns[i].name in staff_metadata_field_map[metadata_columns[i].type]:
                     first_column = staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name][0]
-                    metadata_columns[i].save()
-                    staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name].remove(first_column)
+                    if metadata_column[i].id:
+                        metadata_columns[i].save()
+                    else:
+                        first_column["value"] = metadata_columns[i].value
+                        first_column["modifiers"] = metadata_columns[i].modifiers
+                        first_column["hidden"] = metadata_columns[i].hidden
+                        first_column["readonly"] = metadata_columns[i].readonly
+                        MetadataColumn.objects.create(**first_column)
+                    staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name].pop(0)
                     if not staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]:
                         del staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]
                 else:

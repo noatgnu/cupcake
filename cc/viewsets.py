@@ -3529,6 +3529,8 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                         if metadata_column.value != metadata['value'] or metadata_column.modifiers != json.dumps(metadata['modifiers']):
                             metadata_column.value = metadata['value']
                             metadata_column.modifiers = json.dumps(metadata['modifiers'])
+                            metadata_column.hidden = metadata['hidden']
+                            metadata_column.readonly = metadata['readonly']
                             metadata_column.save()
                         instrument_job.staff_metadata.add(metadata_column)
                     else:

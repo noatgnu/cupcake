@@ -3472,6 +3472,9 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                             if metadata_column.value != metadata['value'] or metadata_column.modifiers != json.dumps(metadata['modifiers']):
                                 metadata_column.value = metadata['value']
                                 metadata_column.modifiers = json.dumps(metadata['modifiers'])
+                                if is_staff:
+                                    metadata_column.hidden = metadata['hidden']
+                                    metadata_column.readonly = metadata['readonly']
                                 metadata_column.save()
                         instrument_job.user_metadata.add(metadata_column)
                     else:
@@ -3483,6 +3486,8 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                             value=metadata['value'],
                             modifiers=json.dumps(metadata['modifiers']),
                             mandatory=metadata['mandatory'],
+                            #hidden=metadata['hidden'],
+                            #readonly=metadata['readonly'],
                         )
                         instrument_job.user_metadata.add(metadata_column)
                 else:
@@ -3492,6 +3497,8 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                         value=metadata['value'],
                         mandatory=metadata['mandatory'],
                         modifiers=json.dumps(metadata['modifiers']),
+                        #hidden=metadata['hidden'],
+                        #readonly=metadata['readonly'],
                     )
                     instrument_job.user_metadata.add(metadata_column)
 

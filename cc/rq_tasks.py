@@ -2414,8 +2414,7 @@ def check_metadata_column_create_then_remove_from_map(i, instrument_job, metadat
             first_column = metadata_field_map[metadata_columns[i].type][metadata_columns[i].name][0]
             first_column["value"] = metadata_columns[i].value
             first_column["modifiers"] = metadata_columns[i].modifiers
-            col = MetadataColumn.objects.get(id=first_column["id"])
-            col.save()
+            metadata_columns[i].save()
             metadata_field_map[metadata_columns[i].type][metadata_columns[i].name].remove(first_column)
             if not metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]:
                 del metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]

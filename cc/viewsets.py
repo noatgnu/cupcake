@@ -3737,16 +3737,16 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
     @action(detail=True, methods=['post'])
     def selected_template(self, request, pk=None):
         instrument_job = self.get_object()
-        if not self.request.user.is_staff:
-            staff = instrument_job.staff.all()
-            if staff.count() == 0:
-                if instrument_job.service_lab_group:
-                    staff = instrument_job.service_lab_group.users.all()
-                    if self.request.user not in staff:
-                        return Response(status=status.HTTP_403_FORBIDDEN)
-            else:
-                if self.request.user not in staff:
-                    return Response(status=status.HTTP_403_FORBIDDEN)
+        # if not self.request.user.is_staff:
+        #     staff = instrument_job.staff.all()
+        #     if staff.count() == 0:
+        #         if instrument_job.service_lab_group:
+        #             staff = instrument_job.service_lab_group.users.all()
+        #             if self.request.user not in staff:
+        #                 return Response(status=status.HTTP_403_FORBIDDEN)
+        #     else:
+        #         if self.request.user not in staff:
+        #             return Response(status=status.HTTP_403_FORBIDDEN)
         template = request.data['template']
         metadata_template = MetadataTableTemplate.objects.get(id=template)
         for metadata in instrument_job.user_metadata.all():

@@ -2378,7 +2378,7 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
                         first_column["readonly"] = metadata_columns[i].readonly
                         MetadataColumn.objects.create(**first_column)
                     staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name].pop(0)
-                    if not staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]:
+                    if len(staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]) == 0:
                         del staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]
                 else:
                     check_metadata_column_create_then_remove_from_map(i, instrument_job, metadata_columns,
@@ -2387,7 +2387,8 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
                 check_metadata_column_create_then_remove_from_map(i, instrument_job, metadata_columns,
                                                                   user_metadata_field_map)
     # check if there are any metadata columns left in the user_metadata_field_map and staff_metadata_field_map
-
+    print(user_metadata_field_map)
+    print(staff_metadata_field_map)
     for d_type in user_metadata_field_map:
         for name in user_metadata_field_map[d_type]:
             for i in user_metadata_field_map[d_type][name]:
@@ -2416,9 +2417,16 @@ def check_metadata_column_create_then_remove_from_map(i, instrument_job, metadat
     if metadata_columns[i].type in metadata_field_map:
         if metadata_columns[i].name in metadata_field_map[metadata_columns[i].type]:
             first_column = metadata_field_map[metadata_columns[i].type][metadata_columns[i].name][0]
-            metadata_columns[i].save()
+            if metadata_columns[i].id:
+                metadata_columns[i].save()
+            else:
+                first_column["value"] = metadata_columns[i].value
+                first_column["modifiers"] = metadata_columns[i].modifiers
+                first_column["hidden"] = metadata_columns[i].hidden
+                first_column["readonly"] = metadata_columns[i].readonly
+                MetadataColumn.objects.create(**first_column)
             metadata_field_map[metadata_columns[i].type][metadata_columns[i].name].pop(0)
-            if not metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]:
+            if len(metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]):
                 del metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]
         else:
             metadata_columns[i].save()

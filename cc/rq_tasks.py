@@ -2168,8 +2168,9 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
             if row_data["column"] == n and not row_data["hidden"]:
                 id_from_map = int(row[0])
                 break
-        if id_from_map != 0:
-            metadata_column = MetadataColumn.objects.get(id=id_from_map)
+        metadata_column = MetadataColumn.objects.filter(id=id_from_map)
+        if metadata_column.exists():
+            metadata_column = metadata_column.first()
         else:
             metadata_column = MetadataColumn()
             header = header.lower()
@@ -2184,6 +2185,7 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
             metadata_column.name = name.capitalize().replace("Ms1", "MS1").replace("Ms2", "MS2")
             metadata_column.type = type.capitalize()
             metadata_column.hidden = False
+            metadata_column.readonly = False
         metadata_columns.append(metadata_column)
 
     for n, header in enumerate(hidden_headers):

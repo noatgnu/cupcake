@@ -2247,19 +2247,11 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
             data = data[:instrument_job.sample_number]
 
     if data_type == "user_metadata":
-        for m in instrument_job.user_metadata.all():
-            m.delete()
         instrument_job.user_metadata.clear()
     elif data_type == "staff_metadata":
-        for m in instrument_job.staff_metadata.all():
-            m.delete()
         instrument_job.staff_metadata.clear()
     else:
-        for m in instrument_job.user_metadata.all():
-            m.delete()
         instrument_job.user_metadata.clear()
-        for m in instrument_job.staff_metadata.all():
-            m.delete()
         instrument_job.staff_metadata.clear()
 
     for i in range(len(metadata_columns)):
@@ -2373,7 +2365,7 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
                     first_column = staff_metadata_field_map[metadata_columns[i].type][metadata_columns[i].name][0]
                     if metadata_columns[i].id:
                         metadata_columns[i].save()
-                        #instrument_job.staff_metadata.add(metadata_columns[i])
+                        instrument_job.staff_metadata.add(metadata_columns[i])
                     else:
                         first_column["value"] = metadata_columns[i].value
                         first_column["modifiers"] = metadata_columns[i].modifiers
@@ -2427,10 +2419,10 @@ def check_metadata_column_create_then_remove_from_map(i, instrument_job, metadat
             first_column = metadata_field_map[metadata_columns[i].type][metadata_columns[i].name][0]
             if metadata_columns[i].id:
                 metadata_columns[i].save()
-                #if field_type == "user_metadata":
-                #    instrument_job.user_metadata.add(metadata_columns[i])
-                #else:
-                #    instrument_job.staff_metadata.add(metadata_columns[i])
+                if field_type == "user_metadata":
+                    instrument_job.user_metadata.add(metadata_columns[i])
+                else:
+                    instrument_job.staff_metadata.add(metadata_columns[i])
             else:
                 first_column["value"] = metadata_columns[i].value
                 first_column["modifiers"] = metadata_columns[i].modifiers

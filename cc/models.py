@@ -1384,6 +1384,7 @@ class MetadataTableTemplate(models.Model):
     service_lab_group = models.ForeignKey(LabGroup, on_delete=models.SET_NULL, related_name='service_lab_group_metadata_table_templates', blank=True, null=True)
     lab_group = models.ForeignKey(LabGroup, on_delete=models.SET_NULL, related_name='lab_group_metadata_table_templates', blank=True, null=True)
     enabled = models.BooleanField(default=True)
+    field_mask_mapping = models.TextField(blank=True, null=True)
 
     class Meta:
         app_label = 'cc'

@@ -1028,7 +1028,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
         {
             "name": "Organism", "type": "Characteristics", "mandatory": True
         }, {
-            "name": "Tissue", "type": "Characteristics", "mandatory": True
+            "name": "Organism part", "type": "Characteristics", "mandatory": True
         }, {
             "name": "Disease", "type": "Characteristics", "mandatory": True
         }, {
@@ -1151,7 +1151,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
     for i in range(0, len(new_metadata)):
         m = new_metadata[i]
         if m.type == "Characteristics":
-            if m.name.lower() == 'tissue':
+            if m.name.lower() == 'tissue' or m.name.lower() == "organism part":
                 headers.append("characteristics[organism part]")
             else:
                 headers.append(f"characteristics[{m.name.lower()}]")
@@ -1306,7 +1306,7 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
 
     for i in range(0, len(factor_value_columns)):
         m = factor_value_columns[i]
-        if m.name == "Tissue":
+        if m.name == "Tissue" or m.name == "Organism part":
             m.name = "Organism part"
         headers.append(f"factor value[{m.name.lower()}]")
         if m.modifiers:
@@ -1707,8 +1707,8 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
         else:
             type = ""
             name = header
-        if name == "organism part":
-            name = "tissue"
+        #if name == "organism part":
+        #    name = "tissue"
         metadata_column.name = name.capitalize().replace("Ms1", "MS1").replace("Ms2", "MS2")
         metadata_column.type = type.capitalize()
         metadata_columns.append(metadata_column)
@@ -1904,7 +1904,11 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
     :return:
     """
     instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
-
+    field_mask_map = {}
+    if instrument_job.selected_template:
+        if instrument_job.selected_template.field_mask_mapping:
+            for i in json.loads(instrument_job.selected_template.field_mask_mapping):
+                field_mask_map[i["name"]] = i["mask"]
     if export_type=="user_metadata":
         metadata = list(instrument_job.user_metadata.all())
     elif export_type=="staff_metadata":
@@ -1933,7 +1937,7 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
         if r.name.lower() not in favourites:
             favourites[r.name.lower()] = []
         favourites[r.name.lower()].append(f"{r.display_value}[**]")
-        if r.name.lower() == "tissue" or r.name.lower() in required_metadata_name:
+        if r.name.lower() == "tissue" or r.name.lower() == "organism part" or r.name.lower() in required_metadata_name:
             favourites[r.name.lower()].append("not applicable")
     for r in list(global_recommendations):
         if r.name.lower() not in favourites:
@@ -1981,12 +1985,20 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
         adjusted_width = (max_length + 2)
         main_ws.column_dimensions[column].width = adjusted_width
 
-    note_row = instrument_job.sample_number + 2
-    note_text = "Note: Cells that are empty will automatically be filled with 'not applicable' or 'no available' depending on the column when submitted."
-    main_ws.merge_cells(start_row=note_row, start_column=1, end_row=note_row, end_column=len(result_main[0]))
-    note_cell = main_ws.cell(row=note_row, column=1)
-    note_cell.value = note_text
-    note_cell.alignment = Alignment(horizontal='left', vertical='center')
+    note_texts = [
+        "Note: Cells that are empty will automatically be filled with 'not applicable' or 'no available' depending on the column when submitted.",
+        "[*] User-specific favourite options.",
+        "[**] Facility-recommended options.",
+        "[***] Global recommendations."
+    ]
+
+    start_row = instrument_job.sample_number + 2
+    for i, note_text in enumerate(note_texts):
+        main_ws.merge_cells(start_row=start_row + i, start_column=1, end_row=start_row + i,
+                            end_column=len(result_main[0]))
+        note_cell = main_ws.cell(row=start_row + i, column=1)
+        note_cell.value = note_text
+        note_cell.alignment = Alignment(horizontal='left', vertical='center')
 
     # Append headers and data to the hidden worksheet
     if len(result_hidden) > 0:
@@ -2022,9 +2034,13 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
             name = name_splitted[0]
         if name in required_metadata_name:
             required_column = True
-        if name == "organism part":
-            name = "tissue"
-
+        name_capitalized = name.capitalize().replace("Ms1", "MS1").replace("Ms2", "MS2")
+        if name_capitalized in field_mask_map:
+            name = field_mask_map[name_capitalized]
+            if len(name_splitted) > 1:
+                main_ws.cell(row=1, column=i + 1).value = result_main[0][i].replace(name_splitted[1].rstrip("]"), name.lower())
+            else:
+                main_ws.cell(row=1, column=i + 1).value =  name.lower()
         option_list = []
         if required_column:
             option_list.append(f"not applicable")
@@ -2051,8 +2067,14 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
             required_column = False
             if name in required_metadata_name:
                 required_column = True
-            if name == "organism part":
-                name = "tissue"
+            name_capitalized = name.capitalize().replace("Ms1", "MS1").replace("Ms2", "MS2")
+            if name_capitalized in field_mask_map:
+                name = field_mask_map[name_capitalized]
+                if len(name_splitted) > 1:
+                    hidden_ws.cell(row=1, column=i + 1).value = result_hidden[0][i].replace(name_splitted[1].rstrip("]"), name.lower())
+                else:
+                    hidden_ws.cell(row=1, column=i + 1).value = name.lower()
+
             option_list = []
             if required_column:
                 option_list.append(f"not applicable")
@@ -2127,7 +2149,12 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
     user_metadata_field_map = {}
     staff_metadata_field_map = {}
     read_only_metadata_map = {}
+    field_mask_map = {}
     if instrument_job.selected_template:
+        field_mask_mapping = instrument_job.selected_template.field_mask_mapping
+        if field_mask_mapping:
+            for i in json.loads(field_mask_mapping):
+                field_mask_map[i["mask"]] = i["name"]
         user_columns = list(instrument_job.user_metadata.all())
         staff_columns = list(instrument_job.staff_metadata.all())
         for i in user_columns:
@@ -2180,9 +2207,10 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
             else:
                 type = ""
                 name = header
-            if name == "organism part":
-                name = "tissue"
-            metadata_column.name = name.capitalize().replace("Ms1", "MS1").replace("Ms2", "MS2")
+            name_capitalized = name.capitalize().replace("Ms1", "MS1").replace("Ms2", "MS2")
+            if name_capitalized in field_mask_map:
+                name = field_mask_map[name_capitalized]
+            metadata_column.name = name
             metadata_column.type = type.capitalize()
             metadata_column.hidden = False
             metadata_column.readonly = False
@@ -2207,9 +2235,10 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
             else:
                 type = ""
                 name = header
-            if name == "organism part":
-                name = "tissue"
-            metadata_column.name = name.capitalize().replace("Ms1", "MS1").replace("Ms2", "MS2")
+            name_capitalized = name.capitalize().replace("Ms1", "MS1").replace("Ms2", "MS2")
+            if name_capitalized in field_mask_map:
+                name = field_mask_map[name_capitalized]
+            metadata_column.name = name
             metadata_column.type = type.capitalize()
             metadata_column.hidden = True
         metadata_columns.append(metadata_column)
@@ -2383,19 +2412,13 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
                 check_metadata_column_create_then_remove_from_map(i, instrument_job, metadata_columns,
                                                                   user_metadata_field_map, "user_metadata")
     # check if there are any metadata columns left in the user_metadata_field_map and staff_metadata_field_map
-    print(user_metadata_field_map)
-    print(staff_metadata_field_map)
-    print(instrument_job.user_metadata.all())
-    print(instrument_job.staff_metadata.all())
     for d_type in user_metadata_field_map:
         for name in user_metadata_field_map[d_type]:
             for i in user_metadata_field_map[d_type][name]:
-                print(i)
                 i.delete()
     for d_type in staff_metadata_field_map:
         for name in staff_metadata_field_map[d_type]:
             for i in staff_metadata_field_map[d_type][name]:
-                print(i)
                 i.delete()
 
     channel_layer = get_channel_layer()

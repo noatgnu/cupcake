@@ -1758,13 +1758,14 @@ class UserViewSet(ModelViewSet, FilterMixin):
 
         token = signer.sign(dumps(payload))
         signup_url = f"{settings.FRONTEND_URL}/#/accounts/signup/{token}"
-        send_mail(
-            'Hello from Cupcake',
-            f'Please use the following link to sign up: {signup_url}',
-            settings.NOTIFICATION_EMAIL_FROM,
-            [email],
-            fail_silently=False,
-        )
+        if settings.NOTIFICATION_EMAIL_FROM:
+            send_mail(
+                'Hello from Cupcake',
+                f'Please use the following link to sign up: {signup_url}',
+                settings.NOTIFICATION_EMAIL_FROM,
+                [email],
+                fail_silently=False,
+            )
         return Response({'token': token}, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
@@ -4110,7 +4111,17 @@ class MetadataTableTemplateViewSets(FilterMixin, ModelViewSet):
                     m.readonly = column['readonly']
                 m.save()
                 staff_columns.append(m)
-        template = MetadataTableTemplate.objects.create(name=name, user=user)
+        default_mask_mapping = [
+            {
+                "name": "Organism part",
+                "mask": "Tissue"
+            },
+            {
+                "name": "Cleavage agent details",
+                "mask": "Protease"
+            }
+        ]
+        template = MetadataTableTemplate.objects.create(name=name, user=user, field_mask_mapping=default_mask_mapping)
         template.user_columns.add(*user_columns)
         template.staff_columns.add(*staff_columns)
         if mode == 'service_lab_group':
@@ -4238,7 +4249,9 @@ class MetadataTableTemplateViewSets(FilterMixin, ModelViewSet):
                 if column.id not in ids_from_submission:
                     template.staff_columns.remove(column)
                     column.delete()
-
+        if 'field_mask_mapping' in request.data:
+            field_mask_mapping = request.data['field_mask_mapping']
+            template.field_mask_mapping = json.dumps(field_mask_mapping)
         if 'enabled' in request.data:
             template.enabled = request.data['enabled']
         template.save()

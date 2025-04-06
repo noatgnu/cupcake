@@ -9,3 +9,5 @@ models
 docker-compose.yml
 *.cloudflared
 docker-compose.cloudflared.yml
+*.cupcake
+*.sqlite3

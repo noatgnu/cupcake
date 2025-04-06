@@ -566,6 +566,7 @@ class MetadataTableTemplateSerializer(ModelSerializer):
     staff_columns = SerializerMethodField()
     hidden_user_columns = SerializerMethodField()
     hidden_staff_columns = SerializerMethodField()
+    field_mask_mapping = SerializerMethodField()
 
     def get_user_columns(self, obj):
         data = obj.user_columns.all()
@@ -591,6 +592,11 @@ class MetadataTableTemplateSerializer(ModelSerializer):
             return data.count()
         return 0
 
+    def get_field_mask_mapping(self, obj):
+        if obj.field_mask_mapping:
+            return json.loads(obj.field_mask_mapping)
+        return []
+
     class Meta:
         model = MetadataTableTemplate
         fields = [
@@ -604,5 +610,6 @@ class MetadataTableTemplateSerializer(ModelSerializer):
             'staff_columns',
             'hidden_staff_columns',
             'service_lab_group',
-            'lab_group'
+            'lab_group',
+            'field_mask_mapping'
         ]

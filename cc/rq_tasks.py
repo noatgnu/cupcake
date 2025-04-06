@@ -56,7 +56,7 @@ from cc.utils import user_metadata, staff_metadata, required_metadata_name
 capture_language = re.compile(r"auto-detected language: (\w+)")
 
 @job('transcribe', timeout='1h')
-def transcribe_audio(audio_path: str, model_path: str, step_annotation_id: int, language: str = "auto", translate: bool = False):
+def transcribe_audio(audio_path: str, model_path: str, step_annotation_id: int, language: str = "auto", translate: bool = False, custom_id: str = None):
     """
     Convert audio from webm to wav using ffmpeg, then store the wave file as temporary file and transcribe it using the whisper model using subprocess and whispercpp main binary and base.en model before deleting the temporary file
     :param audio_path:
@@ -135,7 +135,7 @@ def transcribe_audio(audio_path: str, model_path: str, step_annotation_id: int, 
 
 
 @job('transcribe', timeout='1h')
-def transcribe_audio_from_video(video_path: str, model_path: str, step_annotation_id: int, language: str = "auto", translate: bool = False):
+def transcribe_audio_from_video(video_path: str, model_path: str, step_annotation_id: int, language: str = "auto", translate: bool = False, custom_id: str = None):
     """
     Convert audio from webm video to wav using ffmpeg, then store the wave file as temporary file and transcribe it using the whisper model using subprocess and whispercpp main binary and base.en model before deleting the temporary file
     :param video_path:

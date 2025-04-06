@@ -714,9 +714,9 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
         annotation.save()
         if settings.USE_WHISPER:
             if annotation.annotation_type == "video":
-                transcribe_audio_from_video.delay(annotation.file.path, settings.WHISPERCPP_DEFAULT_MODEL, annotation.id, custom_id)
+                transcribe_audio_from_video.delay(annotation.file.path, settings.WHISPERCPP_DEFAULT_MODEL, annotation.id, "auto", True, custom_id)
             elif annotation.annotation_type == "audio":
-                transcribe_audio.delay(annotation.file.path, settings.WHISPERCPP_DEFAULT_MODEL, annotation.id, custom_id)
+                transcribe_audio.delay(annotation.file.path, settings.WHISPERCPP_DEFAULT_MODEL, annotation.id, "auto", True, custom_id)
         if annotation.annotation_type == "instrument":
             usage = InstrumentUsage.objects.create(
                 instrument=instrument,

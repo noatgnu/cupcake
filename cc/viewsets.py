@@ -2140,6 +2140,17 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
                 permission[0].can_view = can_view
                 permission[0].save()
                 return Response(status=status.HTTP_200_OK)
+        else:
+            if user.is_staff:
+                can_manage = request.data['can_manage']
+                can_book = request.data['can_book']
+                can_view = request.data['can_view']
+                permission = InstrumentPermission.objects.get_or_create(instrument=instrument, user=target_user)
+                permission[0].can_manage = can_manage
+                permission[0].can_book = can_book
+                permission[0].can_view = can_view
+                permission[0].save()
+                return Response(status=status.HTTP_200_OK)
         return Response(status=status.HTTP_401_UNAUTHORIZED)
 
     @action(detail=True, methods=['get'])

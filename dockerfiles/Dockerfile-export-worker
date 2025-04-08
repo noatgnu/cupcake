@@ -32,7 +32,7 @@ RUN mkdir "/app/staticfiles"
 COPY . /app/
 
 RUN pip install -r requirements.txt
-RUN python manage.py collectstatic --noinput
+#RUN python manage.py collectstatic --noinput
 EXPOSE 8000
 # RQ worker
 CMD ["python", "manage.py", "rqworker", "export"]

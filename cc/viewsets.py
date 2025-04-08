@@ -674,8 +674,16 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
             if "time_started" in request.data and "time_ended" in request.data:
                 time_started = request.data['time_started']
                 time_ended = request.data['time_ended']
+
                 # check if the instrument is available at this time by checking if submitted time_started is between the object time_started and time_ended or time_ended is between the object time_started and time_ended
                 if time_started and time_ended:
+                    time_started = parse_datetime(request.data['time_started'])
+                    time_ended = parse_datetime(request.data['time_ended'])
+                    if time_started and time_ended:
+                        if timezone.is_naive(time_started):
+                            time_started = timezone.make_aware(time_started, timezone.get_current_timezone())
+                        if timezone.is_naive(time_ended):
+                            time_ended = timezone.make_aware(time_ended, timezone.get_current_timezone())
                     time_started_overlap = InstrumentUsage.objects.filter(instrument=instrument,
                                                                           time_started__range=[time_started,
                                                                                                time_ended])
@@ -727,6 +735,21 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
                 description=annotation.annotation,
                 maintenance=maintenance
             )
+            duration = usage.time_ended - usage.time_started
+
+            day_ahead = usage.time_started - timezone.now()
+            if (
+                    duration.days + 1
+                    <= instrument.max_days_within_usage_pre_approval
+                    # or instrument.max_days_within_usage_pre_approval == 0
+            ) and (
+                    day_ahead.days + 1 <=
+                    instrument.max_days_ahead_pre_approval
+                    # or instrument.max_days_ahead_pre_approval == 0
+            ):
+                usage.approved = True
+            else:
+                usage.approved = False
         if 'instrument_job' in request.data and 'instrument_user_type' in request.data:
             instrument_job = InstrumentJob.objects.get(id=request.data['instrument_job'])
             if request.data['instrument_user_type'] == "staff_annotation":
@@ -2304,8 +2327,13 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
-        time_started = request.data['time_started']
-        time_ended = request.data['time_ended']
+        time_started = parse_datetime(request.data['time_started'])
+        time_ended = parse_datetime(request.data['time_ended'])
+        if time_started and time_ended:
+            if timezone.is_naive(time_started):
+                time_started = timezone.make_aware(time_started, timezone.get_current_timezone())
+            if timezone.is_naive(time_ended):
+                time_ended = timezone.make_aware(time_ended, timezone.get_current_timezone())
         if InstrumentUsage.objects.filter(time_started__range=[time_started,time_ended]).exists() or InstrumentUsage.objects.filter(time_ended__range=[time_started, time_ended]).exists():
             return Response(status=status.HTTP_409_CONFLICT)
         if "time_started" in request.data:
@@ -2359,6 +2387,13 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         time_started = parse_datetime(request.data['time_started'])
         time_ended = parse_datetime(request.data['time_ended'])
         usage = InstrumentUsage()
+        repeat = request.data.get('repeat', 0)
+        repeat_until = request.data.get('repeat_until', None)
+        if repeat and repeat_until:
+            repeat_until = parse_datetime(repeat_until)
+            if timezone.is_naive(repeat_until):
+                repeat_until = timezone.make_aware(repeat_until, timezone.get_current_timezone())
+
         if time_started and time_ended:
             if timezone.is_naive(time_started):
                 time_started = timezone.make_aware(time_started, timezone.get_current_timezone())
@@ -2382,12 +2417,12 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
 
         if (
                 duration.days +1
-                <= instrument.max_days_within_usage_pre_approval or
-                instrument.max_days_within_usage_pre_approval == 0
+                <= instrument.max_days_within_usage_pre_approval
+                #or instrument.max_days_within_usage_pre_approval == 0
         ) and (
                 day_ahead.days+1 <=
-                instrument.max_days_ahead_pre_approval or
-                instrument.max_days_ahead_pre_approval == 0
+                instrument.max_days_ahead_pre_approval
+                # or instrument.max_days_ahead_pre_approval == 0
         ):
             usage.approved = True
         else:
@@ -2396,12 +2431,25 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         if 'maintenance' in request.data:
             usage.maintenance = request.data['maintenance']
             if usage.maintenance:
+                usage.approved = True
                 if not request.user.is_staff:
                     can_manage = InstrumentPermission.objects.filter(instrument=instrument, user=request.user, can_manage=True)
                     if not can_manage.exists():
                         return Response(status=status.HTTP_401_UNAUTHORIZED)
 
         usage.save()
+        if usage.maintenance and repeat and repeat_until:
+            while usage.time_ended < repeat_until:
+                # create a new usage object for each repeat
+                new_usage = InstrumentUsage()
+                new_usage.instrument = instrument
+                new_usage.user = user
+                new_usage.time_started = usage.time_started + timedelta(days=repeat)
+                new_usage.time_ended = usage.time_ended + timedelta(days=repeat)
+                new_usage.description = request.data['description']
+                new_usage.approved = True
+                new_usage.maintenance = True
+                new_usage.save()
         data = self.get_serializer(usage).data
         return Response(data, status=status.HTTP_201_CREATED)
 

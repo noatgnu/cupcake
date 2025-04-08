@@ -2450,6 +2450,7 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
                 new_usage.approved = True
                 new_usage.maintenance = True
                 new_usage.save()
+                usage = new_usage
         data = self.get_serializer(usage).data
         return Response(data, status=status.HTTP_201_CREATED)
 

@@ -6,16 +6,17 @@ RUN curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | te
 RUN sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
 RUN apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 7FCC7D46ACCC4CF8
 RUN apt-get update
-RUN apt-get -y install postgresql-client-14 tesseract-ocr
+RUN apt-get -y install postgresql-client-14 ffmpeg cmake curl
+
+RUN curl -L -o /usr/local/bin/supercronic https://github.com/aptible/supercronic/releases/latest/download/supercronic-linux-amd64
+RUN chmod +x /usr/local/bin/supercronic
+
 WORKDIR /app
-RUN mkdir "media"
-RUN mkdir "media/temp"
-#RUN mkdir "backup"
-#RUN mkdir "staticfiles"
+RUN mkdir "/app/media"
+RUN mkdir "/app/media/temp"
+RUN mkdir "/app/backup"
+RUN mkdir "/app/staticfiles"
 COPY . /app/
 
 RUN pip install -r requirements.txt
-#RUN python manage.py collectstatic --noinput
-EXPOSE 8000
-# RQ worker
-CMD ["python", "manage.py", "rqworker", "ocr"]
+CMD ["gunicorn","--workers=1", "cupcake.asgi:application", "--bind", "0.0.0.0:8000","--timeout", "300", "-k", "uvicorn.workers.UvicornWorker"]

@@ -1,0 +1,1 @@
+0 0 * * * python /app/manage.py dbbackup && python /app/manage.py mediabackup

@@ -59,6 +59,21 @@ services:
       - .env.cloudflared
     networks:
         - cc-net
+  ccbackup:
+    restart: always
+    build:
+        context: .
+        dockerfile: ./dockerfiles/Dockerfile-backup
+        network: host
+    container_name: ccbackup
+    volumes:
+      - ./media:/app/media/
+      - ./backups:/app/backup/
+      - ./cron:/etc/cron.d/backup-cron
+    env_file:
+      - .env.cloudflared
+    networks:
+      - cc-net
   ccdocx:
     restart: always
     build:

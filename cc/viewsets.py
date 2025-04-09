@@ -1789,6 +1789,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 [email],
                 fail_silently=False,
             )
+
         return Response({'token': token}, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])

@@ -1,35 +1,98 @@
 ---
-- name: Setup and deploy application
-  hosts: all
-  become: true
+- name: Setup Nextflow with Docker (using geerlingguy.docker role)
+  hosts: all # Replace 'all' with your target host group or specific hostname
+  become: yes # Run tasks with sudo
+  vars:
+    # User who will run nextflow and needs docker access without sudo
+    # This will be passed to the geerlingguy.docker role.
+    target_user: "{{ ansible_user | default(lookup('env', 'USER')) }}"
+
+    # --- Role Variables for geerlingguy.docker ---
+    # Add the target_user to the docker group
+    docker_users:
+      - "{{ target_user }}"
+    # Ensure docker-compose plugin v2 is installed (optional, but common)
+    docker_install_compose_plugin: true
+
+    # --- Variables for other tasks ---
+    # Java package - adjust if needed for your distribution/version preference
+    java_package_debian: "openjdk-11-jre-headless"
+    java_package_redhat: "java-11-openjdk-headless"
+    # Nextflow installation directory
+    nextflow_install_dir: "/usr/local/bin"
+
+  pre_tasks:
+    # Run package cache update before roles and tasks
+    - name: Update apt cache (Debian/Ubuntu)
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600 # Only update if cache is older than 1 hour
+      when: ansible_os_family == "Debian"
+      register: apt_update_status
+      changed_when: apt_update_status.cache_updated
+      tags: ['skip_ansible_lint'] # Often flags package updates in pre_tasks
+
+    # Install minimal prerequisites needed for Java install / Nextflow download
+    # The docker role handles its own dependencies.
+    - name: Ensure minimal prerequisites are installed (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Ensure minimal prerequisites are installed (RedHat/CentOS)
+      ansible.builtin.yum:
+        name:
+          - ca-certificates
+          - curl
+        state: present
+      when: ansible_os_family == "RedHat"
+
   roles:
+    # This role handles Docker installation, configuration, service management,
+    # and adding users defined in 'docker_users' variable to the 'docker' group.
     - role: geerlingguy.docker
 
   tasks:
-    - name: Install required system packages
-      apt:
-        name:
-          - python3
-          - python3-pip
-          - python3-venv
+    # -------------------------------------
+    # Install Java (Docker role doesn't handle this)
+    # -------------------------------------
+    - name: Install Java (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name: "{{ java_package_debian }}"
         state: present
-        update_cache: yes
+      when: ansible_os_family == "Debian"
 
-    - name: Create a Python virtual environment
-      command: python3 -m venv /opt/venv
+    - name: Install Java (RedHat/CentOS)
+      ansible.builtin.yum:
+        name: "{{ java_package_redhat }}"
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    # -------------------------------------
+    # Install Nextflow (Docker role doesn't handle this)
+    # -------------------------------------
+    - name: Download Nextflow executable
+      ansible.builtin.get_url:
+        url: https://get.nextflow.io
+        dest: "{{ nextflow_install_dir }}/nextflow"
+        mode: '0755' # Make it executable
+
+    - name: Verify Nextflow installation (optional selfupdate command)
+      ansible.builtin.command: "{{ nextflow_install_dir }}/nextflow self-update"
       args:
-        creates: /opt/venv
+        warn: no # Suppress warnings about running commands as root if 'become' is yes
+      become_user: "{{ target_user }}" # Run as the target user if possible
+      become: yes # Still might need sudo to switch user
+      changed_when: false # This command doesn't change state in Ansible terms
 
-    - name: Install Python dependencies from requirements.txt
-      pip:
-        requirements: requirements.txt
-        virtualenv: /opt/venv
-
-    - name: Collect static files
-      command: /opt/venv/bin/python manage.py collectstatic --noinput
-
-    - name: Build Docker Compose services
-      command: docker-compose build
-
-    - name: Deploy Docker Compose services
-      command: docker-compose up -d
+    # -------------------------------------
+    # Final Notification
+    # -------------------------------------
+    - name: Display Docker group notice
+      ansible.builtin.debug:
+        msg: "IMPORTANT: User '{{ target_user }}' was added to the 'docker' group by the geerlingguy.docker role. They MUST log out and log back in for this change to take effect and run Docker commands without sudo."
+      # Only show if the user was actually specified (prevents noise if docker_users is empty)
+      when: target_user in docker_users

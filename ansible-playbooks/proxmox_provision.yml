@@ -1,0 +1,168 @@
+---
+# Play 1: Provision the VM on Proxmox
+- name: Provision Debian VM on Proxmox for Nextflow
+  hosts: localhost # This play runs on your Ansible control node
+  gather_facts: no
+  connection: local # No SSH needed for Proxmox API interaction
+  vars_files:
+    # Optional: Store sensitive vars like API keys in a separate, vaulted file
+    # - proxmox_secrets.vault.yml
+  vars_prompt:
+    # Prompt for sensitive info if not using Vault - NEVER commit real secrets!
+    - name: proxmox_api_password
+      prompt: "Enter Proxmox API password or token secret"
+      private: yes
+
+  vars:
+    # --- Proxmox Connection Details ---
+    proxmox_api_host: "your-proxmox-host.example.com" # CHANGE THIS: Your Proxmox server FQDN or IP
+    proxmox_api_user: "your_api_user@pam" # CHANGE THIS: e.g., root@pam or ansible@pve or api_token_user@pve!token_id
+    # proxmox_api_token_id: # Use if using API Token ID + Secret
+    # proxmox_validate_certs: yes # Set to 'no' if using self-signed certs (not recommended for production)
+
+    # --- New VM Configuration ---
+    proxmox_node: "pve" # CHANGE THIS: The Proxmox node name where the VM will be created
+    vm_id: 9001 # CHANGE THIS: Choose a unique VMID
+    vm_name: "nextflow-runner-01" # CHANGE THIS: Desired hostname for the VM
+    vm_template: "debian-12-cloudinit-template" # CHANGE THIS: Exact name of your Debian cloud-init template on Proxmox storage
+    vm_cores: 2
+    vm_memory_mb: 4096 # 4GB RAM
+    vm_disk_gb: 30 # Disk size in GB (without 'G')
+    vm_storage: "local-lvm" # CHANGE THIS: Storage pool for the VM disk
+    vm_bridge: "vmbr0" # CHANGE THIS: Proxmox network bridge for the VM
+    # vm_vlan_tag: 100 # Optional: Uncomment and set if using VLAN tagging
+
+    # --- Cloud-Init Configuration ---
+    vm_user: "ansible" # User to be created in the VM by cloud-init
+    # CHANGE THIS: Path to your PUBLIC SSH key for passwordless access
+    ssh_public_key_path: "{{ lookup('env', 'HOME') }}/.ssh/id_rsa.pub"
+    # Static IP Configuration - adjust network settings as needed!
+    vm_ip_address: "192.168.1.150" # CHANGE THIS: Desired static IP for the VM
+    vm_netmask: "24" # CIDR notation (e.g., 24 for 255.255.255.0)
+    vm_gateway: "192.168.1.1" # CHANGE THIS: Your network gateway
+    vm_nameserver: "192.168.1.1" # CHANGE THIS: Your DNS server (can be same as gateway or different)
+
+    # --- Dynamic Inventory Group ---
+    dynamic_group_name: "newly_created_vm"
+
+  tasks:
+    - name: Load SSH public key content
+      ansible.builtin.set_fact:
+        ssh_public_key: "{{ lookup('file', ssh_public_key_path) }}"
+      when: ssh_public_key_path is defined and ssh_public_key_path
+
+    - name: Check if SSH public key was loaded
+      ansible.builtin.fail:
+        msg: "SSH public key file not found or empty at {{ ssh_public_key_path }}"
+      when: ssh_public_key is not defined or ssh_public_key | length == 0
+
+    - name: Create or Ensure Proxmox KVM guest exists
+      community.proxmox.proxmox_kvm:
+        api_host: "{{ proxmox_api_host }}"
+        api_user: "{{ proxmox_api_user }}"
+        api_password: "{{ proxmox_api_password }}"
+        # api_token_id: "{{ proxmox_api_token_id | default(omit) }}" # Use if using API Token
+        validate_certs: "{{ proxmox_validate_certs | default(true) }}"
+        node: "{{ proxmox_node }}"
+        vmid: "{{ vm_id }}"
+        name: "{{ vm_name }}" # Sets VM name, not hostname initially
+        state: present # Create if not exists, ensure config if it does
+        clone: "{{ vm_template }}" # Template to clone from
+        full: yes # Perform a full clone
+        timeout: 300 # Wait up to 5 minutes for clone/create operation
+
+        # --- Hardware ---
+        cores: "{{ vm_cores }}"
+        memory: "{{ vm_memory_mb }}"
+        net:
+          # Example for single NIC using bridge and optional VLAN
+          net0: "virtio,bridge={{ vm_bridge }}{% if vm_vlan_tag is defined %},tag={{ vm_vlan_tag }}{% endif %}"
+        disks:
+          scsi0: "{{ vm_storage }}:{{ vm_disk_gb }}" # Disk on SCSI controller
+
+        # --- Cloud-Init ---
+        # Documentation: https://pve.proxmox.com/wiki/Cloud-Init_Support
+        # Note: Indentation and formatting within cicustom are critical!
+        cicustom: |
+          user: {{ vm_user }}
+          ssh_authorized_keys:
+            - {{ ssh_public_key }}
+          # Uncomment below to set a password (less secure than keys) AND install qemu-guest-agent
+          # password: "YourSecurePasswordHere!"
+          # packages:
+          #   - qemu-guest-agent
+          # runcmd:
+          #   - systemctl enable qemu-guest-agent
+          #   - systemctl start qemu-guest-agent
+          ipconfig0: ip={{ vm_ip_address }}/{{ vm_netmask }},gw={{ vm_gateway }}
+          nameserver: {{ vm_nameserver }}
+          # Search domain is optional
+          # searchdomain: your.domain.local
+          hostname: {{ vm_name }} # Set the actual hostname via cloud-init
+
+        # Start the VM after creation/modification
+        update: yes # Apply changes even if VM exists
+        start: yes
+
+      register: vm_creation_result
+      # Add retry logic in case of transient Proxmox API issues
+      # retries: 3
+      # delay: 10
+      # until: vm_creation_result is not failed
+
+    # Debug output from proxmox_kvm module (optional)
+    # - name: Show VM creation result
+    #   ansible.builtin.debug:
+    #     var: vm_creation_result
+
+    - name: Wait for VM to boot and SSH to become available
+      ansible.builtin.wait_for_connection:
+        delay: 15 # Initial delay before first check
+        timeout: 300 # Wait up to 5 minutes total
+        sleep: 10 # Time between checks
+      # No delegate_to needed, wait_for_connection implicitly targets inventory_hostname
+
+      # Define the host we are waiting for IN a temporary inventory group
+      vars:
+        ansible_host: "{{ vm_ip_address }}"
+        ansible_user: "{{ vm_user }}" # User created by cloud-init
+        # Specify private key if not default ~/.ssh/id_rsa
+        # ansible_ssh_private_key_file: /path/to/your/private/key
+
+    - name: Add the new VM to dynamic inventory group '{{ dynamic_group_name }}'
+      ansible.builtin.add_host:
+        name: "{{ vm_ip_address }}" # Use IP address as inventory hostname
+        groups: "{{ dynamic_group_name }}"
+        ansible_user: "{{ vm_user }}" # Ensure Ansible uses the correct user
+        # Add other connection vars if needed (e.g., ansible_ssh_private_key_file)
+      changed_when: false # add_host always reports changed, prevent confusing output
+
+    - name: Display message about successful provisioning
+      ansible.builtin.debug:
+        msg: "VM {{ vm_name }} ({{ vm_ip_address }}) provisioned on {{ proxmox_node }} and added to '{{ dynamic_group_name }}' group. Proceeding with setup..."
+
+# Play 2: Configure the newly created VM using the imported playbook
+- name: Configure Nextflow and Docker on the new VM
+  hosts: "{{ dynamic_group_name | default('localhost') }}" # Target the dynamic group created above
+  become: yes # The imported playbook requires sudo
+  gather_facts: yes # Gather facts on the new VM
+
+  # Pass necessary variables to the imported playbook context if needed
+  # The 'target_user' in setup_nextflow_docker_role.yml will use ansible_user by default,
+  # which we set correctly in add_host and cloud-init.
+  # vars:
+  #   target_user: "{{ vm_user }}" # Explicitly set if needed
+
+  tasks:
+    - name: Import the Nextflow + Docker setup playbook
+      ansible.builtin.import_playbook: setup_nextflow_docker_role.yml
+      # Note: If 'setup_nextflow_docker_role.yml' is not in the same directory,
+      # provide the full or relative path.
+
+    - name: Final Success Message
+      ansible.builtin.debug:
+        msg: "Nextflow and Docker setup completed on VM {{ inventory_hostname }}."
+      # Run this task on the control node after the play finishes on the remote host
+      run_once: true
+      delegate_to: localhost
+      delegate_facts: false

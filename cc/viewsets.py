@@ -1692,13 +1692,15 @@ class UserViewSet(ModelViewSet, FilterMixin):
         use_ocr = settings.USE_OCR
         use_whisper = settings.USE_WHISPER
         allow_overlap_bookings = settings.ALLOW_OVERLAP_BOOKINGS
+        can_send_email = settings.NOTIFICATION_EMAIL_FROM != ""
         return Response({
             "allow_overlap_bookings": allow_overlap_bookings,
             "use_coturn": use_coturn,
             "use_llm": use_llm,
             "use_ocr": use_ocr,
             "use_whisper": use_whisper,
-            "default_service_lab_group": settings.DEFAULT_SERVICE_LAB_GROUP
+            "default_service_lab_group": settings.DEFAULT_SERVICE_LAB_GROUP,
+            "can_send_email": can_send_email,
         }, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'])

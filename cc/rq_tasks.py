@@ -2482,7 +2482,7 @@ def check_and_remove_metadata_from_map(i, metadata_columns, metadata_field_map):
                 del metadata_field_map[metadata_columns[i].type][metadata_columns[i].name]
 
 @job('export', timeout='3h')
-def export_instrument_usage(instrument_ids: list[int], lab_group_ids: list[int], user_ids: list[int], mode: str, instance_id: str, time_started: str = None, time_ended: str = None, calculate_duration_with_cutoff: bool = False, user_id: int = 0, file_format: str = "xlsx"):
+def export_instrument_usage(instrument_ids: list[int], lab_group_ids: list[int], user_ids: list[int], mode: str, instance_id: str, time_started: str = None, time_ended: str = None, calculate_duration_with_cutoff: bool = False, user_id: int = 0, file_format: str = "xlsx", includes_maintenance: bool = False, approved_only: bool = True):
     instrument_usages = InstrumentUsage.objects.filter(instrument__id__in=instrument_ids)
     channel_layer = get_channel_layer()
     if mode == 'service_lab_group':
@@ -2530,8 +2530,13 @@ def export_instrument_usage(instrument_ids: list[int], lab_group_ids: list[int],
             instrument_usages = instrument_usages.filter(user__id__in=user_ids)
 
     instrument_usages = instrument_usages.filter(
-        Q(time_started__range=[time_started, time_ended]) | Q(time_ended__range=[time_started, time_ended])
+        (Q(time_started__range=[time_started, time_ended]) |
+        Q(time_ended__range=[time_started, time_ended]))
     )
+    if not includes_maintenance:
+        instrument_usages = instrument_usages.exclude(maintenance=True)
+    if approved_only:
+        instrument_usages = instrument_usages.filter(approved=True)
 
     if instrument_usages.exists():
         filename = str(uuid.uuid4())
@@ -2554,7 +2559,7 @@ def export_instrument_usage(instrument_ids: list[int], lab_group_ids: list[int],
             else:
                 writer = csv.writer(infile, delimiter="\t")
 
-        headers = ["Instrument", "User", "Time Started", "Time Ended", "Duration", "Description", "Associated Jobs"]
+        headers = ["Instrument", "User", "Time Started", "Time Ended", "Duration", "Description", "Associated Jobs", "Is Maintenance", "Is Approved"]
         if file_format == "xlsx":
             ws.append(headers)
         elif file_format == "csv" or file_format == "tsv":
@@ -2562,7 +2567,6 @@ def export_instrument_usage(instrument_ids: list[int], lab_group_ids: list[int],
         for i in instrument_usages:
             # check if instrument_usage time_started and time_ended are not splitted by the time_started and time_ended of the function
             duration = i.time_ended - i.time_started
-            print(duration)
             if calculate_duration_with_cutoff:
                 if time_ended:
                     if i.time_ended > time_ended:
@@ -2599,9 +2603,9 @@ def export_instrument_usage(instrument_ids: list[int], lab_group_ids: list[int],
             exported_time_ended = i.time_ended.strftime("%Y-%m-%d")
             exported_duration = duration.days+1
             if file_format == "xlsx":
-                ws.append([i.instrument.instrument_name, i.user.username, exported_time_started, exported_time_ended, exported_duration, i.description, ";\n".join(associated_jobs_information)])
+                ws.append([i.instrument.instrument_name, i.user.username, exported_time_started, exported_time_ended, exported_duration, i.description, ";\n".join(associated_jobs_information), i.maintenance, i.approved])
             if file_format == "csv" or file_format == "tsv":
-                writer.writerow([i.instrument.instrument_name, i.user.username, exported_time_started, exported_time_ended, exported_duration, i.description, ";".join(associated_jobs_information)])
+                writer.writerow([i.instrument.instrument_name, i.user.username, exported_time_started, exported_time_ended, exported_duration, i.description, ";".join(associated_jobs_information), i.maintenance, i.approved])
         if file_format == "xlsx":
             for col in ws.columns:
                 max_length = 0

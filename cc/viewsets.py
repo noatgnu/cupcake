@@ -2497,7 +2497,9 @@ class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
         file_format = request.data.get('file_format', 'xlsx')
         calculate_duration_with_cutoff = request.data.get('calculate_duration_with_cutoff', False)
         instance_id = request.data.get('instance_id', None)
-        job = export_instrument_usage.delay(instrument_ids, lab_group_id, user_id, mode, instance_id, time_started, time_ended, calculate_duration_with_cutoff, request.user.id, file_format)
+        includes_maintenance = request.data.get('includes_maintenance', False)
+        approved_only = request.data.get('approved_only', True)
+        job = export_instrument_usage.delay(instrument_ids, lab_group_id, user_id, mode, instance_id, time_started, time_ended, calculate_duration_with_cutoff, request.user.id, file_format, includes_maintenance, approved_only)
         return Response({'job_id': job.id}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'])

@@ -2,3 +2,10 @@
 data2
 models
 *.tar.gz
+backups
+media
+staticfiles
+.env
+.env.cloudflared
+*.sqlite3
+*.cupcake

@@ -1,22 +1,24 @@
-FROM python:3.10-bullseye
+FROM noatgnu/cupcake-base:0.1.0
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-RUN apt-get update
-RUN apt-get install -y cmake
+#RUN apt-get update
+#RUN apt-get install -y cmake
+WORKDIR /
 RUN git clone https://github.com/ggerganov/llama.cpp.git
 WORKDIR /llama.cpp
+RUN mkdir -p ./models
 RUN curl https://huggingface.co/TheBloke/CapybaraHermes-2.5-Mistral-7B-GGUF/resolve/main/capybarahermes-2.5-mistral-7b.Q5_K_M.gguf?download=true -L -o ./models/capybarahermes-2.5-mistral-7b.Q5_K_M.gguf
 RUN cmake -B build
-RUN cmake --build build --config Release -j 8
+RUN cmake --build build --config Release -j $(nproc)
 WORKDIR /app
-RUN mkdir "media"
-RUN mkdir "media/temp"
-RUN mkdir "backup"
-RUN mkdir "staticfiles"
-COPY . /app/
+#RUN mkdir "media"
+#RUN mkdir "media/temp"
+#RUN mkdir "backup"
+#RUN mkdir "staticfiles"
+#COPY . /app/
 
-RUN pip install -r requirements.txt
+#RUN pip install -r requirements.txt
 #RUN python manage.py collectstatic --noinput
 EXPOSE 8000
 # RQ worker

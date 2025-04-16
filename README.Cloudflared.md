@@ -1,4 +1,4 @@
-# Project Name
+# CUPCAKE - Cloudflare Tunnel Setup
 
 This project uses Docker Compose to set up a multi-container environment for a web application. The services include a frontend, backend, database, and various workers.
 

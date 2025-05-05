@@ -1,11 +1,190 @@
 from django.contrib.auth.models import User
-from rest_framework.serializers import ModelSerializer, SerializerMethodField
+from rest_framework.serializers import ModelSerializer, SerializerMethodField, PrimaryKeyRelatedField
 import json
 from cc.models import ProtocolModel, ProtocolStep, Annotation, StepVariation, Session, TimeKeeper, ProtocolSection, \
     ProtocolRating, Reagent, ProtocolReagent, StepReagent, StepTag, ProtocolTag, Tag, AnnotationFolder, Project, \
     Instrument, InstrumentUsage, StorageObject, StoredReagent, ReagentAction, LabGroup, MSUniqueVocabularies, \
     HumanDisease, Tissue, SubcellularLocation, MetadataColumn, Species, Unimod, InstrumentJob, FavouriteMetadataOption, \
-    Preset, MetadataTableTemplate
+    Preset, MetadataTableTemplate, ExternalContactDetails, SupportInformation, ExternalContact, MaintenanceLog
+
+
+class ExternalContactDetailsSerializer(ModelSerializer):
+    class Meta:
+        model = ExternalContactDetails
+        fields = ['id', 'contact_method_alt_name', 'contact_type', 'contact_value']
+
+
+class ExternalContactSerializer(ModelSerializer):
+    contact_details = ExternalContactDetailsSerializer(many=True, required=False)
+
+    class Meta:
+        model = ExternalContact
+        fields = ['id', 'user', 'contact_name', 'contact_details']
+
+    def create(self, validated_data):
+        contact_details_data = validated_data.pop('contact_details', [])
+        contact = ExternalContact.objects.create(**validated_data)
+
+        for detail_data in contact_details_data:
+            ex_detail = ExternalContactDetails.objects.create(
+                **detail_data
+            )
+            contact.contact_details.add(ex_detail)
+
+        return contact
+
+    def update(self, instance, validated_data):
+        # Update the main contact fields
+        instance.contact_name = validated_data.get('contact_name', instance.contact_name)
+        instance.user = validated_data.get('user', instance.user)
+
+        if 'contact_details' in validated_data:
+            contact_details_data = validated_data.pop('contact_details')
+
+            detail_ids = [item.get('id') for item in contact_details_data if item.get('id')]
+
+            instance.contact_details.exclude(id__in=detail_ids).delete()
+
+            for detail_data in contact_details_data:
+                detail_id = detail_data.get('id')
+                if detail_id:
+                    contact_detail = ExternalContactDetails.objects.get(id=detail_id)
+                    contact_detail.contact_type = detail_data.get('contact_type', contact_detail.contact_type)
+                    contact_detail.contact_value = detail_data.get('contact_value', contact_detail.contact_value)
+                    contact_detail.contact_method_alt_name = detail_data.get('contact_method_alt_name', contact_detail.contact_method_alt_name)
+                    contact_detail.save()
+                else:
+                    ex = ExternalContactDetails.objects.create(
+                        contact_type=detail_data.get('contact_type'),
+                        contact_value=detail_data.get('contact_value'),
+                        contact_method_alt_name=detail_data.get('contact_method_alt_name'),
+                    )
+                    instance.contact_details.add(ex)
+
+        instance.save()
+        return instance
+
+
+class SupportInformationSerializer(ModelSerializer):
+    vendor_contacts = ExternalContactSerializer(many=True, required=False)
+    manufacturer_contacts = ExternalContactSerializer(many=True, required=False)
+    location = SerializerMethodField()
+    location_id = PrimaryKeyRelatedField(
+        source='location',
+        queryset=StorageObject.objects.all(),
+        required=False,
+        allow_null=True,
+        write_only=True
+    )
+
+    def get_location(self, obj):
+        if obj.location:
+            location: StorageObject = obj.location
+
+            return {
+                "id": location.id,
+                "object_name": location.object_name,
+                "object_type": location.object_type,
+                "object_description": location.object_description,
+            }
+        return None
+
+    class Meta:
+        model = SupportInformation
+        fields = [
+            'id',
+            'vendor_name',
+            'vendor_contacts',
+            'manufacturer_name',
+            'manufacturer_contacts',
+            'serial_number',
+            'maintenance_frequency_days',
+            'location',
+            'location_id',
+            'warranty_start_date',
+            'warranty_end_date',
+            'created_at',
+            'updated_at'
+        ]
+
+    def create(self, validated_data):
+        vendor_contacts_data = validated_data.pop('vendor_contacts', [])
+        manufacturer_contacts_data = validated_data.pop('manufacturer_contacts', [])
+
+        support_info = SupportInformation.objects.create(**validated_data)
+
+        for vendor_contact in vendor_contacts_data:
+            contact_details_data = vendor_contact.pop('contact_details', [])
+            contact = ExternalContact.objects.create(**vendor_contact)
+
+            for detail in contact_details_data:
+                contact_detail = ExternalContactDetails.objects.create(**detail)
+                contact.contact_details.add(contact_detail)
+
+            support_info.vendor_contacts.add(contact)
+
+        for manufacturer_contact in manufacturer_contacts_data:
+            contact_details_data = manufacturer_contact.pop('contact_details', [])
+            contact = ExternalContact.objects.create(**manufacturer_contact)
+
+            for detail in contact_details_data:
+                contact_detail = ExternalContactDetails.objects.create(**detail)
+                contact.contact_details.add(contact_detail)
+
+            support_info.manufacturer_contacts.add(contact)
+
+        return support_info
+
+    def update(self, instance, validated_data):
+        instance.vendor_name = validated_data.get('vendor_name', instance.vendor_name)
+        instance.manufacturer_name = validated_data.get('manufacturer_name', instance.manufacturer_name)
+        instance.serial_number = validated_data.get('serial_number', instance.serial_number)
+        instance.maintenance_frequency_days = validated_data.get('maintenance_frequency_days',
+                                                              instance.maintenance_frequency_days)
+        instance.warranty_start_date = validated_data.get('warranty_start_date', instance.warranty_start_date)
+        instance.warranty_end_date = validated_data.get('warranty_end_date', instance.warranty_end_date)
+
+        location = validated_data.get('location', instance.location)
+        if location:
+            instance.location = location
+
+        instance.save()
+        if 'vendor_contacts' in validated_data:
+            vendor_contacts_data = validated_data.pop('vendor_contacts')
+            for vendor_contact_data in vendor_contacts_data:
+                contact_id = vendor_contact_data.get('id')
+                if contact_id:
+                    try:
+                        contact = ExternalContact.objects.get(id=contact_id)
+                        contact_serializer = ExternalContactSerializer(contact, data=vendor_contact_data)
+                        if contact_serializer.is_valid():
+                            contact_serializer.save()
+                    except ExternalContact.DoesNotExist:
+                        pass
+                else:
+                    contact_serializer = ExternalContactSerializer(data=vendor_contact_data)
+                    if contact_serializer.is_valid():
+                        contact = contact_serializer.save()
+                        instance.vendor_contacts.add(contact)
+
+        if 'manufacturer_contacts' in validated_data:
+            manufacturer_contacts_data = validated_data.pop('manufacturer_contacts')
+            for manufacturer_contact_data in manufacturer_contacts_data:
+                contact_id = manufacturer_contact_data.get('id')
+                if contact_id:
+                    try:
+                        contact = ExternalContact.objects.get(id=contact_id)
+                        contact_serializer = ExternalContactSerializer(contact, data=manufacturer_contact_data)
+                        if contact_serializer.is_valid():
+                            contact_serializer.save()
+                    except ExternalContact.DoesNotExist:
+                        pass
+                else:
+                    contact_serializer = ExternalContactSerializer(data=manufacturer_contact_data)
+                    if contact_serializer.is_valid():
+                        contact = contact_serializer.save()
+                        instance.manufacturer_contacts.add(contact)
+        return instance
 
 
 class ProtocolModelSerializer(ModelSerializer):
@@ -242,10 +421,16 @@ class ProjectSerializer(ModelSerializer):
         model = Project
         fields = ['id', 'project_name', 'created_at', 'updated_at', 'project_description', 'owner', 'sessions']
 
+class MaintenanceLogSerializer(ModelSerializer):
+    class Meta:
+        model = MaintenanceLog
+        fields = ['id', 'maintenance_date', 'maintenance_notes', 'maintenance_type', 'maintenance_description', 'instrument', 'created_at', 'updated_at', 'created_by', 'status']
+
 
 class InstrumentSerializer(ModelSerializer):
     metadata_columns = SerializerMethodField()
     annotation_folders = SerializerMethodField()
+    support_information = SerializerMethodField()
 
     def get_metadata_columns(self, obj):
         if obj.metadata_columns:
@@ -256,6 +441,12 @@ class InstrumentSerializer(ModelSerializer):
         folders = obj.annotation_folders.all()
         if folders.exists():
             return AnnotationFolderSerializer(folders, many=True).data
+        return []
+
+    def get_support_information(self, obj):
+        support_info = obj.support_information.all()
+        if support_info.exists():
+            return SupportInformationSerializer(support_info, many=True).data
         return []
 
     class Meta:
@@ -271,7 +462,8 @@ class InstrumentSerializer(ModelSerializer):
             'enabled',
             'metadata_columns',
             'annotation_folders',
-            'image'
+            'image',
+            'support_information',
         ]
 
 
@@ -613,3 +805,4 @@ class MetadataTableTemplateSerializer(ModelSerializer):
             'lab_group',
             'field_mask_mapping'
         ]
+

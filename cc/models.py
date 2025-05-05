@@ -642,6 +642,7 @@ class Instrument(models.Model):
     remote_host = models.ForeignKey("RemoteHost", on_delete=models.CASCADE, related_name="instruments", blank=True, null=True)
     max_days_ahead_pre_approval = models.IntegerField(blank=True, null=True, default=0)
     max_days_within_usage_pre_approval = models.IntegerField(blank=True, null=True, default=0)
+    support_information = models.ManyToManyField("SupportInformation", blank=True)
 
     def __str__(self):
         return self.instrument_name
@@ -1389,6 +1390,79 @@ class MetadataTableTemplate(models.Model):
     class Meta:
         app_label = 'cc'
         ordering = ['id']
+
+class ExternalContactDetails(models.Model):
+    contact_method_alt_name = models.CharField(max_length=255, blank=False, null=False)
+    contact_type_choices = [
+        ("email", "Email"),
+        ("phone", "Phone"),
+        ("address", "Address"),
+        ("other", "Other"),
+    ]
+    contact_type = models.CharField(max_length=20, choices=contact_type_choices, default="email")
+    contact_value = models.TextField(blank=False, null=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "cc"
+        ordering = ["id"]
+
+class ExternalContact(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                             related_name="external_contact_details", blank=True, null=True)
+    contact_name = models.CharField(max_length=255, blank=False, null=False)
+    contact_details = models.ManyToManyField(ExternalContactDetails, blank=True, related_name="external_contact")
+
+    class Meta:
+        app_label = "cc"
+        ordering = ["id"]
+
+
+class SupportInformation(models.Model):
+    vendor_name = models.CharField(max_length=255, blank=True, null=True)
+    vendor_contacts = models.ManyToManyField("ExternalContact", blank=True, related_name="vendor_contact")
+    manufacturer_name = models.CharField(max_length=255, blank=True, null=True)
+    manufacturer_contacts = models.ManyToManyField("ExternalContact", blank=True, related_name="manufacturer_contact")
+    serial_number = models.TextField(blank=True, null=True)
+    maintenance_frequency_days = models.IntegerField(blank=True, null=True)
+    location = models.ForeignKey("StorageObject", on_delete=models.SET_NULL, blank=True, related_name="instrument_location", null=True)
+    warranty_start_date = models.DateField(blank=True, null=True)
+    warranty_end_date = models.DateField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "cc"
+        ordering = ["id"]
+
+class MaintenanceLog(models.Model):
+    instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name="maintenance_logs")
+    maintenance_date = models.DateTimeField(auto_now_add=True)
+    maintenance_type_choices = [
+        ("routine", "Routine"),
+        ("emergency", "Emergency"),
+        ("other", "Other"),
+        ]
+    maintenance_type = models.CharField(max_length=20, choices=maintenance_type_choices, default="routine")
+    maintenance_description = models.TextField(blank=True, null=True)
+    maintenance_notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="maintenance_logs", blank=True, null=True)
+    status_choices = [
+        ("completed", "Completed"),
+        ("pending", "Pending"),
+        ("in_progress", "In Progress"),
+        ("requested", "Requested"),
+        ("cancelled", "Cancelled"),
+    ]
+
+    status = models.CharField(max_length=20, choices=status_choices, default="pending")
+
+    class Meta:
+        app_label = "cc"
+        ordering = ["id"]
 
 @receiver(post_save, sender=settings.AUTH_USER_MODEL)
 def create_auth_token(sender, instance=None, created=False, **kwargs):

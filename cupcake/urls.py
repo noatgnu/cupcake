@@ -25,7 +25,9 @@ from cc.viewsets import ProtocolViewSet, SessionViewSet, StepViewSet, Annotation
     TagViewSet, AnnotationFolderViewSet, ProjectViewSet, InstrumentViewSet, InstrumentUsageViewSet, \
     StorageObjectViewSet, StoredReagentViewSet, ReagentActionViewSet, LabGroupViewSet, SpeciesViewSet, \
     MetadataColumnViewSet, TissueViewSet, SubcellularLocationViewSet, HumanDiseaseViewSet, MSUniqueVocabulariesViewSet, \
-    UnimodViewSets, InstrumentJobViewSets, FavouriteMetadataOptionViewSets, PresetViewSet, MetadataTableTemplateViewSets
+    UnimodViewSets, InstrumentJobViewSets, FavouriteMetadataOptionViewSets, PresetViewSet, \
+    MetadataTableTemplateViewSets, SupportInformationViewSet, ExternalContactViewSet, ExternalContactDetailsViewSet, \
+    MaintenanceLogViewSet
 
 router = routers.DefaultRouter()
 router.register(r'protocol', ProtocolViewSet)
@@ -59,6 +61,10 @@ router.register('instrument_jobs', InstrumentJobViewSets)
 router.register(r'favourite_metadata_option', FavouriteMetadataOptionViewSets)
 router.register(r'preset', PresetViewSet)
 router.register(r'metadata_table_templates', MetadataTableTemplateViewSets)
+router.register(r'support_information', SupportInformationViewSet)
+router.register(r'external-contacts', ExternalContactViewSet)
+router.register(r'contact-details', ExternalContactDetailsViewSet)
+router.register(r'maintenance_logs', MaintenanceLogViewSet)
 
 urlpatterns = [
     path('admin/', admin.site.urls),

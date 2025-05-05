@@ -40,7 +40,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
     ProtocolRating, Reagent, StepReagent, ProtocolReagent, ProtocolTag, StepTag, Tag, AnnotationFolder, Project, \
     Instrument, InstrumentUsage, InstrumentPermission, StorageObject, StoredReagent, ReagentAction, LabGroup, Species, \
     SubcellularLocation, HumanDisease, Tissue, MetadataColumn, MSUniqueVocabularies, Unimod, InstrumentJob, \
-    FavouriteMetadataOption, Preset, MetadataTableTemplate
+    FavouriteMetadataOption, Preset, MetadataTableTemplate, MaintenanceLog, SupportInformation, ExternalContact, ExternalContactDetails
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
@@ -53,7 +53,7 @@ from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, Anno
     ReagentActionSerializer, LabGroupSerializer, SpeciesSerializer, SubcellularLocationSerializer, \
     HumanDiseaseSerializer, TissueSerializer, MetadataColumnSerializer, MSUniqueVocabulariesSerializer, \
     UnimodSerializer, InstrumentJobSerializer, FavouriteMetadataOptionSerializer, PresetSerializer, \
-    MetadataTableTemplateSerializer
+    MetadataTableTemplateSerializer, MaintenanceLogSerializer, SupportInformationSerializer, ExternalContactSerializer, ExternalContactDetailsSerializer
 from cc.utils import user_metadata, staff_metadata
 
 
@@ -982,9 +982,12 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
     @action(detail=False, methods=['get'])
     def get_annotation_in_folder(self, request):
         folder = request.query_params.get('folder', None)
+        search_term = request.query_params.get('search_term', None)
         if folder:
             anntation_folder = AnnotationFolder.objects.get(id=folder)
             annotations = Annotation.objects.filter(folder=anntation_folder)
+            if search_term:
+                annotations = annotations.filter(Q(annotation_name__icontains=search_term)|Q(annotation__icontains=search_term))
             paginator = LimitOffsetPagination()
             pagination = paginator.paginate_queryset(annotations, request)
             if pagination is not None:
@@ -2098,6 +2101,20 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
     serializer_class = InstrumentSerializer
 
     def get_queryset(self):
+        user = self.request.user
+        if user.is_staff:
+            return Instrument.objects.all()
+        if user.is_authenticated:
+            query_permission = Q(user=user)
+            query_permission += Q(can_book=True) | Q(can_view=True) | Q(can_manage=True)
+            i_permission = InstrumentPermission.objects.filter(query_permission)
+            if i_permission.exists():
+                instruments = []
+                for i in i_permission:
+                    instruments.append(i.instrument)
+                print(instruments)
+                return Instrument.objects.filter(id__in=instruments)
+
         return Instrument.objects.filter(enabled=True)
 
     def get_object(self):
@@ -2251,6 +2268,127 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
                 u.time_ended = u.time_ended + timedelta(days=request.data['days'])
                 u.save()
         return Response(InstrumentSerializer(instrument, many=False).data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def add_support_information(self, request, pk=None):
+        instrument = self.get_object()
+
+        if not request.user.is_staff:
+            permission = InstrumentPermission.objects.filter(
+                user=request.user,
+                instrument=instrument,
+                can_manage=True
+            )
+            if not permission.exists():
+                return Response(
+                    {"error": "You don't have permission to add support information for this instrument"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        support_info_id = request.data.get('id')
+
+        if not support_info_id:
+            return Response(
+                {"error": "No support_information_id provided"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            support_info = SupportInformation.objects.get(id=support_info_id)
+        except SupportInformation.DoesNotExist:
+            return Response(
+                {"error": "Support information not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        instrument.support_information.add(support_info)
+
+        return Response(
+            {"message": "Support information added to instrument successfully"},
+            status=status.HTTP_200_OK
+        )
+
+    @action(detail=True, methods=['post'])
+    def remove_support_information(self, request, pk=None):
+        instrument = self.get_object()
+
+        if not request.user.is_staff:
+            permission = InstrumentPermission.objects.filter(
+                user=request.user,
+                instrument=instrument,
+                can_manage=True
+            )
+            if not permission.exists():
+                return Response(
+                    {"error": "You don't have permission to remove support information from this instrument"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        support_info_id = request.data.get('id')
+
+        if not support_info_id:
+            return Response(
+                {"error": "No support_information_id provided"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            support_info = SupportInformation.objects.get(id=support_info_id)
+        except SupportInformation.DoesNotExist:
+            return Response(
+                {"error": "Support information not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if support_info not in instrument.support_information.all():
+            return Response(
+                {"error": "This support information is not associated with this instrument"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        instrument.support_information.remove(support_info)
+
+        return Response(
+            {"message": "Support information removed from instrument successfully"},
+            status=status.HTTP_200_OK
+        )
+
+    @action(detail=True, methods=['get'])
+    def list_support_information(self, request, pk=None):
+        instrument = self.get_object()
+        support_info = instrument.support_information.all()
+        serializer = SupportInformationSerializer(support_info, many=True)
+
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def create_support_information(self, request, pk=None):
+        instrument = self.get_object()
+
+        if not request.user.is_staff:
+            permission = InstrumentPermission.objects.filter(
+                user=request.user,
+                instrument=instrument,
+                can_manage=True
+            )
+            if not permission.exists():
+                return Response(
+                    {"error": "You don't have permission to add support information for this instrument"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        serializer = SupportInformationSerializer(data=request.data, context={'request': request})
+
+        if serializer.is_valid():
+            support_info = serializer.save()
+            instrument.support_information.add(support_info)
+
+            return Response(
+                SupportInformationSerializer(support_info).data,
+                status=status.HTTP_201_CREATED
+            )
+
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
     permission_classes = [InstrumentUsagePermission]
@@ -4363,3 +4501,273 @@ class MetadataTableTemplateViewSets(FilterMixin, ModelViewSet):
         errors = sdrf_validate(sdrf)
         return Response({"errors": [str(e) for e in errors]}, status=status.HTTP_200_OK)
 
+
+class MaintenanceLogViewSet(ModelViewSet, FilterMixin):
+    permission_classes = [IsAuthenticated]
+    queryset = MaintenanceLog.objects.all()
+    serializer_class = MaintenanceLogSerializer
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    parser_classes = (MultiPartParser, JSONParser)
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    search_fields = ['maintenance_description', 'maintenance_notes']
+    ordering_fields = ['maintenance_date', 'updated_at', 'instrument__instrument_name', 'maintenance_type']
+    filterset_fields = ['instrument', 'maintenance_type', 'status']
+    pagination_class = LimitOffsetPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        query = Q()
+
+        # Filter parameters
+        instrument_id = self.request.query_params.get('instrument_id', None)
+        maintenance_type = self.request.query_params.get('maintenance_type', None)
+        status = self.request.query_params.get('status', None)
+        start_date = self.request.query_params.get('start_date', None)
+        end_date = self.request.query_params.get('end_date', None)
+
+        if instrument_id:
+            query &= Q(instrument_id=instrument_id)
+        if maintenance_type:
+            query &= Q(maintenance_type=maintenance_type)
+        if status:
+            query &= Q(status=status)
+        if start_date:
+            query &= Q(maintenance_date__gte=parse_datetime(start_date))
+        if end_date:
+            query &= Q(maintenance_date__lte=parse_datetime(end_date))
+
+        # Staff can see all maintenance logs, others see only what they have permission for
+        if not user.is_staff:
+            instrument_permissions = InstrumentPermission.objects.filter(user=user)
+            if not instrument_permissions.exists():
+                return self.queryset.none()
+
+            accessible_instruments = [perm.instrument for perm in instrument_permissions if perm.can_view]
+            query &= Q(instrument__in=accessible_instruments)
+
+        return self.queryset.filter(query)
+
+    def create(self, request, *args, **kwargs):
+        data = request.data.copy()
+        data['created_by'] = request.user.id
+
+        instrument_id = data.get('instrument')
+        if instrument_id:
+            try:
+                instrument = Instrument.objects.get(id=instrument_id)
+                # Check if user has permission to add maintenance logs
+                if not request.user.is_staff:
+                    permission = InstrumentPermission.objects.filter(
+                        user=request.user, instrument=instrument, can_manage=True
+                    )
+                    if not permission.exists():
+                        return Response(
+                            {"error": "You don't have permission to add maintenance logs for this instrument"},
+                            status=status.HTTP_403_FORBIDDEN
+                        )
+            except Instrument.DoesNotExist:
+                return Response(
+                    {"error": "Instrument not found"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def update(self, request, *args, **kwargs):
+        maintenance_log = self.get_object()
+
+        # Check permissions
+        if not request.user.is_staff:
+            permission = InstrumentPermission.objects.filter(
+                user=request.user, instrument=maintenance_log.instrument, can_manage=True
+            )
+            if not permission.exists() and maintenance_log.created_by != request.user:
+                return Response(
+                    {"error": "You don't have permission to update this maintenance log"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        maintenance_log = self.get_object()
+
+        # Check permissions
+        if not request.user.is_staff:
+            permission = InstrumentPermission.objects.filter(
+                user=request.user, instrument=maintenance_log.instrument, can_manage=True
+            )
+            if not permission.exists() and maintenance_log.created_by != request.user:
+                return Response(
+                    {"error": "You don't have permission to delete this maintenance log"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=['post'])
+    def update_status(self, request, pk=None):
+        """Update the status of a maintenance log"""
+        maintenance_log = self.get_object()
+        new_status = request.data.get('status')
+
+        # Check permissions
+        if not request.user.is_staff:
+            permission = InstrumentPermission.objects.filter(
+                user=request.user, instrument=maintenance_log.instrument, can_manage=True
+            )
+            if not permission.exists() and maintenance_log.created_by != request.user:
+                return Response(
+                    {"error": "You don't have permission to update the status of this maintenance log"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        if new_status not in dict(maintenance_log.status_choices):
+            return Response(
+                {"error": f"Invalid status. Must be one of: {', '.join(dict(maintenance_log.status_choices).keys())}"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        maintenance_log.status = new_status
+        maintenance_log.save()
+        return Response(self.get_serializer(maintenance_log).data)
+
+    @action(detail=False, methods=['get'])
+    def get_maintenance_types(self, request):
+        """Get all maintenance types"""
+        return Response([{'value': key, 'label': value} for key, value in MaintenanceLog.maintenance_type_choices])
+
+    @action(detail=False, methods=['get'])
+    def get_status_types(self, request):
+        """Get all status types"""
+        return Response([{'value': key, 'label': value} for key, value in MaintenanceLog.status_choices])
+
+
+class SupportInformationViewSet(ModelViewSet):
+    queryset = SupportInformation.objects.all()
+    serializer_class = SupportInformationSerializer
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    parser_classes = (MultiPartParser, JSONParser)
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    ordering_fields = ['id', 'vendor_name', 'manufacturer_name']
+    search_fields = ['vendor_name', 'manufacturer_name']
+    filterset_fields = ['vendor_name', 'manufacturer_name']
+    ordering = ['vendor_name', 'manufacturer_name']
+    pagination_class = LimitOffsetPagination
+
+    def get_queryset(self):
+        queryset = self.queryset
+        vendor_name = self.request.query_params.get('vendor_name', None)
+        manufacturer_name = self.request.query_params.get('manufacturer_name', None)
+
+        if vendor_name:
+            queryset = queryset.filter(vendor_name__icontains=vendor_name)
+        if manufacturer_name:
+            queryset = queryset.filter(manufacturer_name__icontains=manufacturer_name)
+
+        return queryset
+
+    def perform_create(self, serializer):
+        serializer.save()
+
+    @action(detail=True, methods=['post'])
+    def add_vendor_contact(self, request, pk=None):
+        """Add a vendor contact to support information"""
+        support_info = self.get_object()
+        serializer = ExternalContactSerializer(data=request.data)
+
+        if serializer.is_valid():
+            contact = serializer.save()
+            support_info.vendor_contacts.add(contact)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['post'])
+    def add_manufacturer_contact(self, request, pk=None):
+        """Add a manufacturer contact to support information"""
+        support_info = self.get_object()
+        serializer = ExternalContactSerializer(data=request.data)
+
+        if serializer.is_valid():
+            contact = serializer.save()
+            support_info.manufacturer_contacts.add(contact)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['delete'])
+    def remove_contact(self, request, pk=None):
+        """Remove a contact from support information"""
+        support_info = self.get_object()
+        contact_id = request.data.get('contact_id')
+        contact_type = request.data.get('contact_type', 'vendor')
+        try:
+            contact = ExternalContact.objects.get(id=contact_id)
+            if contact_type == 'vendor':
+                support_info.vendor_contacts.remove(contact)
+            else:
+                support_info.manufacturer_contacts.remove(contact)
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except ExternalContact.DoesNotExist:
+            return Response({"error": "Contact not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=kwargs.get('partial', False))
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response(serializer.data)
+
+class ExternalContactDetailsViewSet(ModelViewSet):
+    queryset = ExternalContactDetails.objects.all()
+    serializer_class = ExternalContactDetailsSerializer
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    parser_classes = (MultiPartParser, JSONParser)
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+
+
+class ExternalContactViewSet(ModelViewSet):
+    queryset = ExternalContact.objects.all()
+    serializer_class = ExternalContactSerializer
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    parser_classes = (MultiPartParser, JSONParser)
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=kwargs.get('partial', False))
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def add_contact_detail(self, request, pk=None):
+        """Add a contact detail to an external contact"""
+        contact = self.get_object()
+        serializer = ExternalContactDetailsSerializer(data=request.data)
+
+        if serializer.is_valid():
+            contact_detail = serializer.save()
+            contact.contact_details.add(contact_detail)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['delete'])
+    def remove_contact_detail(self, request, pk=None):
+        """Remove a contact detail from an external contact"""
+        contact = self.get_object()
+        detail_id = request.data.get('detail_id')
+
+        try:
+            detail = ExternalContactDetails.objects.get(id=detail_id)
+            contact.contact_details.remove(detail)
+            detail.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except ExternalContactDetails.DoesNotExist:
+            return Response({"error": "Contact detail not found"}, status=status.HTTP_404_NOT_FOUND)

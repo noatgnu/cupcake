@@ -424,7 +424,19 @@ class ProjectSerializer(ModelSerializer):
 class MaintenanceLogSerializer(ModelSerializer):
     class Meta:
         model = MaintenanceLog
-        fields = ['id', 'maintenance_date', 'maintenance_notes', 'maintenance_type', 'maintenance_description', 'instrument', 'created_at', 'updated_at', 'created_by', 'status']
+        fields = [
+            'id',
+            'maintenance_date',
+            'maintenance_notes',
+            'maintenance_type',
+            'maintenance_description',
+            'instrument',
+            'created_at',
+            'updated_at',
+            'created_by',
+            'status',
+            'is_template'
+        ]
 
 
 class InstrumentSerializer(ModelSerializer):

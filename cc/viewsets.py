@@ -4518,12 +4518,12 @@ class MaintenanceLogViewSet(ModelViewSet, FilterMixin):
         user = self.request.user
         query = Q()
 
-        # Filter parameters
         instrument_id = self.request.query_params.get('instrument_id', None)
         maintenance_type = self.request.query_params.get('maintenance_type', None)
         status = self.request.query_params.get('status', None)
         start_date = self.request.query_params.get('start_date', None)
         end_date = self.request.query_params.get('end_date', None)
+        is_template = self.request.query_params.get('is_template', None)
 
         if instrument_id:
             query &= Q(instrument_id=instrument_id)
@@ -4535,8 +4535,11 @@ class MaintenanceLogViewSet(ModelViewSet, FilterMixin):
             query &= Q(maintenance_date__gte=parse_datetime(start_date))
         if end_date:
             query &= Q(maintenance_date__lte=parse_datetime(end_date))
+        if is_template is not None:
+            query &= Q(is_template=(is_template.lower() == 'true'))
+        else:
+            query &= Q(is_template=False)
 
-        # Staff can see all maintenance logs, others see only what they have permission for
         if not user.is_staff:
             instrument_permissions = InstrumentPermission.objects.filter(user=user)
             if not instrument_permissions.exists():
@@ -4580,7 +4583,6 @@ class MaintenanceLogViewSet(ModelViewSet, FilterMixin):
     def update(self, request, *args, **kwargs):
         maintenance_log = self.get_object()
 
-        # Check permissions
         if not request.user.is_staff:
             permission = InstrumentPermission.objects.filter(
                 user=request.user, instrument=maintenance_log.instrument, can_manage=True
@@ -4596,7 +4598,6 @@ class MaintenanceLogViewSet(ModelViewSet, FilterMixin):
     def destroy(self, request, *args, **kwargs):
         maintenance_log = self.get_object()
 
-        # Check permissions
         if not request.user.is_staff:
             permission = InstrumentPermission.objects.filter(
                 user=request.user, instrument=maintenance_log.instrument, can_manage=True
@@ -4646,6 +4647,27 @@ class MaintenanceLogViewSet(ModelViewSet, FilterMixin):
         """Get all status types"""
         return Response([{'value': key, 'label': value} for key, value in MaintenanceLog.status_choices])
 
+    @action(detail=True, methods=['post'])
+    def create_from_template(self, request, pk=None):
+        template = self.get_object()
+
+        if not template.is_template:
+            return Response(
+                {"error": "This is not a template"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        new_log = MaintenanceLog.objects.create(
+            instrument=template.instrument,
+            maintenance_type=template.maintenance_type,
+            maintenance_description=template.maintenance_description,
+            maintenance_notes=template.maintenance_notes,
+            created_by=request.user,
+            status='pending',
+            is_template=False
+        )
+
+        return Response(self.get_serializer(new_log).data)
 
 class SupportInformationViewSet(ModelViewSet):
     queryset = SupportInformation.objects.all()

@@ -1457,7 +1457,7 @@ class MaintenanceLog(models.Model):
         ("requested", "Requested"),
         ("cancelled", "Cancelled"),
     ]
-
+    is_template = models.BooleanField(default=False)
     status = models.CharField(max_length=20, choices=status_choices, default="pending")
 
     class Meta:

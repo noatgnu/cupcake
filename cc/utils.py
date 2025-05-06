@@ -1,3 +1,6 @@
+import json
+import requests
+from django.conf import settings
 
 default_columns = [{
             "name": "Source name", "type": "", "mandatory": True
@@ -170,3 +173,37 @@ required_metadata_name = [
     "cleavage agent details",
 ]
 
+
+def send_slack_notification(message, channel=None, username=None, icon_emoji=None, attachments=None):
+    """
+    Send a notification message to Slack channel
+
+    Args:
+        message: The message text
+        channel: Optional channel override
+        username: Display name for the bot
+        icon_emoji: Emoji to use as the icon
+        attachments: Any Slack message attachments
+    """
+    webhook_url = getattr(settings, 'SLACK_WEBHOOK_URL', None)
+    if not webhook_url:
+        return False
+
+    payload = {'text': message}
+
+    if channel:
+        payload['channel'] = channel
+    if username:
+        payload['username'] = username
+    if icon_emoji:
+        payload['icon_emoji'] = icon_emoji
+    if attachments:
+        payload['attachments'] = attachments
+
+    response = requests.post(
+        webhook_url,
+        data=json.dumps(payload),
+        headers={'Content-Type': 'application/json'}
+    )
+
+    return response.status_code == 200

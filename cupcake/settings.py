@@ -376,3 +376,6 @@ FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:4200")
 # Instrument Booking Settings
 ALLOW_OVERLAP_BOOKINGS = os.environ.get("ALLOW_OVERLAP_BOOKINGS", "True") == "True"
 DEFAULT_SERVICE_LAB_GROUP = os.environ.get("DEFAULT_SERVICE_LAB_GROUP", "MS Facility")
+
+# SLACK NOTIFICATIONS
+SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")

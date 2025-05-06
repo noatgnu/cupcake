@@ -54,7 +54,7 @@ from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, Anno
     HumanDiseaseSerializer, TissueSerializer, MetadataColumnSerializer, MSUniqueVocabulariesSerializer, \
     UnimodSerializer, InstrumentJobSerializer, FavouriteMetadataOptionSerializer, PresetSerializer, \
     MetadataTableTemplateSerializer, MaintenanceLogSerializer, SupportInformationSerializer, ExternalContactSerializer, ExternalContactDetailsSerializer
-from cc.utils import user_metadata, staff_metadata
+from cc.utils import user_metadata, staff_metadata, send_slack_notification
 
 
 class ProtocolViewSet(ModelViewSet, FilterMixin):
@@ -2390,6 +2390,98 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @action(detail=True, methods=['get'])
+    def get_maintenance_status(self, request, pk=None):
+        """
+        Get maintenance status for an instrument including:
+        - Days since last routine maintenance
+        - Days until next scheduled maintenance
+        - Whether maintenance is overdue
+        """
+        instrument = self.get_object()
+
+        last_maintenance = MaintenanceLog.objects.filter(
+            instrument=instrument,
+            maintenance_type='routine',
+            status='completed',
+            is_template=False
+        ).order_by('-maintenance_date').first()
+
+        support_info = SupportInformation.objects.filter(instrument=instrument).first()
+        maintenance_frequency = support_info.maintenance_frequency_days if support_info else None
+
+        today = timezone.now().date()
+
+        result = {
+            'has_maintenance_record': last_maintenance is not None,
+            'maintenance_frequency_days': maintenance_frequency,
+        }
+
+        if last_maintenance:
+            last_date = last_maintenance.maintenance_date.date()
+            days_since_last = (today - last_date).days
+            result['last_maintenance_date'] = last_date
+            result['days_since_last_maintenance'] = days_since_last
+
+            if maintenance_frequency:
+                next_date = last_date + timedelta(days=maintenance_frequency)
+                days_until_next = (next_date - today).days
+                result['next_maintenance_date'] = next_date
+                result['days_until_next_maintenance'] = days_until_next
+                result['is_overdue'] = days_until_next < 0
+                result['overdue_days'] = abs(days_until_next) if days_until_next < 0 else 0
+        elif maintenance_frequency:
+            result['is_overdue'] = True
+            result['overdue_days'] = None
+            result['next_maintenance_date'] = today
+            result['days_until_next_maintenance'] = 0
+
+        return Response(result)
+
+    @action(detail=True, methods=['post'])
+    def notify_slack(self, request, pk=None):
+        """Send a notification to Slack about an instrument issue or status"""
+        instrument = self.get_object()
+        message = request.data.get('message')
+
+        if not message:
+            return Response({"error": "Message is required"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # Format the message with instrument details
+        formatted_message = f"*Instrument Alert:* {instrument.instrument_name}\n{message}"
+
+        # Optional attachment with more details
+        attachments = [{
+            "color": "#FF0000" if request.data.get('urgent') else "#36a64f",
+            "fields": [
+                {
+                    "title": "Reported by",
+                    "value": request.user.username,
+                    "short": True
+                },
+                {
+                    "title": "Status",
+                    "value": request.data.get('status', 'N/A'),
+                    "short": True
+                }
+            ]
+        }]
+
+        # Send to Slack
+        success = send_slack_notification(
+            formatted_message,
+            username="Instrument Bot",
+            icon_emoji=":microscope:",
+            attachments=attachments
+        )
+
+        if success:
+            return Response({"status": "Message sent to Slack"})
+        else:
+            return Response({"error": "Failed to send message to Slack"},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
     permission_classes = [InstrumentUsagePermission]
     queryset = InstrumentUsage.objects.all()
@@ -4578,6 +4670,18 @@ class MaintenanceLogViewSet(ModelViewSet, FilterMixin):
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
         headers = self.get_success_headers(serializer.data)
+        instrument_name = instrument.instrument_name
+        if not serializer.data["is_template"]:
+            data_type = serializer.data["maintenance_type"]
+            message = (f"*New {data_type} maintenance* logged for "
+                       f"*{instrument_name}* by {request.user.username}")
+
+            send_slack_notification(
+                message,
+                username="Maintenance Bot",
+                icon_emoji=":wrench:"
+            )
+
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
     def update(self, request, *args, **kwargs):

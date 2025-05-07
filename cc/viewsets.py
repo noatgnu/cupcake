@@ -2891,9 +2891,8 @@ class StorageObjectViewSet(ModelViewSet, FilterMixin):
         while storage_object.stored_at:
             storage_object = storage_object.stored_at
             path.append({"id": storage_object.id, "name": storage_object.object_name[:]})
-            path.reverse()
+        path.reverse()
         return Response(path, status=status.HTTP_200_OK)
-
 
 
 class StoredReagentViewSet(ModelViewSet, FilterMixin):

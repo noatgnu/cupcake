@@ -1472,7 +1472,7 @@ class MaintenanceLog(models.Model):
 
         folder = AnnotationFolder.objects.create(
             folder_name=f"Maintenance {self.id} - {self.maintenance_date.strftime('%Y-%m-%d')}",
-            instrument=self.instrument
+            instrument=self.instrument,
         )
         self.annotation_folder = folder
         self.save()

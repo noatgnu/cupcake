@@ -1459,10 +1459,23 @@ class MaintenanceLog(models.Model):
     ]
     is_template = models.BooleanField(default=False)
     status = models.CharField(max_length=20, choices=status_choices, default="pending")
+    annotation_folder = models.ForeignKey("AnnotationFolder", on_delete=models.SET_NULL,
+                                          related_name="maintenance_logs", blank=True, null=True)
 
     class Meta:
         app_label = "cc"
         ordering = ["id"]
+
+    def create_default_folders(self):
+        if self.annotation_folder:
+            return
+
+        folder = AnnotationFolder.objects.create(
+            folder_name=f"Maintenance {self.id} - {self.maintenance_date.strftime('%Y-%m-%d')}",
+            instrument=self.instrument
+        )
+        self.annotation_folder = folder
+        self.save()
 
 @receiver(post_save, sender=settings.AUTH_USER_MODEL)
 def create_auth_token(sender, instance=None, created=False, **kwargs):
@@ -1482,5 +1495,10 @@ def create_instrument_annotation_folders(sender, instance=None, created=False, *
 
 @receiver(post_save, sender=StoredReagent)
 def create_stored_reagent_annotation_folders(sender, instance=None, created=False, **kwargs):
+    if created:
+        instance.create_default_folders()
+
+@receiver(post_save, sender=MaintenanceLog)
+def create_maintenance_log_folders(sender, instance=None, created=False, **kwargs):
     if created:
         instance.create_default_folders()

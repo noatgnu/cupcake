@@ -4648,39 +4648,35 @@ class MaintenanceLogViewSet(ModelViewSet, FilterMixin):
 
         instrument_id = data.get('instrument')
         if instrument_id:
-            try:
-                instrument = Instrument.objects.get(id=instrument_id)
-                # Check if user has permission to add maintenance logs
-                if not request.user.is_staff:
-                    permission = InstrumentPermission.objects.filter(
-                        user=request.user, instrument=instrument, can_manage=True
-                    )
-                    if not permission.exists():
-                        return Response(
-                            {"error": "You don't have permission to add maintenance logs for this instrument"},
-                            status=status.HTTP_403_FORBIDDEN
-                        )
-            except Instrument.DoesNotExist:
-                return Response(
-                    {"error": "Instrument not found"},
-                    status=status.HTTP_404_NOT_FOUND
+            instrument = Instrument.objects.get(id=instrument_id)
+            # Check if user has permission to create maintenance log for this instrument
+            if not request.user.is_staff:
+                permission = InstrumentPermission.objects.filter(
+                    user=request.user, instrument=instrument, can_manage=True
                 )
+                if not permission.exists():
+                    return Response(
+                        {"error": "You don't have permission to create maintenance logs for this instrument"},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
 
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer)
-        headers = self.get_success_headers(serializer.data)
-        instrument_name = instrument.instrument_name
-        if not serializer.data["is_template"]:
-            data_type = serializer.data["maintenance_type"]
-            message = (f"*New {data_type} maintenance* logged for "
-                       f"*{instrument_name}* by {request.user.username}")
+        maintenance_log = serializer.save()
 
-            send_slack_notification(
-                message,
-                username="Maintenance Bot",
-                icon_emoji=":wrench:"
-            )
+        maintenance_log.create_default_folders()
+
+        headers = self.get_success_headers(serializer.data)
+
+        if not serializer.data["is_template"] and hasattr(settings, 'SLACK_WEBHOOK_URL') and settings.SLACK_WEBHOOK_URL:
+            try:
+                instrument_name = Instrument.objects.get(id=instrument_id).instrument_name
+                user = request.user.username
+                maintenance_type = dict(maintenance_log.maintenance_type_choices).get(maintenance_log.maintenance_type)
+                message = f"New {maintenance_type} maintenance log created for {instrument_name} by {user}"
+                send_slack_notification(message, settings.SLACK_WEBHOOK_URL)
+            except Exception:
+                pass
 
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
@@ -4720,7 +4716,6 @@ class MaintenanceLogViewSet(ModelViewSet, FilterMixin):
         maintenance_log = self.get_object()
         new_status = request.data.get('status')
 
-        # Check permissions
         if not request.user.is_staff:
             permission = InstrumentPermission.objects.filter(
                 user=request.user, instrument=maintenance_log.instrument, can_manage=True
@@ -4743,12 +4738,10 @@ class MaintenanceLogViewSet(ModelViewSet, FilterMixin):
 
     @action(detail=False, methods=['get'])
     def get_maintenance_types(self, request):
-        """Get all maintenance types"""
         return Response([{'value': key, 'label': value} for key, value in MaintenanceLog.maintenance_type_choices])
 
     @action(detail=False, methods=['get'])
     def get_status_types(self, request):
-        """Get all status types"""
         return Response([{'value': key, 'label': value} for key, value in MaintenanceLog.status_choices])
 
     @action(detail=True, methods=['post'])
@@ -4761,6 +4754,16 @@ class MaintenanceLogViewSet(ModelViewSet, FilterMixin):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        if not request.user.is_staff:
+            permission = InstrumentPermission.objects.filter(
+                user=request.user, instrument=template.instrument, can_manage=True
+            )
+            if not permission.exists():
+                return Response(
+                    {"error": "You don't have permission to create a maintenance log from this template"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
         new_log = MaintenanceLog.objects.create(
             instrument=template.instrument,
             maintenance_type=template.maintenance_type,
@@ -4772,6 +4775,60 @@ class MaintenanceLogViewSet(ModelViewSet, FilterMixin):
         )
 
         return Response(self.get_serializer(new_log).data)
+
+    @action(detail=True, methods=['get'])
+    def get_annotations(self, request, pk=None):
+        """Get all annotations for a maintenance log"""
+        maintenance_log = self.get_object()
+        if maintenance_log.annotation_folder:
+            annotations = maintenance_log.annotation_folder.annotations.all().order_by('-updated_at')
+            return Response(AnnotationSerializer(annotations, many=True).data)
+        return Response([])
+
+    @action(detail=True, methods=['post'])
+    def add_annotation(self, request, pk=None):
+        """Add an annotation to the maintenance log"""
+        maintenance_log = self.get_object()
+        if not request.user.is_staff:
+            if maintenance_log.created_by != request.user:
+                return Response(
+                    {"error": "You don't have permission to add annotations to this maintenance log"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        if not maintenance_log.annotation_folder:
+            maintenance_log.create_default_folders()
+            maintenance_log.refresh_from_db()
+
+        annotation_data = request.data.copy()
+        annotation_data['folder'] = maintenance_log.annotation_folder.id
+
+        serializer = AnnotationSerializer(data=annotation_data, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['post'])
+    def notify_slack(self, request, pk=None):
+        maintenance_log = self.get_object()
+
+        if not hasattr(settings, 'SLACK_WEBHOOK_URL') or not settings.SLACK_WEBHOOK_URL:
+            return Response({"error": "Slack webhook URL not configured"},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        instrument_name = maintenance_log.instrument.instrument_name
+        maintenance_type = maintenance_log.get_maintenance_type_display()
+        message = request.data.get('message',
+                                   f"Maintenance notification: {maintenance_type} maintenance for {instrument_name}")
+
+        success = send_slack_notification(message, settings.SLACK_WEBHOOK_URL)
+
+        if success:
+            return Response({"message": "Notification sent successfully"})
+        else:
+            return Response({"error": "Failed to send notification"},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class SupportInformationViewSet(ModelViewSet):
     queryset = SupportInformation.objects.all()

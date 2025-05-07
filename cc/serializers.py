@@ -422,6 +422,29 @@ class ProjectSerializer(ModelSerializer):
         fields = ['id', 'project_name', 'created_at', 'updated_at', 'project_description', 'owner', 'sessions']
 
 class MaintenanceLogSerializer(ModelSerializer):
+    annotations = SerializerMethodField()
+    created_by_user = SerializerMethodField()
+    annotation_folder_details = SerializerMethodField()
+
+    def get_annotations(self, obj):
+        if obj.annotation_folder:
+            annotations = obj.annotation_folder.annotations.all()
+            return AnnotationSerializer(annotations, many=True).data
+        return []
+
+    def get_created_by_user(self, obj):
+        if obj.created_by:
+            return {"id": obj.created_by.id, "username": obj.created_by.username}
+        return None
+
+    def get_annotation_folder_details(self, obj):
+        if obj.annotation_folder:
+            return {
+                "id": obj.annotation_folder.id,
+                "folder_name": obj.annotation_folder.folder_name
+            }
+        return None
+
     class Meta:
         model = MaintenanceLog
         fields = [
@@ -434,8 +457,12 @@ class MaintenanceLogSerializer(ModelSerializer):
             'created_at',
             'updated_at',
             'created_by',
+            'created_by_user',
             'status',
-            'is_template'
+            'is_template',
+            'annotation_folder',
+            'annotation_folder_details',
+            'annotations'
         ]
 
 

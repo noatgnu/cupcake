@@ -1,0 +1,17 @@
+FROM node:20-bullseye-slim
+
+WORKDIR /app
+RUN apt update
+RUN apt -y upgrade
+RUN apt install -y git
+RUN git clone https://github.com/noatgnu/cupcake-ng.git
+WORKDIR /app/cupcake-ng
+RUN sed -i 's;https://cupcake.proteo.info;https://cupcake-mrc.proteo.nexus;g' src/environments/environment.ts
+RUN npm install
+RUN npm run build
+
+FROM nginx:latest
+
+COPY --from=0 /app/cupcake-ng/dist/browser /usr/share/nginx/html
+
+EXPOSE 80

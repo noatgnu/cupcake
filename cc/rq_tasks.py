@@ -2696,7 +2696,7 @@ def export_reagent_actions(start_date=None, end_date=None, storage_object_id=Non
         writer = csv.writer(csvfile)
 
         writer.writerow([
-            'Date', 'Action Type', 'Reagent Name', 'Barcode', 'Barcode Format', 'Quantity',
+            'Date', 'Action Type', 'Item Name', 'Barcode', 'Barcode Format', 'Quantity',
             'Storage Location', 'Storage Path', 'User', 'Notes'
         ])
 

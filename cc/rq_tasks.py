@@ -5,7 +5,7 @@ import json
 import shutil
 import threading
 import uuid
-from datetime import time
+from datetime import time, timedelta
 import csv
 import ffmpeg
 import pandas as pd
@@ -35,7 +35,7 @@ from sdrf_pipelines.sdrf.sdrf import SdrfDataFrame
 from cc.models import Annotation, ProtocolModel, ProtocolStep, StepVariation, ProtocolSection, Session, \
     AnnotationFolder, Reagent, ProtocolReagent, StepReagent, ProtocolTag, StepTag, Tag, Project, MetadataColumn, \
     InstrumentJob, SubcellularLocation, Species, MSUniqueVocabularies, Unimod, FavouriteMetadataOption, InstrumentUsage, \
-    LabGroup, Tissue
+    LabGroup, Tissue, StorageObject, ReagentAction, StoredReagent
 from django.conf import settings
 import numpy as np
 import subprocess
@@ -51,7 +51,7 @@ import re
 from docx.shared import Inches, RGBColor
 import re
 
-from cc.utils import user_metadata, staff_metadata, required_metadata_name
+from cc.utils import user_metadata, staff_metadata, required_metadata_name, identify_barcode_format
 
 capture_language = re.compile(r"auto-detected language: (\w+)")
 
@@ -2646,5 +2646,92 @@ def export_instrument_usage(instrument_ids: list[int], lab_group_ids: list[int],
             }
         )
 
+@job('export', timeout='3h')
+def export_reagent_actions(start_date=None, end_date=None, storage_object_id=None,
+                          user_id=None, export_format='csv', instance_id=None):
+    """
+    Export reagent actions within a specified time period with optional storage location filtering
 
+    Args:
+        start_date (datetime): Start date for filtering actions
+        end_date (datetime): End date for filtering actions
+        storage_object_id (int): Optional ID of storage object to filter by
+        user_id (int): Optional user ID who requested the export
+        export_format (str): Export format (currently only 'csv' supported)
+        instance_id (str): Optional instance ID for tracking the job
 
+    Returns:
+        str: Signed filename for secure download
+    """
+    if not end_date:
+        end_date = timezone.now()
+    if not start_date:
+        start_date = end_date - timedelta(days=30)
+
+    actions_query = ReagentAction.objects.filter(
+        created_at__gte=start_date,
+        created_at__lte=end_date
+    ).select_related('reagent', 'reagent__storage_object', 'user')
+
+    if storage_object_id:
+        try:
+            storage_object = StorageObject.objects.get(id=storage_object_id)
+
+            all_storage_objects = [storage_object]
+            children = storage_object.get_all_children()
+            all_storage_objects.extend(children)
+            storage_ids = [obj.id for obj in all_storage_objects]
+
+            actions_query = actions_query.filter(reagent__storage_object_id__in=storage_ids)
+        except StorageObject.DoesNotExist:
+            pass
+
+    filename = f"reagent_actions_export_{uuid.uuid4().hex}.csv"
+    export_dir = os.path.join(settings.MEDIA_ROOT, 'temp')
+
+    os.makedirs(export_dir, exist_ok=True)
+    filepath = os.path.join(export_dir, filename)
+
+    with open(filepath, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+
+        writer.writerow([
+            'Date', 'Action Type', 'Reagent Name', 'Barcode', 'Barcode Format', 'Quantity',
+            'Storage Location', 'Storage Path', 'User', 'Notes'
+        ])
+
+        for action in actions_query:
+            storage_path = ""
+            storage_obj = action.reagent.storage_object
+            if storage_obj:
+                path = storage_obj.get_path_to_root()
+                storage_path = " > ".join([item["name"] for item in path])
+            barcode_format = identify_barcode_format(action.reagent.barcode)
+            writer.writerow([
+                action.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                action.action_type,
+                action.reagent.reagent.name,
+                action.reagent.barcode or "",
+                barcode_format,
+                action.quantity if action.quantity else "",
+                action.reagent.storage_object.object_name if action.reagent.storage_object else "",
+                storage_path,
+                action.user.username if action.user else "",
+                action.notes or ""
+            ])
+
+    signer = TimestampSigner()
+    signed_filename = signer.sign(filename)
+
+    if user_id:
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}",
+            {
+                "type": "download_message",
+                "message": {
+                    "signed_value": signed_filename,
+                    "instance_id": instance_id
+                },
+            }
+        )

@@ -1075,6 +1075,15 @@ class StorageObject(models.Model):
             children += i.get_all_children()
         return children
 
+    def get_path_to_root(self):
+        path = [{"id": self.id, "name": self.object_name[:]}]
+        storage_object = self
+        while storage_object.stored_at:
+            storage_object = storage_object.stored_at
+            path.append({"id": storage_object.id, "name": storage_object.object_name[:]})
+        path.reverse()
+        return path
+
 
 
 class StoredReagent(models.Model):

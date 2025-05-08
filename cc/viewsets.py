@@ -44,7 +44,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
-    import_sdrf_file, validate_sdrf_file, export_excel_template, export_instrument_usage, import_excel, sdrf_validate
+    import_sdrf_file, validate_sdrf_file, export_excel_template, export_instrument_usage, import_excel, sdrf_validate, export_reagent_actions
 from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, AnnotationSerializer, \
     SessionSerializer, StepVariationSerializer, TimeKeeperSerializer, ProtocolSectionSerializer, UserSerializer, \
     ProtocolRatingSerializer, ReagentSerializer, StepReagentSerializer, ProtocolReagentSerializer, \
@@ -2887,13 +2887,60 @@ class StorageObjectViewSet(ModelViewSet, FilterMixin):
     @action(detail=True, methods=['get'])
     def get_path_to_root(self, request, pk=None):
         storage_object = self.get_object()
-        path = [{"id": storage_object.id, "name": storage_object.object_name[:]}]
-        while storage_object.stored_at:
-            storage_object = storage_object.stored_at
-            path.append({"id": storage_object.id, "name": storage_object.object_name[:]})
-        path.reverse()
-        return Response(path, status=status.HTTP_200_OK)
 
+        return Response(storage_object.get_path_to_root(), status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def export_reagent_actions(self, request, pk=None):
+        storage_object: StorageObject = self.get_object()
+        if not request.user.is_staff:
+            if not storage_object.user == request.user:
+                labGroups = LabGroup.objects.filter(users=self.request.user)
+                if not storage_object.access_lab_groups.filter(id__in=labGroups).exists():
+                    return Response(status=status.HTTP_401_UNAUTHORIZED)
+        end_date = request.data.get('end_date', None)
+        start_date = request.data.get('start_date', None)
+        instance_id = request.data.get('instance_id', None)
+        if end_date:
+            end_date = parse_datetime(end_date)
+            if timezone.is_naive(end_date):
+                end_date = timezone.make_aware(end_date, timezone.get_current_timezone())
+        if start_date:
+            start_date = parse_datetime(start_date)
+            if timezone.is_naive(start_date):
+                start_date = timezone.make_aware(start_date, timezone.get_current_timezone())
+        if not end_date:
+            end_date = timezone.now()
+        if not start_date:
+            start_date = timezone.now() - timedelta(days=30)
+        if start_date > end_date:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+        job = export_reagent_actions.delay(start_date, end_date, storage_object.id, self.request.user.id, 'csv', instance_id)
+        return Response({'job_id': job.id}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], permission_classes=[AllowAny])
+    def download_report(self, request):
+        """
+        Download a report of the storage object from generated token encoded signed filename
+        """
+        token = request.query_params.get('token', None)
+        if not token:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+
+        signer = TimestampSigner()
+        try:
+            data = signer.unsign(token, max_age=60 * 30)
+            response = HttpResponse(status=200)
+            response["Content-Disposition"] = f'attachment; filename="{data}"'
+            response["X-Accel-Redirect"] = f"/media/temp/{data}"
+            return response
+        except BadSignature:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+        except SignatureExpired:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+        return Response(status=status.HTTP_400_BAD_REQUEST)
 
 class StoredReagentViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticated]

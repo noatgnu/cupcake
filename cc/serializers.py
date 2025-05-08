@@ -532,8 +532,10 @@ class InstrumentUsageSerializer(ModelSerializer):
         ]
 
 class StorageObjectSerializer(ModelSerializer):
-    stored_reagents = SerializerMethodField()
-    user = SerializerMethodField()
+    stored_reagents = SerializerMethodField(read_only=True)
+    user = SerializerMethodField(read_only=True)
+    path_to_root = SerializerMethodField(read_only=True)
+    child_count = SerializerMethodField(read_only=True)
 
     def get_user(self, obj):
         if obj.user:
@@ -543,9 +545,55 @@ class StorageObjectSerializer(ModelSerializer):
     def get_stored_reagents(self, obj):
         return StoredReagentSerializer(obj.stored_reagents.all(), many=True).data
 
+    def get_path_to_root(self, obj):
+        return obj.get_path_to_root()
+
+    def create(self, validated_data):
+        return StorageObject.objects.create(**validated_data)
+
+    def update(self, instance, validated_data):
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        return instance
+
+    def get_child_count(self, obj):
+        return StorageObject.objects.filter(stored_at=obj).count()
+
+    def validate(self, data):
+        instance = self.instance
+        parent = data.get('stored_at')
+
+        if instance and parent:
+            if instance.id == parent.id:
+                raise serializers.ValidationError("A storage object cannot be its own parent")
+
+            children = instance.get_all_children()
+            if parent.id in [child.id for child in children]:
+                raise serializers.ValidationError(
+                    "Cannot set parent to be one of the object's children"
+                )
+
+        return data
+
     class Meta:
         model = StorageObject
-        fields = ['id', 'object_name', 'object_type', 'object_description', 'created_at', 'updated_at', 'can_delete', 'stored_at', 'stored_reagents', 'png_base64', 'user', 'access_lab_groups']
+        fields = [
+            'id',
+            'object_name',
+            'object_type',
+            'object_description',
+            'created_at',
+            'updated_at',
+            'can_delete',
+            'stored_at',
+            'stored_reagents',
+            'png_base64',
+            'user',
+            'access_lab_groups',
+            'path_to_root',
+            'child_count'
+        ]
 
 
 class StoredReagentSerializer(ModelSerializer):

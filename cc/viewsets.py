@@ -2768,17 +2768,23 @@ class StorageObjectViewSet(ModelViewSet, FilterMixin):
 
     def get_queryset(self):
         query = Q()
-
-        if self.request.query_params.get('stored_at', None):
-            store_at = StorageObject.objects.get(id=self.request.query_params.get('stored_at'))
+        stored_at = self.request.query_params.get('stored_at', None)
+        if stored_at:
+            store_at = StorageObject.objects.get(id=stored_at)
             query &= Q(stored_at=store_at)
 
-        if self.request.query_params.get('root', 'false') == 'true':
-            query &= Q(stored_at__isnull=True)
+        root = self.request.query_params.get('root', None)
+        if root:
+            if root.lower() == 'true':
+                query &= Q(stored_at__isnull=True)
 
-        if self.request.query_params.get('lab_group', None):
-            lab_group = LabGroup.objects.get(id=self.request.query_params.get('lab_group'))
+        lab_group = self.request.query_params.get('lab_group', None)
+        if lab_group:
             query &= Q(access_lab_groups=lab_group)
+
+        exclude_objects = self.request.query_params.get('exclude_objects', None)
+        if exclude_objects:
+            query &= ~Q(id__in=exclude_objects.split(","))
         return self.queryset.filter(query)
 
     def get_object(self):
@@ -2801,31 +2807,60 @@ class StorageObjectViewSet(ModelViewSet, FilterMixin):
             if StorageObject.objects.filter(object_name=request.data['name'], object_type=request.data['object_type'],
                                             stored_at=stored_at).exists():
                 return Response(status=status.HTTP_409_CONFLICT)
-        storage_object = StorageObject()
-        storage_object.object_name = request.data['name']
-        storage_object.object_description = request.data['description']
-        storage_object.object_type = request.data['object_type']
-        storage_object.user = self.request.user
-        storage_object.stored_at = stored_at
-        if "png_base64" in request.data:
-            storage_object.png_base64 = request.data['png_base64']
-        storage_object.save()
-        data = self.get_serializer(storage_object).data
-        return Response(data, status=status.HTTP_201_CREATED)
+        data = {
+            "object_name": request.data.get('name', None),
+            "object_description": request.data.get('description', None),
+            "object_type": request.data.get('object_type', None),
+            "stored_at": request.data.get('stored_at', None),
+            "png_base64": request.data.get('png_base64', None)
+        }
+        serializer = self.get_serializer(data=data)
+        #storage_object = StorageObject()
+        #storage_object.object_name = request.data['name']
+        #storage_object.object_description = request.data['description']
+        #storage_object.object_type = request.data['object_type']
+        #storage_object.user = self.request.user
+        #storage_object.stored_at = stored_at
+        #if "png_base64" in request.data:
+        #    storage_object.png_base64 = request.data['png_base64']
+        #storage_object.save()
+
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
         if instance.user != self.request.user and not self.request.user.is_staff:
             return Response(status=status.HTTP_401_UNAUTHORIZED)
+
+        data = {}
         if "name" in request.data:
-            instance.object_name = request.data['name']
+            data['object_name'] = request.data['name']
         if "description" in request.data:
-            instance.object_description = request.data['description']
-        if "png_base64" in request.data:
-            instance.png_base64 = request.data['png_base64']
-        instance.save()
-        data = self.get_serializer(instance).data
-        return Response(data, status=status.HTTP_200_OK)
+            data['object_description'] = request.data['description']
+        if "object_type" in request.data:
+            data['object_type'] = request.data['object_type']
+
+        serializer = self.get_serializer(instance, data=data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        #if "name" in request.data:
+        #    instance.object_name = request.data['name']
+        #if "description" in request.data:
+        #    instance.object_description = request.data['description']
+        #if "png_base64" in request.data:
+        #    instance.png_base64 = request.data['png_base64']
+        #instance.save()
+
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    def perform_update(self, serializer):
+        serializer.save()
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -2845,8 +2880,9 @@ class StorageObjectViewSet(ModelViewSet, FilterMixin):
         if not self.request.user.is_staff and instance.user == self.request.user:
             return Response(status=status.HTTP_401_UNAUTHORIZED)
         lab_group = LabGroup.objects.get(id=request.data['lab_group'])
-        if not lab_group.users.filter(id=self.request.user.id).exists():
-            return Response(status=status.HTTP_401_UNAUTHORIZED)
+        if not self.request.user.is_staff:
+            if not lab_group.users.filter(id=self.request.user.id).exists():
+                return Response(status=status.HTTP_401_UNAUTHORIZED)
         instance.access_lab_groups.add(lab_group)
         data = self.get_serializer(instance).data
         return Response(data, status=status.HTTP_200_OK)
@@ -2915,7 +2951,7 @@ class StorageObjectViewSet(ModelViewSet, FilterMixin):
             start_date = timezone.now() - timedelta(days=30)
         if start_date > end_date:
             return Response(status=status.HTTP_400_BAD_REQUEST)
-        job = export_reagent_actions.delay(start_date, end_date, storage_object.id, self.request.user.id, 'csv', instance_id)
+        job = export_reagent_actions.delay(start_date, end_date, storage_object.id, None, self.request.user.id, 'csv', instance_id)
         return Response({'job_id': job.id}, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'], permission_classes=[AllowAny])
@@ -2941,6 +2977,61 @@ class StorageObjectViewSet(ModelViewSet, FilterMixin):
         except Exception as e:
             return Response(status=status.HTTP_400_BAD_REQUEST)
         return Response(status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['post'])
+    def move_storage_objects(self, request):
+        """Move multiple storage objects to a new parent"""
+        if not request.user.is_staff:
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+        target_parent_id = request.data.get('target_parent_id')
+        storage_object_ids = request.data.get('storage_object_ids', [])
+
+        if not storage_object_ids:
+            return Response(
+                {"detail": "No storage objects specified"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get target parent (can be None for root level)
+        target_parent = None
+        if target_parent_id:
+            try:
+                target_parent = StorageObject.objects.get(id=target_parent_id)
+            except StorageObject.DoesNotExist:
+                return Response(
+                    {"detail": "Target parent not found"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+        # Update each storage object
+        updated_objects = []
+        errors = []
+
+        for obj_id in storage_object_ids:
+            try:
+                obj = StorageObject.objects.get(id=obj_id)
+                if target_parent and target_parent.id in [c.id for c in obj.get_all_children()]:
+                    errors.append({
+                        'id': obj_id,
+                        'errors': 'Cannot move object to be its own descendant'
+                    })
+                    continue
+
+                obj.stored_at = target_parent
+                obj.save()
+                updated_objects.append(obj)
+            except StorageObject.DoesNotExist:
+                errors.append({
+                    'id': obj_id,
+                    'errors': 'Storage object not found'
+                })
+        result = {
+            'updated': self.get_serializer(updated_objects, many=True).data
+        }
+        if errors:
+            result['errors'] = errors
+
+        return Response(result)
 
 class StoredReagentViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticated]

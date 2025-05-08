@@ -2647,7 +2647,7 @@ def export_instrument_usage(instrument_ids: list[int], lab_group_ids: list[int],
         )
 
 @job('export', timeout='3h')
-def export_reagent_actions(start_date=None, end_date=None, storage_object_id=None,
+def export_reagent_actions(start_date=None, end_date=None, storage_object_id=None, stored_reagent_ids=None,
                           user_id=None, export_format='csv', instance_id=None):
     """
     Export reagent actions within a specified time period with optional storage location filtering
@@ -2685,6 +2685,9 @@ def export_reagent_actions(start_date=None, end_date=None, storage_object_id=Non
             actions_query = actions_query.filter(reagent__storage_object_id__in=storage_ids)
         except StorageObject.DoesNotExist:
             pass
+
+    if stored_reagent_ids:
+        actions_query = actions_query.filter(reagent__id__in=stored_reagent_ids)
 
     filename = f"reagent_actions_export_{uuid.uuid4().hex}.csv"
     export_dir = os.path.join(settings.MEDIA_ROOT, 'temp')

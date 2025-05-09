@@ -44,7 +44,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
-    import_sdrf_file, validate_sdrf_file, export_excel_template, export_instrument_usage, import_excel, sdrf_validate, export_reagent_actions
+    import_sdrf_file, validate_sdrf_file, export_excel_template, export_instrument_usage, import_excel, sdrf_validate, export_reagent_actions, import_reagents_from_file
 from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, AnnotationSerializer, \
     SessionSerializer, StepVariationSerializer, TimeKeeperSerializer, ProtocolSectionSerializer, UserSerializer, \
     ProtocolRatingSerializer, ReagentSerializer, StepReagentSerializer, ProtocolReagentSerializer, \
@@ -3032,6 +3032,20 @@ class StorageObjectViewSet(ModelViewSet, FilterMixin):
             result['errors'] = errors
 
         return Response(result)
+
+    @action(detail=True, methods=['post'])
+    def import_reagent(self, request, pk=None):
+        instance = self.get_object()
+        file_upload_id = request.data.get('file_upload_id', None)
+        if not file_upload_id:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+        instance_id = request.data.get('instance_id', None)
+        if not instance_id:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+        file = ChunkedUpload.objects.get(id=file_upload_id)
+        file_path = file.file.path
+        job = import_reagents_from_file.delay(file_path, instance.id, self.request.user.id, None, instance.id)
+        return Response({'job_id': job.id}, status=status.HTTP_200_OK)
 
 class StoredReagentViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticated]

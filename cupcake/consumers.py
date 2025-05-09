@@ -152,6 +152,10 @@ class UserConsumer(AsyncJsonWebsocketConsumer):
         content = event["message"]
         await self.send_json(content)
 
+    async def import_message(self, event):
+        content = event["message"]
+        await self.send_json(content)
+
 class SummaryConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self):
         self.user_id = str(self.scope["user"].id)
@@ -230,9 +234,11 @@ class WebRTCSignalConsumer(AsyncJsonWebsocketConsumer):
 
     async def receive_json(self, content):
         message_type = content["type"]
+        print(content)
         if message_type == "check":
             channels = await get_all_channels(self.session)
             for channel in channels:
+                print(channel)
                 if channel.channel_id != f"{self.unique_id}_webrtc":
                     await self.channel_layer.group_send(
                         channel.channel_id,
@@ -242,7 +248,7 @@ class WebRTCSignalConsumer(AsyncJsonWebsocketConsumer):
                             "id_type": content["id_type"],
                         }
                     )
-        if message_type == "offer":
+        elif message_type == "offer":
             try:
                 offer = await WebRTCUserOffer.objects.aget(
                     user=self.scope["user"],

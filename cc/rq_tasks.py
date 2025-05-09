@@ -18,6 +18,7 @@ from django.contrib.auth.models import User
 from django.core.files import File
 from django.core.management import call_command
 from django.core.signing import TimestampSigner
+from django.db import transaction
 from django.db.models import Q, QuerySet
 from django.utils import timezone
 from django_rq import job
@@ -30,6 +31,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.workbook import Workbook
 from openpyxl.worksheet.datavalidation import DataValidation
 from pytesseract import pytesseract
+from rest_framework.exceptions import ValidationError
 from sdrf_pipelines.sdrf.sdrf import SdrfDataFrame
 
 from cc.models import Annotation, ProtocolModel, ProtocolStep, StepVariation, ProtocolSection, Session, \
@@ -2738,3 +2740,131 @@ def export_reagent_actions(start_date=None, end_date=None, storage_object_id=Non
                 },
             }
         )
+
+
+@job('import-data', timeout='3h')
+def import_reagents_from_file(file_path: str, storage_object_id: int, user_id: int, column_mapping=None,
+                     instance_id: str = None):
+    """
+    Import reagents from a file into the system. The file should be in a format that can be processed
+    :param file_path:
+    :param storage_object_id:
+    :param user_id:
+    :param column_mapping:
+    :param create_missing_reagents:
+    :param instance_id:
+    :return:
+    """
+    channel_layer = get_channel_layer()
+    async_to_sync(channel_layer.group_send)(
+        f"user_{user_id}",
+        {
+            "type": "import_message",
+            "message": {
+                "instance_id": instance_id,
+                "status": "started",
+                "message": "Importing reagents from file"
+            },
+        }
+    )
+    default_mapping = {
+        'item_name': 'name',
+        'unit': 'unit',
+        'quantity': 'quantity',
+        'notes': 'notes',
+        'barcode': 'barcode',
+        'expiration_date': 'expiration_date'
+    }
+
+    user = User.objects.get(id=user_id)
+
+    if column_mapping is None:
+        column_mapping = default_mapping
+
+    try:
+        storage_object = StorageObject.objects.get(id=storage_object_id)
+    except StorageObject.DoesNotExist:
+        raise ValidationError("Storage object not found")
+
+    file_name = os.path.basename(file_path)
+    if file_name.endswith('.csv'):
+        df = pd.read_csv(file_path)
+    if file_name.endswith('.txt'):
+        df = pd.read_csv(file_path, sep="\t")
+    elif file_name.endswith(('.xls', '.xlsx')):
+        df = pd.read_excel(file_path)
+    else:
+        raise ValidationError("Unsupported file type. Please provide CSV or Excel file.")
+
+    required_columns = ['item_name', 'unit', 'quantity']
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        raise ValidationError(f"Missing required columns: {', '.join(missing_columns)}")
+
+    results = {
+        'success_count': 0,
+        'error_count': 0,
+        'errors': []
+    }
+
+    allowed_units = ["ng", "ug", "mg", "g", "nL", "uL", "mL", "L", "uM", "mM", "nM", "M", "ea", "other"]
+
+    with transaction.atomic():
+        for index, row in df.iterrows():
+            try:
+                reagent_name = row['item_name'].strip()
+                unit = row['unit'].strip()
+                # check if unit is within the allowed units
+                if unit not in allowed_units:
+                    results["error_count"] += 1
+                    results["errors"].append(f"Row {index + 1}: Invalid unit '{unit}'. Allowed units are: {', '.join(allowed_units)}")
+                    continue
+
+                reagent, created = Reagent.objects.get_or_create(
+                    name=reagent_name,
+                    unit=unit
+                )
+
+                stored_reagent = StoredReagent(
+                    reagent=reagent,
+                    storage_object=storage_object,
+                    quantity=float(row['quantity']),
+                    user=user,
+                    created_at=timezone.now()
+                )
+
+                for file_col, model_field in column_mapping.items():
+                    if file_col in df.columns and file_col not in required_columns:
+                        if row[file_col] is not None and not pd.isna(row[file_col]):
+                            if model_field == 'expiration_date' and row[file_col]:
+                                try:
+                                    setattr(stored_reagent, model_field, pd.to_datetime(row[file_col]).date())
+                                except Exception as e:
+                                    results['errors'].append(f"Row {index + 1}: Invalid date format: {str(e)}")
+                                    continue
+                            else:
+                                setattr(stored_reagent, model_field, row[file_col])
+
+                stored_reagent.save()
+                stored_reagent.create_default_folders()
+
+                results['success_count'] += 1
+
+            except Exception as e:
+                results['error_count'] += 1
+                results['errors'].append(f"Row {index + 1}: {str(e)}")
+    async_to_sync(channel_layer.group_send)(
+        f"user_{user_id}",
+        {
+            "type": "import_message",
+            "message": {
+                "instance_id": instance_id,
+                "status": "completed",
+                "message": f"Import completed. {results['success_count']} rows imported successfully, {results['error_count']} errors.",
+                "errors": results['errors']
+            },
+        }
+    )
+
+
+

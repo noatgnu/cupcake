@@ -234,11 +234,9 @@ class WebRTCSignalConsumer(AsyncJsonWebsocketConsumer):
 
     async def receive_json(self, content):
         message_type = content["type"]
-        print(content)
         if message_type == "check":
             channels = await get_all_channels(self.session)
             for channel in channels:
-                print(channel)
                 if channel.channel_id != f"{self.unique_id}_webrtc":
                     await self.channel_layer.group_send(
                         channel.channel_id,

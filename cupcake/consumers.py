@@ -187,6 +187,7 @@ class SummaryConsumer(AsyncJsonWebsocketConsumer):
         content = event["message"]
         await self.send_json(content)
 
+
 class WebRTCSignalConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self):
         self.session_id = self.scope["url_route"]["kwargs"]["session_id"]
@@ -194,189 +195,218 @@ class WebRTCSignalConsumer(AsyncJsonWebsocketConsumer):
         if not await check_session(self.session_id, self.scope["user"]):
             await self.close()
             return
-        session = await Session.objects.aget(unique_id=self.session_id)
 
+        session = await Session.objects.aget(unique_id=self.session_id)
         self.user_id = str(self.scope["user"].id)
         self.unique_id = str(uuid.uuid4())
+
+        # Channel name used consistently
+        self.channel_group_name = f"{self.unique_id}_webrtc"
+
         await self.channel_layer.group_add(
-            f"{self.unique_id}_webrtc",
+            self.channel_group_name,
             self.channel_name
         )
+
         try:
-            channel = await WebRTCUserChannel.objects.aget(user=self.scope["user"], channel_id=f"{self.unique_id}_webrtc")
+            channel = await WebRTCUserChannel.objects.aget(
+                user=self.scope["user"],
+                channel_id=self.channel_group_name
+            )
         except WebRTCUserChannel.DoesNotExist:
             channel = await WebRTCUserChannel.objects.acreate(
                 user=self.scope["user"],
-                channel_id=f"{self.unique_id}_webrtc",
+                channel_id=self.channel_group_name,
                 channel_type="viewer"
             )
+
         try:
-            self.session = await WebRTCSession.objects.aget(session_unique_id=self.session_id, session=session)
+            self.session = await WebRTCSession.objects.aget(
+                session_unique_id=self.session_id,
+                session=session
+            )
         except WebRTCSession.DoesNotExist:
             self.session = await WebRTCSession.objects.acreate(
-                session_unique_id=self.session_id, session=session
+                session_unique_id=self.session_id,
+                session=session
             )
 
-
         await add_webrtc_user_channel(self.session, channel)
-
         await self.accept()
-        await self.send_json({"message": f"Connected to the WebRTC signaling channel", "unique_id": self.unique_id})
-
-
+        await self.send_json({
+            "message": "Connected to the WebRTC signaling channel",
+            "unique_id": self.unique_id
+        })
 
     async def disconnect(self, close_code):
+        # Use consistent channel name
         await self.channel_layer.group_discard(
-            f"{self.session_id}_webrtc",
+            self.channel_group_name,
             self.channel_name
         )
-        await remove_webrtc_user_channel(self.scope["user"], f"{self.unique_id}_webrtc")
+        await remove_webrtc_user_channel(self.scope["user"], self.channel_group_name)
 
     async def receive_json(self, content):
-        message_type = content["type"]
-        if message_type == "check":
-            channels = await get_all_channels(self.session)
-            for channel in channels:
-                if channel.channel_id != f"{self.unique_id}_webrtc":
-                    await self.channel_layer.group_send(
-                        channel.channel_id,
-                        {
-                            "type": "check_message",
-                            "from": self.unique_id,
-                            "id_type": content["id_type"],
-                        }
-                    )
-        elif message_type == "offer":
-            try:
-                offer = await WebRTCUserOffer.objects.aget(
-                    user=self.scope["user"],
-                    session=self.session,
-                    from_id=self.unique_id,
+        try:
+            message_type = content.get("type")
+            if not message_type:
+                await self.send_json({"error": "Missing message type"})
+                return
 
+            handler_map = {
+                "check": self._handle_check,
+                "offer": self._handle_offer,
+                "answer": self._handle_answer,
+                "ice": self._handle_ice,
+                "candidate": self._handle_candidate
+            }
+
+            handler = handler_map.get(message_type)
+            if handler:
+                await handler(content)
+            else:
+                await self.send_json({"error": "Invalid message type"})
+        except Exception as e:
+            await self.send_json({"error": f"Error processing message: {str(e)}"})
+
+    async def _handle_check(self, content):
+        channels = await get_all_channels(self.session)
+        for channel in channels:
+            if channel.channel_id != self.channel_group_name:
+                await self.channel_layer.group_send(
+                    channel.channel_id,
+                    {
+                        "type": "check_message",
+                        "from": self.unique_id,
+                        "id_type": content.get("id_type", ""),
+                    }
                 )
 
-                offer.sdp = content["sdp"]
-                offer.id_type = content["id_type"]
-                await offer.asave()
+    async def _handle_offer(self, content):
+        # Validate required fields
+        if "sdp" not in content or "id_type" not in content:
+            await self.send_json({"error": "Missing required fields for offer"})
+            return
 
-            except WebRTCUserOffer.DoesNotExist:
-                offer = await WebRTCUserOffer.objects.acreate(
+        try:
+            offer = await WebRTCUserOffer.objects.aget(
+                user=self.scope["user"],
+                session=self.session,
+                from_id=self.unique_id,
+            )
+            offer.sdp = content["sdp"]
+            offer.id_type = content["id_type"]
+            await offer.asave()
+        except WebRTCUserOffer.DoesNotExist:
+            await WebRTCUserOffer.objects.acreate(
                 user=self.scope["user"],
                 sdp=content["sdp"],
                 session=self.session,
                 from_id=self.unique_id,
-                id_type = content["id_type"],
+                id_type=content["id_type"],
             )
 
-            if content["to"]:
-                try:
-                    channel = await WebRTCUserChannel.objects.aget(channel_id=f"{content['to']}_webrtc")
-                    await self.channel_layer.group_send(
-                        f"{content['to']}_webrtc",
-                        {
-                            "type": "offer_message",
-                            "sdp": {"type": "offer", "sdp":content["sdp"]},
-                            "from": self.unique_id,
-                            "id_type": content["id_type"],
-                        }
-                    )
-                except WebRTCUserChannel.DoesNotExist:
-                    pass
-
-            # channels = await get_all_channels(self.session)
-            # for channel in channels:
-            #     if channel.channel_id != f"{self.unique_id}_webrtc":
-            #         await self.channel_layer.group_send(
-            #             channel.channel_id,
-            #             {
-            #                 "type": "offer_message",
-            #                 "sdp": {"type": "offer", "sdp":content["sdp"]},
-            #                 "from": self.unique_id,
-            #                 "id_type": content["id_type"],
-            #             }
-            #         )
-            #     else:
-            #         if channel.channel_type != content["id_type"]:
-            #             channel.channel_type = content["id_type"]
-            #             await channel.asave()
-                # else:
-                #     # get all offers for the session
-                #     offers = await get_all_offers(self.session)
-                #     for offer in offers:
-                #         if content["sdp"] != offer.sdp:
-                #             await self.send_json(
-                #                 {
-                #                     "type": "offer",
-                #                     "sdp": {"type": "offer", "sdp":offer.sdp},
-                #                     "id_type": offer.id_type,
-                #                 }
-                #             )
-
-        elif message_type == "answer":
-            if content["to"] != self.unique_id:
+        if content.get("to"):
+            try:
+                channel_id = f"{content['to']}_webrtc"
+                await WebRTCUserChannel.objects.aget(channel_id=channel_id)
                 await self.channel_layer.group_send(
-                    f"{content['to']}_webrtc",
+                    channel_id,
                     {
-                        "type": "answer_message",
-                        "sdp": {"type": "answer", "sdp":content["sdp"]},
+                        "type": "offer_message",
+                        "sdp": {"type": "offer", "sdp": content["sdp"]},
                         "from": self.unique_id,
                         "id_type": content["id_type"],
                     }
                 )
-            #await self.send_json({"type": "answer", "sdp": content["sdp"]})
-        elif message_type == "ice":
-            if content["to"] != self.unique_id:
-                await self.channel_layer.group_send(
-                    f"{content['to']}_webrtc",
-                    {
-                        "type": "ice_message",
-                        "candidate": content["candidate"],
-                        "from": self.unique_id,
-                    }
-                )
+            except WebRTCUserChannel.DoesNotExist:
+                await self.send_json({"error": f"Target channel not found: {content['to']}"})
 
-            #await self.send_json({"type": "ice", "candidate": content["candidate"]})
-        elif message_type == 'candidate':
-            if content["to"] != self.unique_id:
-                await self.channel_layer.group_send(
-                    f"{content['to']}_webrtc",
-                    {
-                        "type": "candidate_message",
-                        "candidate": content["candidate"],
-                        "from": self.unique_id,
-                        "id_type": content["id_type"],
-                    }
-                )
-            #await self.send_json({"type": "candidate", "candidate": content["candidate"]})
-        else:
-            await self.send_json({"error": "Invalid message type"})
+    async def _handle_answer(self, content):
+        if "to" not in content or content["to"] == self.unique_id:
+            return
 
+        await self.channel_layer.group_send(
+            f"{content['to']}_webrtc",
+            {
+                "type": "answer_message",
+                "sdp": {"type": "answer", "sdp": content["sdp"]},
+                "from": self.unique_id,
+                "id_type": content.get("id_type", ""),
+            }
+        )
+
+    async def _handle_ice(self, content):
+        if "to" not in content or content["to"] == self.unique_id:
+            return
+
+        await self.channel_layer.group_send(
+            f"{content['to']}_webrtc",
+            {
+                "type": "ice_message",
+                "candidate": content["candidate"],
+                "from": self.unique_id,
+            }
+        )
+
+    async def _handle_candidate(self, content):
+        if "to" not in content or content["to"] == self.unique_id:
+            return
+
+        await self.channel_layer.group_send(
+            f"{content['to']}_webrtc",
+            {
+                "type": "candidate_message",
+                "candidate": content["candidate"],
+                "from": self.unique_id,
+                "id_type": content.get("id_type", ""),
+            }
+        )
+
+    # Message handlers - no changes
     async def offer_message(self, event):
-        sdp = event["sdp"]
-        await self.send_json({"type": "offer", "sdp": sdp, "from": event["from"], "id_type": event["id_type"]})
+        await self.send_json({
+            "type": "offer",
+            "sdp": event["sdp"],
+            "from": event["from"],
+            "id_type": event["id_type"]
+        })
 
     async def answer_message(self, event):
-        sdp = event["sdp"]
-        await self.send_json({"type": "answer", "sdp": sdp, "from": event["from"], "id_type": event["id_type"]})
+        await self.send_json({
+            "type": "answer",
+            "sdp": event["sdp"],
+            "from": event["from"],
+            "id_type": event["id_type"]
+        })
 
     async def ice_message(self, event):
-        candidate = event["candidate"]
-        await self.send_json({"type": "ice", "candidate": candidate, "from": event["from"]})
+        await self.send_json({
+            "type": "ice",
+            "candidate": event["candidate"],
+            "from": event["from"]
+        })
 
     async def check_message(self, event):
-        await self.send_json({"type": "check", "from": event["from"]})
+        await self.send_json({
+            "type": "check",
+            "from": event["from"]
+        })
 
     async def candidate_message(self, event):
-        candidate = event["candidate"]
-        await self.send_json({"type": "candidate", "candidate": candidate, "from": event["from"], "id_type": event["id_type"]})
+        await self.send_json({
+            "type": "candidate",
+            "candidate": event["candidate"],
+            "from": event["from"],
+            "id_type": event["id_type"]
+        })
 
     def generate_turn_credential(self, secret, username, ttl=3600):
         timestamp = int(time.time()) + ttl
-        temporary_username = str(timestamp) + ':' + username
+        temporary_username = f"{timestamp}:{username}"
         password = hmac.new(secret.encode(), temporary_username.encode(), hashlib.sha1)
         password = base64.b64encode(password.digest()).decode()
         return temporary_username, password
-
 
 class InstrumentJobConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self):

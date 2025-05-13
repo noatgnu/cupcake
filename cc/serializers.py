@@ -5,7 +5,16 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, StepVariation, Se
     ProtocolRating, Reagent, ProtocolReagent, StepReagent, StepTag, ProtocolTag, Tag, AnnotationFolder, Project, \
     Instrument, InstrumentUsage, StorageObject, StoredReagent, ReagentAction, LabGroup, MSUniqueVocabularies, \
     HumanDisease, Tissue, SubcellularLocation, MetadataColumn, Species, Unimod, InstrumentJob, FavouriteMetadataOption, \
-    Preset, MetadataTableTemplate, ExternalContactDetails, SupportInformation, ExternalContact, MaintenanceLog
+    Preset, MetadataTableTemplate, ExternalContactDetails, SupportInformation, ExternalContact, MaintenanceLog, \
+    MessageRecipient, MessageThread, Message, MessageAttachment
+
+
+class UserBasicSerializer(ModelSerializer):
+
+    class Meta:
+        model = User
+        fields = ['id', 'username', 'first_name', 'last_name']
+        read_only_fields = fields
 
 
 class ExternalContactDetailsSerializer(ModelSerializer):
@@ -597,18 +606,28 @@ class StorageObjectSerializer(ModelSerializer):
 
 
 class StoredReagentSerializer(ModelSerializer):
-    reagent = SerializerMethodField()
-    user = SerializerMethodField()
+    reagent = ReagentSerializer(read_only=True)
+    user = UserBasicSerializer(read_only=True)
     storage_object = SerializerMethodField()
     current_quantity = SerializerMethodField()
     metadata_columns = SerializerMethodField()
     created_by_session = SerializerMethodField()
+    reagent_id = PrimaryKeyRelatedField(
+        queryset=Reagent.objects.all(),
+        write_only=True,
+        source='reagent'
+    )
+    storage_object_id = PrimaryKeyRelatedField(
+        queryset=StorageObject.objects.all(),
+        write_only=True,
+        source='storage_object'
+    )
 
-    def get_reagent(self, obj):
-        return ReagentSerializer(obj.reagent, many=False).data
+    #def get_reagent(self, obj):
+    #    return ReagentSerializer(obj.reagent, many=False).data
 
-    def get_user(self, obj):
-        return obj.user.username
+    #def get_user(self, obj):
+    #    return obj.user.username
 
     def get_storage_object(self, obj):
         return {"id": obj.storage_object.id, "object_name": obj.storage_object.object_name}
@@ -633,7 +652,14 @@ class StoredReagentSerializer(ModelSerializer):
 
     class Meta:
         model = StoredReagent
-        fields = ['id', 'reagent', 'quantity', 'created_at', 'updated_at', 'storage_object', 'user', 'notes', 'png_base64', 'barcode', 'shareable', 'access_all', 'current_quantity', 'metadata_columns', 'expiration_date', 'created_by_project', 'created_by_protocol', 'created_by_session', 'created_by_step']
+        fields = [
+            'id', 'reagent', 'reagent_id', 'storage_object', 'storage_object_id',
+            'quantity', 'notes', 'user', 'created_at', 'updated_at', 'current_quantity',
+            'png_base64', 'barcode', 'shareable', 'expiration_date', 'created_by_session',
+            'created_by_step', 'metadata_columns',
+            'notify_on_low_stock', 'last_notification_sent', 'low_stock_threshold'
+        ]
+        read_only_fields = ['created_at', 'updated_at']
 
 
 class ReagentActionSerializer(ModelSerializer):
@@ -893,3 +919,160 @@ class MetadataTableTemplateSerializer(ModelSerializer):
             'field_mask_mapping'
         ]
 
+
+
+
+class MessageAttachmentSerializer(ModelSerializer):
+    download_url = SerializerMethodField()
+
+    class Meta:
+        model = MessageAttachment
+        fields = ['id', 'file', 'file_name', 'file_size', 'content_type', 'created_at', 'download_url']
+        read_only_fields = ['file_size', 'content_type', 'created_at']
+
+    def get_download_url(self, obj):
+        request = self.context.get('request')
+        if request and obj.file:
+            return request.build_absolute_uri(obj.file.url)
+        return None
+
+    def validate(self, attrs):
+        if 'file' in attrs:
+            file = attrs['file']
+            attrs['file_size'] = file.size
+            attrs['content_type'] = file.content_type
+            if not attrs.get('file_name'):
+                attrs['file_name'] = file.name
+        return attrs
+
+
+class MessageRecipientSerializer(ModelSerializer):
+    """Serializer for message read status by recipients"""
+    user = UserBasicSerializer(read_only=True)
+
+    class Meta:
+        model = MessageRecipient
+        fields = ['id', 'user', 'is_read', 'read_at', 'is_archived', 'is_deleted']
+        read_only_fields = ['read_at']
+
+
+class MessageSerializer(ModelSerializer):
+    """Serializer for individual messages"""
+    sender = UserBasicSerializer(read_only=True)
+    sender_id = PrimaryKeyRelatedField(
+        queryset=User.objects.all(),
+        write_only=True,
+        required=False,
+        source='sender'
+    )
+    recipients = MessageRecipientSerializer(many=True, read_only=True)
+    attachments = MessageAttachmentSerializer(many=True, read_only=True)
+    is_read = SerializerMethodField()
+
+    class Meta:
+        model = Message
+        fields = [
+            'id', 'sender', 'sender_id', 'content', 'created_at', 'updated_at',
+            'message_type', 'priority', 'expires_at', 'recipients', 'attachments',
+            'project', 'protocol', 'session', 'instrument', 'instrument_job',
+            'stored_reagent', 'is_read'
+        ]
+        read_only_fields = ['created_at', 'updated_at']
+
+    def get_is_read(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+
+        recipient = obj.recipients.filter(user=request.user).first()
+        return recipient.is_read if recipient else False
+
+
+class ThreadMessageSerializer(ModelSerializer):
+    sender = UserBasicSerializer(read_only=True)
+    attachment_count = SerializerMethodField()
+    is_read = SerializerMethodField()
+
+    class Meta:
+        model = Message
+        fields = [
+            'id', 'sender', 'content', 'created_at', 'message_type',
+            'priority', 'attachment_count', 'is_read'
+        ]
+
+    def get_attachment_count(self, obj):
+        return obj.attachments.count()
+
+    def get_is_read(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return False
+
+        recipient = obj.recipients.filter(user=request.user).first()
+        return recipient.is_read if recipient else False
+
+
+class LabGroupBasicSerializer(ModelSerializer):
+    class Meta:
+        model = LabGroup
+        fields = ['id', 'name']
+
+
+class MessageThreadSerializer(ModelSerializer):
+    participants = UserBasicSerializer(many=True, read_only=True)
+    participant_ids = PrimaryKeyRelatedField(
+        queryset=User.objects.all(),
+        write_only=True,
+        required=False,
+        many=True,
+        source='participants'
+    )
+    latest_message = SerializerMethodField()
+    unread_count = SerializerMethodField()
+    lab_group = LabGroupBasicSerializer(read_only=True)
+    lab_group_id = PrimaryKeyRelatedField(
+        queryset=LabGroup.objects.all(),
+        write_only=True,
+        required=False,
+        source='lab_group'
+    )
+    creator = UserBasicSerializer(read_only=True)
+
+    class Meta:
+        model = MessageThread
+        fields = [
+            'id', 'title', 'created_at', 'updated_at', 'participants',
+            'participant_ids', 'is_system_thread', 'lab_group', 'lab_group_id',
+            'latest_message', 'unread_count', 'creator'
+        ]
+        read_only_fields = ['created_at', 'updated_at']
+
+    def get_latest_message(self, obj):
+        latest = obj.messages.order_by('-created_at').first()
+        if latest:
+            return ThreadMessageSerializer(latest, context=self.context).data
+        return None
+
+    def get_unread_count(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return 0
+
+        # Count messages where user is a recipient and message is unread
+        return MessageRecipient.objects.filter(
+            message__thread=obj,
+            user=request.user,
+            is_read=False,
+            is_deleted=False
+        ).count()
+
+
+class MessageThreadDetailSerializer(MessageThreadSerializer):
+    messages = SerializerMethodField()
+
+    class Meta(MessageThreadSerializer.Meta):
+        fields = MessageThreadSerializer.Meta.fields + ['messages']
+
+    def get_messages(self, obj):
+        messages = obj.messages.order_by('created_at')
+        return ThreadMessageSerializer(messages, many=True, context=self.context).data

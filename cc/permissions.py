@@ -1,6 +1,6 @@
 from rest_framework import permissions
 
-from cc.models import InstrumentUsage, InstrumentPermission, Instrument
+from cc.models import InstrumentUsage, InstrumentPermission, Instrument, MessageThread, Message, MessageRecipient
 
 
 class OwnerOrReadOnly(permissions.BasePermission):
@@ -94,6 +94,31 @@ class InstrumentViewSetPermission(permissions.BasePermission):
             return True
         if not permission.can_manage:
             return False
+        return False
+
+class IsParticipantOrAdmin(permissions.BasePermission):
+    """
+    Permission to only allow participants of a thread to view or modify it.
+    Admins can access all threads.
+    """
+    def has_object_permission(self, request, view, obj):
+        if request.user.is_staff:
+            return True
+        if isinstance(obj, MessageThread):
+            return request.user in obj.participants.all() or (
+                obj.lab_group and obj.lab_group in request.user.lab_groups.all()
+            )
+        if isinstance(obj, Message):
+            return request.user in obj.thread.participants.all() or (
+                obj.thread.lab_group and obj.thread.lab_group in request.user.lab_groups.all()
+            )
+        if isinstance(obj, MessageRecipient):
+            return obj.user == request.user
+        if isinstance(obj, MessageAttachment):
+            thread = obj.message.thread
+            return request.user in thread.participants.all() or (
+                thread.lab_group and thread.lab_group in request.user.lab_groups.all()
+            )
         return False
 
 

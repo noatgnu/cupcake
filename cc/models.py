@@ -7,6 +7,7 @@ from django.db import models, transaction
 from django.conf import settings
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from cc.utils import default_columns
 
@@ -1107,6 +1108,10 @@ class StoredReagent(models.Model):
     created_by_protocol = models.ForeignKey(ProtocolModel, on_delete=models.CASCADE, related_name="created_reagents", blank=True, null=True)
     created_by_step = models.ForeignKey(ProtocolStep, on_delete=models.CASCADE, related_name="created_reagents", blank=True, null=True)
     created_by_session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="created_reagents", blank=True, null=True)
+    low_stock_threshold = models.FloatField(blank=True, null=True,
+                                            help_text="Threshold quantity for low stock notifications")
+    notify_on_low_stock = models.BooleanField(default=False)
+    last_notification_sent = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         app_label = "cc"
@@ -1133,6 +1138,69 @@ class StoredReagent(models.Model):
         manual_folder = AnnotationFolder.objects.create(folder_name="Manuals", stored_reagent=self)
         certificate_folder = AnnotationFolder.objects.create(folder_name="Certificates", stored_reagent=self)
 
+    def check_low_stock(self):
+        """Check if current quantity is below threshold and send notification if needed"""
+        if not self.notify_on_low_stock or not self.low_stock_threshold:
+            return False
+
+        current_quantity = self.get_current_quantity()
+
+        # Check if below threshold and notification needed
+        if current_quantity <= self.low_stock_threshold:
+            # Don't send notifications too frequently (once per day)
+            if not self.last_notification_sent or (timezone.now() - self.last_notification_sent).days >= 7:
+                self.send_low_stock_notification(current_quantity)
+                return True
+
+        return False
+
+    def send_low_stock_notification(self, current_quantity):
+        """Send a low stock notification to the reagent owner"""
+        if not self.user:
+            return
+
+        # Create a system thread for the notification
+        thread = MessageThread.objects.create(
+            title=f"Low Stock Alert: {self.reagent.name}",
+            is_system_thread=True,
+            creator=self.user
+        )
+        thread.participants.add(self.user)
+
+        # Format the message content as HTML for Quill
+        content = f"""
+            <h3 style="color: #d9534f;">⚠️ Low Stock Alert</h3>
+            <div style="padding: 10px; border-left: 3px solid #d9534f; margin-bottom: 15px;">
+                <p><strong>Reagent:</strong> {self.reagent.name}</p>
+                <p><strong>Current quantity:</strong> {current_quantity} {self.reagent.unit}</p>
+                <p><strong>Threshold:</strong> {self.low_stock_threshold} {self.reagent.unit}</p>
+                <p><strong>Storage location:</strong> {self.storage_object.object_name}</p>
+                <p><strong>Expiration date:</strong> {self.expiration_date.strftime('%Y-%m-%d') if self.expiration_date else 'Not specified'}</p>
+            </div>
+            <p>Please restock this reagent soon to ensure continued availability for experiments.</p>
+            <p>You can view this reagent in the inventory system to restock or update the threshold settings.</p>
+            """
+
+        # Create the alert message
+        message = Message.objects.create(
+            thread=thread,
+            sender=None,  # System message
+            content=content,
+            message_type="alert",
+            priority="high",
+            stored_reagent=self
+        )
+
+        # Create a recipient entry
+        MessageRecipient.objects.create(
+            message=message,
+            user=self.user,
+            is_read=False
+        )
+
+        # Update the last notification timestamp
+        self.last_notification_sent = timezone.now()
+        self.save(update_fields=['last_notification_sent'])
 
 class ReagentAction(models.Model):
     action_type_choices = [
@@ -1486,6 +1554,119 @@ class MaintenanceLog(models.Model):
         self.annotation_folder = folder
         self.save()
 
+
+class MessageThread(models.Model):
+    """Group related messages together in conversations"""
+    title = models.CharField(max_length=255, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    participants = models.ManyToManyField(settings.AUTH_USER_MODEL, related_name="message_threads", blank=True)
+    is_system_thread = models.BooleanField(default=False)
+    lab_group = models.ForeignKey("LabGroup", on_delete=models.CASCADE, related_name="message_threads", blank=True,
+                                  null=True)
+    creator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="created_threads", blank=True,
+                                null=True)
+
+    class Meta:
+        app_label = "cc"
+        ordering = ["-updated_at"]
+
+    def __str__(self):
+        return self.title or f"Thread {self.id}"
+
+
+class Message(models.Model):
+    """Individual message content"""
+    thread = models.ForeignKey(MessageThread, on_delete=models.CASCADE, related_name="messages")
+    sender = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name="sent_messages",
+                               blank=True, null=True)
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    TYPE_CHOICES = [
+        ("user_message", "User Message"),
+        ("system_notification", "System Notification"),
+        ("alert", "Alert"),
+        ("announcement", "Announcement"),
+    ]
+    message_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default="user_message")
+
+    PRIORITY_CHOICES = [
+        ("low", "Low"),
+        ("normal", "Normal"),
+        ("high", "High"),
+        ("urgent", "Urgent"),
+    ]
+    priority = models.CharField(max_length=10, choices=PRIORITY_CHOICES, default="normal")
+
+    project = models.ForeignKey("Project", on_delete=models.SET_NULL, related_name="messages", blank=True, null=True)
+    protocol = models.ForeignKey("ProtocolModel", on_delete=models.SET_NULL, related_name="messages", blank=True,
+                                 null=True)
+    session = models.ForeignKey("Session", on_delete=models.SET_NULL, related_name="messages", blank=True, null=True)
+    instrument = models.ForeignKey("Instrument", on_delete=models.SET_NULL, related_name="messages", blank=True,
+                                   null=True)
+    instrument_job = models.ForeignKey("InstrumentJob", on_delete=models.SET_NULL, related_name="messages", blank=True,
+                                       null=True)
+    stored_reagent = models.ForeignKey("StoredReagent", on_delete=models.SET_NULL, related_name="messages", blank=True,
+                                       null=True)
+
+    expires_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        app_label = "cc"
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"{self.get_message_type_display()} from {self.sender or 'System'}"
+
+    @property
+    def is_expired(self):
+        if self.expires_at:
+            return timezone.now() > self.expires_at
+        return False
+
+
+class MessageRecipient(models.Model):
+    """Tracks message status for each recipient"""
+    message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name="recipients")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="received_messages")
+    read_at = models.DateTimeField(blank=True, null=True)
+    is_read = models.BooleanField(default=False)
+    is_archived = models.BooleanField(default=False)
+    is_deleted = models.BooleanField(default=False)
+
+    class Meta:
+        app_label = "cc"
+        ordering = ["-message__created_at"]
+        unique_together = ['message', 'user']
+
+    def __str__(self):
+        return f"{self.user} - {self.message}"
+
+    def mark_as_read(self):
+        if not self.is_read:
+            self.is_read = True
+            self.read_at = timezone.now()
+            self.save()
+
+
+class MessageAttachment(models.Model):
+    """Files attached to messages"""
+    message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name="attachments")
+    file = models.FileField(upload_to="message_attachments/")
+    file_name = models.CharField(max_length=255)
+    file_size = models.IntegerField()
+    content_type = models.CharField(max_length=100)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        app_label = "cc"
+        ordering = ["id"]
+
+    def __str__(self):
+        return self.file_name
+
 @receiver(post_save, sender=settings.AUTH_USER_MODEL)
 def create_auth_token(sender, instance=None, created=False, **kwargs):
     if created:
@@ -1511,3 +1692,8 @@ def create_stored_reagent_annotation_folders(sender, instance=None, created=Fals
 def create_maintenance_log_folders(sender, instance=None, created=False, **kwargs):
     if created:
         instance.create_default_folders()
+
+@receiver(post_save, sender=ReagentAction)
+def check_reagent_stock_after_action(sender, instance=None, created=False, **kwargs):
+    if instance and instance.reagent:
+        instance.reagent.check_low_stock()

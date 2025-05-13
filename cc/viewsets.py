@@ -23,7 +23,7 @@ from drf_chunked_upload.models import ChunkedUpload
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.parsers import MultiPartParser, JSONParser
-from rest_framework.viewsets import ModelViewSet
+from rest_framework.viewsets import ModelViewSet, ReadOnlyModelViewSet
 from rest_framework.filters import SearchFilter, OrderingFilter
 from django.core.files.base import File as djangoFile
 from django_filters.rest_framework import DjangoFilterBackend
@@ -40,8 +40,8 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
     ProtocolRating, Reagent, StepReagent, ProtocolReagent, ProtocolTag, StepTag, Tag, AnnotationFolder, Project, \
     Instrument, InstrumentUsage, InstrumentPermission, StorageObject, StoredReagent, ReagentAction, LabGroup, Species, \
     SubcellularLocation, HumanDisease, Tissue, MetadataColumn, MSUniqueVocabularies, Unimod, InstrumentJob, \
-    FavouriteMetadataOption, Preset, MetadataTableTemplate, MaintenanceLog, SupportInformation, ExternalContact, ExternalContactDetails
-from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission
+    FavouriteMetadataOption, Preset, MetadataTableTemplate, MaintenanceLog, SupportInformation, ExternalContact, ExternalContactDetails, Message, MessageRecipient, MessageAttachment, MessageRecipient, MessageThread
+from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission, IsParticipantOrAdmin
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
     import_sdrf_file, validate_sdrf_file, export_excel_template, export_instrument_usage, import_excel, sdrf_validate, export_reagent_actions, import_reagents_from_file
@@ -53,9 +53,8 @@ from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, Anno
     ReagentActionSerializer, LabGroupSerializer, SpeciesSerializer, SubcellularLocationSerializer, \
     HumanDiseaseSerializer, TissueSerializer, MetadataColumnSerializer, MSUniqueVocabulariesSerializer, \
     UnimodSerializer, InstrumentJobSerializer, FavouriteMetadataOptionSerializer, PresetSerializer, \
-    MetadataTableTemplateSerializer, MaintenanceLogSerializer, SupportInformationSerializer, ExternalContactSerializer, ExternalContactDetailsSerializer
+    MetadataTableTemplateSerializer, MaintenanceLogSerializer, SupportInformationSerializer, ExternalContactSerializer, ExternalContactDetailsSerializer, MessageSerializer, MessageRecipientSerializer, MessageAttachmentSerializer, MessageRecipientSerializer, MessageThreadSerializer, MessageThreadDetailSerializer
 from cc.utils import user_metadata, staff_metadata, send_slack_notification
-
 
 class ProtocolViewSet(ModelViewSet, FilterMixin):
     permission_classes = [OwnerOrReadOnly]
@@ -3097,88 +3096,44 @@ class StoredReagentViewSet(ModelViewSet, FilterMixin):
         return obj
 
     def create(self, request, *args, **kwargs):
-        stored_reagent = StoredReagent()
-        reagent = Reagent.objects.filter(name=self.request.data['name'], unit=self.request.data['unit'])
-        if reagent.exists():
-            reagent = reagent.first()
-        else:
-            reagent = Reagent()
-            reagent.name = self.request.data['name']
-            reagent.unit = self.request.data['unit']
-            reagent.save()
+        data = request.data.copy()
 
-        storage_object = StorageObject.objects.get(id=request.data['storage_object'])
-        stored_reagent.reagent = reagent
-        stored_reagent.storage_object = storage_object
-        if "quantity" in request.data:
-            stored_reagent.quantity = request.data['quantity']
-        else:
-            stored_reagent.quantity = 1
-        stored_reagent.user = self.request.user
-        if "notes" in request.data:
-            stored_reagent.notes = request.data['notes']
-        if "png_base64" in request.data:
-            stored_reagent.png_base64 = request.data['png_base64']
-        if "barcode" in request.data:
-            stored_reagent.barcode = request.data['barcode']
-        if "shareable" in request.data:
-            stored_reagent.shareable = request.data['shareable']
-        if "created_by_project" in request.data:
-            project = Project.objects.get(id=request.data['created_by_project'])
-            stored_reagent.created_by_project = project
-        if "created_by_step" in request.data:
-            step = ProtocolStep.objects.get(id=request.data['created_by_step'])
-            stored_reagent.created_by_step = step
-        if "created_by_protocol" in request.data:
-            protocol = ProtocolModel.objects.get(id=request.data['created_by_protocol'])
-            stored_reagent.created_by_protocol = protocol
-        if "created_by_session" in request.data:
-            session = Session.objects.get(id=request.data['created_by_session'])
-            stored_reagent.created_by_session = session
-        if "expiration_date" in request.data:
-            expiration_date = datetime.strptime(request.data['expiration_date'], '%Y-%m-%d')
-            stored_reagent.expiration_date = expiration_date.date()
-        if "access_all" in request.data:
-            stored_reagent.access_all = request.data['access_all']
-        stored_reagent.save()
-        data = self.get_serializer(stored_reagent).data
-        return Response(data, status=status.HTTP_201_CREATED)
+        if 'name' in data and 'unit' in data and 'reagent_id' not in data:
+            reagent = Reagent.objects.filter(name=data['name'], unit=data['unit']).first()
+            if not reagent:
+                reagent = Reagent.objects.create(name=data['name'], unit=data['unit'])
+            data['reagent_id'] = reagent.id
+
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+
+        self.perform_create(serializer)
+
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
-        if not self.request.user.is_staff:
-            if not self.request.user == instance.user:
-                return Response(status=status.HTTP_401_UNAUTHORIZED)
-        if "quantity" in request.data:
-            instance.quantity = request.data['quantity']
-        if "notes" in request.data:
-            instance.notes = request.data['notes']
-        if "png_base64" in request.data:
-            instance.png_base64 = request.data['png_base64']
-        if "barcode" in request.data:
-            instance.barcode = request.data['barcode']
-        if "shareable" in request.data:
-            instance.shareable = request.data['shareable']
-        if "created_by_project" in request.data:
-            project = Project.objects.get(id=request.data['created_by_project'])
-            instance.created_by_project = project
-        if "created_by_protocol" in request.data:
-            protocol = ProtocolModel.objects.get(id=request.data['created_by_protocol'])
-            instance.created_by_protocol = protocol
-        if "created_by_session" in request.data:
-            session = Session.objects.get(id=request.data['created_by_session'])
-            instance.created_by_session = session
-        if "created_by_step" in request.data:
-            step = ProtocolStep.objects.get(id=request.data['created_by_step'])
-            instance.created_by_step = step
-        if "expiration_date" in request.data:
-            expiration_date = datetime.strptime(request.data['expiration_date'], '%Y-%m-%d')
-            instance.expiration_date = expiration_date.date()
-        if "access_all" in request.data:
-            instance.access_all = request.data['access_all']
-        instance.save()
-        data = self.get_serializer(instance).data
-        return Response(data, status=status.HTTP_200_OK)
+
+        data = request.data.copy()
+
+        if 'name' in data and 'unit' in data and 'reagent_id' not in data:
+            reagent = Reagent.objects.filter(name=data['name'], unit=data['unit']).first()
+            if not reagent:
+                reagent = Reagent.objects.create(name=data['name'], unit=data['unit'])
+            data['reagent_id'] = reagent.id
+
+        serializer = self.get_serializer(instance, data=data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+
+        return Response(serializer.data)
+
+    def perform_update(self, serializer):
+        serializer.save()
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -5082,7 +5037,6 @@ class ExternalContactViewSet(ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def add_contact_detail(self, request, pk=None):
-        """Add a contact detail to an external contact"""
         contact = self.get_object()
         serializer = ExternalContactDetailsSerializer(data=request.data)
 
@@ -5094,7 +5048,6 @@ class ExternalContactViewSet(ModelViewSet):
 
     @action(detail=True, methods=['delete'])
     def remove_contact_detail(self, request, pk=None):
-        """Remove a contact detail from an external contact"""
         contact = self.get_object()
         detail_id = request.data.get('detail_id')
 
@@ -5105,3 +5058,277 @@ class ExternalContactViewSet(ModelViewSet):
             return Response(status=status.HTTP_204_NO_CONTENT)
         except ExternalContactDetails.DoesNotExist:
             return Response({"error": "Contact detail not found"}, status=status.HTTP_404_NOT_FOUND)
+
+
+class MessageThreadViewSet(ModelViewSet):
+    serializer_class = MessageThreadSerializer
+    permission_classes = [IsAuthenticated, IsParticipantOrAdmin]
+    parser_classes = [MultiPartParser, JSONParser]
+    queryset = MessageThread.objects.all()
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    ordering_fields = ['id', 'created_at', 'updated_at']
+    pagination_class = LimitOffsetPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        #if user.is_staff and self.request.query_params.get('all') == 'true':
+        #    return MessageThread.objects.all()
+
+        return MessageThread.objects.filter(
+            Q(participants=user) | Q(lab_group__in=user.lab_groups.all()) | Q(is_system_thread=True) | Q(creator=user)
+        ).distinct()
+
+    def get_serializer_class(self):
+        if self.action == 'retrieve':
+            return MessageThreadDetailSerializer
+        return MessageThreadSerializer
+
+    def create(self, request, *args, **kwargs):
+        # Check if this is a reply to an existing thread
+        thread_id = request.data.get('thread', None)
+        if thread_id:
+            try:
+                thread = MessageThread.objects.get(id=thread_id)
+
+                # Check if thread is system thread
+                if thread.is_system_thread:
+                    return Response(
+                        {"error": "Cannot reply to system threads"},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+
+                # Check if latest message is of a non-replyable type
+                latest_message = thread.messages.order_by('-created_at').first()
+                if latest_message and latest_message.message_type in ['system_notification', 'alert', 'announcement']:
+                    return Response(
+                        {"error": f"Cannot reply to {latest_message.message_type} messages"},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+
+            except MessageThread.DoesNotExist:
+                return Response(
+                    {"error": "Thread not found"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+        return super().create(request, *args, **kwargs)
+
+    def is_thread_replyable(self, thread):
+        if thread.is_system_thread:
+            return False
+
+        latest_message = thread.messages.order_by('-created_at').first()
+        if latest_message and latest_message.message_type in ['system_notification', 'alert', 'announcement']:
+            return False
+
+        return True
+
+    def perform_create(self, serializer):
+        thread = serializer.save(creator=self.request.user)
+        if self.request.user not in thread.participants.all():
+            thread.participants.add(self.request.user)
+
+    @action(detail=True, methods=['post'])
+    def add_participant(self, request, pk=None):
+        thread = self.get_object()
+        user_id = request.data.get('user_id')
+        try:
+            user = User.objects.get(id=user_id)
+            thread.participants.add(user)
+            return Response({'status': 'participant added'})
+        except User.DoesNotExist:
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=['post'])
+    def remove_participant(self, request, pk=None):
+        thread = self.get_object()
+        user_id = request.data.get('user_id')
+        try:
+            user = User.objects.get(id=user_id)
+            if user == request.user:
+                return Response({'error': 'Cannot remove yourself'}, status=status.HTTP_400_BAD_REQUEST)
+            thread.participants.remove(user)
+            return Response({'status': 'participant removed'})
+        except User.DoesNotExist:
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=True, methods=['post'])
+    def mark_all_read(self, request, pk=None):
+        thread = self.get_object()
+        now = timezone.now()
+        recipients = MessageRecipient.objects.filter(
+            message__thread=thread,
+            user=request.user,
+            is_read=False
+        )
+        recipients.update(is_read=True, read_at=now)
+        return Response({'status': 'all messages marked as read'})
+
+    def unread_thread_count(self, request):
+        user = request.user
+        unread_count = MessageRecipient.objects.filter(
+            user=user,
+            is_read=False
+        ).count()
+        return Response({'unread_count': unread_count})
+
+
+class MessageViewSet(ModelViewSet):
+    serializer_class = MessageSerializer
+    permission_classes = [IsAuthenticated, IsParticipantOrAdmin]
+    parser_classes = [MultiPartParser, JSONParser]
+    queryset = Message.objects.all()
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    ordering_fields = ['id', 'created_at', 'updated_at']
+    pagination_class = LimitOffsetPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_staff and self.request.query_params.get('all') == 'true':
+            return Message.objects.all()
+
+        thread_ids = MessageThread.objects.filter(
+            Q(participants=user) | Q(lab_group__in=user.lab_groups.all())
+        ).values_list('id', flat=True)
+
+        return Message.objects.filter(thread_id__in=thread_ids)
+
+    def create(self, request, *args, **kwargs):
+        data = {k: v for k, v in request.data.items() if k != 'attachments'}
+        thread_id = data.get('thread')
+
+        try:
+            thread = MessageThread.objects.get(id=thread_id)
+            if not self.has_thread_permission(thread):
+                return Response({'error': 'You do not have access to this thread'},
+                                status=status.HTTP_403_FORBIDDEN)
+        except MessageThread.DoesNotExist:
+            return Response({'error': 'Thread not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if 'sender_id' not in data:
+            data['sender_id'] = request.user.id
+
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        message = serializer.save(thread=thread)
+
+        for participant in thread.participants.all():
+            MessageRecipient.objects.create(
+                message=message,
+                user=participant,
+                is_read=(participant == request.user)
+            )
+
+        files = request.FILES.getlist('attachments')
+        for file in files:
+            MessageAttachment.objects.create(
+                message=message,
+                file=file,
+                file_name=file.name,
+                file_size=file.size,
+                content_type=file.content_type
+            )
+
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def has_thread_permission(self, thread):
+        user = self.request.user
+        return (user.is_staff or
+                user in thread.participants.all() or
+                (thread.lab_group and thread.lab_group in user.lab_groups.all()))
+
+    @action(detail=True, methods=['post'])
+    def mark_read(self, request, pk=None):
+        message = self.get_object()
+        recipient = get_object_or_404(
+            MessageRecipient, message=message, user=request.user
+        )
+        recipient.mark_as_read()
+        return Response({'status': 'message marked as read'})
+
+    @action(detail=True, methods=['post'])
+    def mark_unread(self, request, pk=None):
+        message = self.get_object()
+        recipient = get_object_or_404(
+            MessageRecipient, message=message, user=request.user
+        )
+        recipient.is_read = False
+        recipient.read_at = None
+        recipient.save()
+        return Response({'status': 'message marked as unread'})
+
+
+class MessageRecipientViewSet(ModelViewSet):
+    serializer_class = MessageRecipientSerializer
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, JSONParser]
+    queryset = MessageRecipient.objects.all()
+    pagination_class = LimitOffsetPagination
+
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_staff and self.request.query_params.get('all') == 'true':
+            return MessageRecipient.objects.all()
+        return MessageRecipient.objects.filter(user=user)
+
+    @action(detail=True, methods=['post'])
+    def archive(self, request, pk=None):
+        recipient = self.get_object()
+        if recipient.user != request.user and not request.user.is_staff:
+            return Response({'error': 'You do not have permission'},
+                            status=status.HTTP_403_FORBIDDEN)
+        recipient.is_archived = True
+        recipient.save()
+        return Response({'status': 'message archived'})
+
+    @action(detail=True, methods=['post'])
+    def unarchive(self, request, pk=None):
+        recipient = self.get_object()
+        if recipient.user != request.user and not request.user.is_staff:
+            return Response({'error': 'You do not have permission'},
+                            status=status.HTTP_403_FORBIDDEN)
+        recipient.is_archived = False
+        recipient.save()
+        return Response({'status': 'message unarchived'})
+
+    @action(detail=True, methods=['post'])
+    def delete(self, request, pk=None):
+        recipient = self.get_object()
+        if recipient.user != request.user and not request.user.is_staff:
+            return Response({'error': 'You do not have permission'},
+                            status=status.HTTP_403_FORBIDDEN)
+        recipient.is_deleted = True
+        recipient.save()
+        return Response({'status': 'message deleted'})
+
+    @action(detail=True, methods=['post'])
+    def restore(self, request, pk=None):
+        recipient = self.get_object()
+        if recipient.user != request.user and not request.user.is_staff:
+            return Response({'error': 'You do not have permission'},
+                            status=status.HTTP_403_FORBIDDEN)
+        recipient.is_deleted = False
+        recipient.save()
+        return Response({'status': 'message restored'})
+
+
+class MessageAttachmentViewSet(ReadOnlyModelViewSet):
+    serializer_class = MessageAttachmentSerializer
+    permission_classes = [IsAuthenticated, IsParticipantOrAdmin]
+    parser_classes = [MultiPartParser, JSONParser]
+    queryset = MessageAttachment.objects.all()
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    ordering_fields = ['id', 'created_at', 'updated_at']
+    pagination_class = LimitOffsetPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_staff and self.request.query_params.get('all') == 'true':
+            return MessageAttachment.objects.all()
+
+        return MessageAttachment.objects.filter(
+            Q(message__thread__participants=user) |
+            Q(message__thread__lab_group__in=user.lab_groups.all())
+        ).distinct()

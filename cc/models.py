@@ -1112,6 +1112,10 @@ class StoredReagent(models.Model):
                                             help_text="Threshold quantity for low stock notifications")
     notify_on_low_stock = models.BooleanField(default=False)
     last_notification_sent = models.DateTimeField(blank=True, null=True)
+    notify_days_before_expiry = models.IntegerField(blank=True, null=True, default=14,
+                                                    help_text="Days before expiration to send notification")
+    notify_on_expiry = models.BooleanField(default=False)
+    last_expiry_notification_sent = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         app_label = "cc"
@@ -1171,10 +1175,11 @@ class StoredReagent(models.Model):
         content = f"""
             <h3 style="color: #d9534f;">⚠️ Low Stock Alert</h3>
             <div style="padding: 10px; border-left: 3px solid #d9534f; margin-bottom: 15px;">
-                <p><strong>Reagent:</strong> {self.reagent.name}</p>
+                <p><strong>Reagent:</strong> <a href="{self.get_item_link()}">{self.reagent.name}</a></p>
                 <p><strong>Current quantity:</strong> {current_quantity} {self.reagent.unit}</p>
                 <p><strong>Threshold:</strong> {self.low_stock_threshold} {self.reagent.unit}</p>
                 <p><strong>Storage location:</strong> {self.storage_object.object_name}</p>
+                <p><strong>Path to storage:</strong> {"/".join([i["name"] for i in self.storage_object.get_path_to_root()])}</p>
                 <p><strong>Expiration date:</strong> {self.expiration_date.strftime('%Y-%m-%d') if self.expiration_date else 'Not specified'}</p>
             </div>
             <p>Please restock this reagent soon to ensure continued availability for experiments.</p>
@@ -1201,6 +1206,74 @@ class StoredReagent(models.Model):
         # Update the last notification timestamp
         self.last_notification_sent = timezone.now()
         self.save(update_fields=['last_notification_sent'])
+
+    def check_expiration(self):
+        """Check if reagent is approaching expiration date and send notification if needed"""
+        if not self.notify_on_expiry or not self.expiration_date or not self.notify_days_before_expiry:
+            return False
+
+        days_until_expiry = (self.expiration_date - timezone.now().date()).days
+
+        # Check if within notification threshold and notification needed
+        if days_until_expiry <= self.notify_days_before_expiry and days_until_expiry >= 0:
+            # Don't send notifications too frequently (once per week)
+            if not self.last_expiry_notification_sent or (
+                    timezone.now() - self.last_expiry_notification_sent).days >= 7:
+                self.send_expiry_notification(days_until_expiry)
+                return True
+
+        return False
+
+    def send_expiry_notification(self, days_until_expiry):
+        """Send an expiration notification to the reagent owner"""
+        if not self.user:
+            return
+
+        thread = MessageThread.objects.create(
+            title=f"Expiration Alert: {self.reagent.name}",
+            is_system_thread=True,
+            creator=self.user
+        )
+        thread.participants.add(self.user)
+
+        content = f"""
+        <h3 style="color: #d9534f;">⚠️ Expiration Alert</h3>
+        <div style="padding: 10px; border-left: 3px solid #d9534f; margin-bottom: 15px;">
+            <p><strong>Reagent:</strong> <a href="{self.get_item_link()}">{self.reagent.name}</a></p>
+            <p><strong>Expiration date:</strong> {self.expiration_date.strftime('%Y-%m-%d')}</p>
+            <p><strong>Days until expiry:</strong> {days_until_expiry}</p>
+            <p><strong>Current quantity:</strong> {self.get_current_quantity()} {self.reagent.unit}</p>
+            <p><strong>Storage location:</strong> {self.storage_object.object_name}</p>
+            <p><strong>Path to storage:</strong> {"/".join([i["name"] for i in self.storage_object.get_path_to_root()])}</p>
+        </div>
+        <p>This reagent will expire soon. Please check if it needs to be replaced or discarded.</p>
+        """
+
+        message = Message.objects.create(
+            thread=thread,
+            sender=None,
+            content=content,
+            message_type="alert",
+            priority="high",
+            stored_reagent=self
+        )
+
+        MessageRecipient.objects.create(
+            message=message,
+            user=self.user,
+            is_read=False
+        )
+
+        self.last_expiry_notification_sent = timezone.now()
+        self.save(update_fields=['last_expiry_notification_sent'])
+
+    def get_item_link(self):
+        """
+        Get the link to the item in the inventory system
+        :return:
+        """
+
+        return f"/#/reagent-store/{self.storage_object.id}/{self.id}"
 
 class ReagentAction(models.Model):
     action_type_choices = [
@@ -1697,3 +1770,4 @@ def create_maintenance_log_folders(sender, instance=None, created=False, **kwarg
 def check_reagent_stock_after_action(sender, instance=None, created=False, **kwargs):
     if instance and instance.reagent:
         instance.reagent.check_low_stock()
+        instance.reagent.check_expiration()

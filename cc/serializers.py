@@ -657,9 +657,10 @@ class StoredReagentSerializer(ModelSerializer):
             'quantity', 'notes', 'user', 'created_at', 'updated_at', 'current_quantity',
             'png_base64', 'barcode', 'shareable', 'expiration_date', 'created_by_session',
             'created_by_step', 'metadata_columns',
-            'notify_on_low_stock', 'last_notification_sent', 'low_stock_threshold'
+            'notify_on_low_stock', 'last_notification_sent', 'low_stock_threshold',
+            'notify_days_before_expiry', 'notify_on_expiry', 'last_expiry_notification_sent'
         ]
-        read_only_fields = ['created_at', 'updated_at']
+        read_only_fields = ['created_at', 'updated_at', 'last_notification_sent', 'last_expiry_notification_sent']
 
 
 class ReagentActionSerializer(ModelSerializer):

@@ -5073,10 +5073,22 @@ class MessageThreadViewSet(ModelViewSet):
         user = self.request.user
         #if user.is_staff and self.request.query_params.get('all') == 'true':
         #    return MessageThread.objects.all()
+        message_type = self.request.query_params.get('message_type', None)
+        unread_only = self.request.query_params.get('unread', None) == 'true'
 
-        return MessageThread.objects.filter(
-            Q(participants=user) | Q(lab_group__in=user.lab_groups.all()) | Q(is_system_thread=True) | Q(creator=user)
-        ).distinct()
+        query = Q(participants=user) | Q(lab_group__in=user.lab_groups.all()) | Q(is_system_thread=True, messages__message_type="announcement") | Q(
+            creator=user)
+        if message_type:
+            query &= Q(messages__message_type=message_type)
+        if unread_only:
+            thread_ids = MessageRecipient.objects.filter(
+                user=user,
+                is_read=False,
+                is_deleted=False
+            ).values_list('message__thread', flat=True).distinct()
+
+            query &= Q(id__in=thread_ids)
+        return MessageThread.objects.filter(query).distinct()
 
     def get_serializer_class(self):
         if self.action == 'retrieve':

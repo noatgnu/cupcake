@@ -22,6 +22,7 @@ from django_filters.views import FilterMixin
 from drf_chunked_upload.models import ChunkedUpload
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.generics import get_object_or_404
 from rest_framework.parsers import MultiPartParser, JSONParser
 from rest_framework.viewsets import ModelViewSet, ReadOnlyModelViewSet
 from rest_framework.filters import SearchFilter, OrderingFilter
@@ -40,7 +41,9 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
     ProtocolRating, Reagent, StepReagent, ProtocolReagent, ProtocolTag, StepTag, Tag, AnnotationFolder, Project, \
     Instrument, InstrumentUsage, InstrumentPermission, StorageObject, StoredReagent, ReagentAction, LabGroup, Species, \
     SubcellularLocation, HumanDisease, Tissue, MetadataColumn, MSUniqueVocabularies, Unimod, InstrumentJob, \
-    FavouriteMetadataOption, Preset, MetadataTableTemplate, MaintenanceLog, SupportInformation, ExternalContact, ExternalContactDetails, Message, MessageRecipient, MessageAttachment, MessageRecipient, MessageThread
+    FavouriteMetadataOption, Preset, MetadataTableTemplate, MaintenanceLog, SupportInformation, ExternalContact, \
+    ExternalContactDetails, Message, MessageRecipient, MessageAttachment, MessageRecipient, MessageThread, \
+    ReagentSubscription
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission, IsParticipantOrAdmin
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
@@ -53,7 +56,9 @@ from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, Anno
     ReagentActionSerializer, LabGroupSerializer, SpeciesSerializer, SubcellularLocationSerializer, \
     HumanDiseaseSerializer, TissueSerializer, MetadataColumnSerializer, MSUniqueVocabulariesSerializer, \
     UnimodSerializer, InstrumentJobSerializer, FavouriteMetadataOptionSerializer, PresetSerializer, \
-    MetadataTableTemplateSerializer, MaintenanceLogSerializer, SupportInformationSerializer, ExternalContactSerializer, ExternalContactDetailsSerializer, MessageSerializer, MessageRecipientSerializer, MessageAttachmentSerializer, MessageRecipientSerializer, MessageThreadSerializer, MessageThreadDetailSerializer
+    MetadataTableTemplateSerializer, MaintenanceLogSerializer, SupportInformationSerializer, ExternalContactSerializer, \
+    ExternalContactDetailsSerializer, MessageSerializer, MessageRecipientSerializer, MessageAttachmentSerializer, \
+    MessageRecipientSerializer, MessageThreadSerializer, MessageThreadDetailSerializer, ReagentSubscriptionSerializer
 from cc.utils import user_metadata, staff_metadata, send_slack_notification
 
 class ProtocolViewSet(ModelViewSet, FilterMixin):
@@ -1598,6 +1603,11 @@ class UserViewSet(ModelViewSet, FilterMixin):
         stored_reagent_ids = request.data["stored_reagents"]
         stored_reagents = StoredReagent.objects.filter(id__in=stored_reagent_ids)
         permission_list = []
+        if user.is_authenticated:
+            if user.is_staff:
+                permission_list = [{"permission": {"edit": True, "view": True, "delete": True}, "stored_reagent": sr.id} for sr in stored_reagents]
+                return Response(permission_list, status=status.HTTP_200_OK)
+
         for sr in stored_reagents:
             permission = {
                 "edit": False,
@@ -1609,7 +1619,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 permission['edit'] = True
             else:
                 if sr.shareable:
-                    if request.user in sr.access_users:
+                    if request.user in sr.access_users.all():
                         permission['edit'] = True
                     else:
                         lab_groups = request.user.lab_groups.all()
@@ -2813,6 +2823,12 @@ class StorageObjectViewSet(ModelViewSet, FilterMixin):
             "stored_at": request.data.get('stored_at', None),
             "png_base64": request.data.get('png_base64', None)
         }
+        if request.data.get('object_name', None):
+            data['object_name'] = request.data['object_name']
+        if request.data.get('object_description', None):
+            data['object_description'] = request.data['object_description']
+
+
         serializer = self.get_serializer(data=data)
         #storage_object = StorageObject()
         #storage_object.object_name = request.data['name']
@@ -2840,8 +2856,14 @@ class StorageObjectViewSet(ModelViewSet, FilterMixin):
         data = {}
         if "name" in request.data:
             data['object_name'] = request.data['name']
+        if "object_name" in request.data:
+            data['object_name'] = request.data['object_name']
+
         if "description" in request.data:
             data['object_description'] = request.data['description']
+        if "object_description" in request.data:
+            data['object_description'] = request.data['object_description']
+
         if "object_type" in request.data:
             data['object_type'] = request.data['object_type']
 
@@ -3220,6 +3242,65 @@ class StoredReagentViewSet(ModelViewSet, FilterMixin):
             elif user.lab_groups.filter(id__in=stored_reagent.access_lab_groups.all().values_list('id', flat=True)).exists():
                 permission["edit"] = True
         return permission
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
+    def subscribe(self, request, pk=None):
+        stored_reagent = self.get_object()
+        notify_low_stock = request.data.get('notify_on_low_stock', False)
+        notify_expiry = request.data.get('notify_on_expiry', False)
+
+        subscription = stored_reagent.subscribe_user(
+            request.user,
+            notify_low_stock=notify_low_stock,
+            notify_expiry=notify_expiry
+        )
+
+        return Response({
+            'success': True,
+            'subscription': {
+                'id': subscription.id,
+                'notify_on_low_stock': subscription.notify_on_low_stock,
+                'notify_on_expiry': subscription.notify_on_expiry
+            }
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
+    def unsubscribe(self, request, pk=None):
+        stored_reagent = self.get_object()
+        unsubscribe_low_stock = request.data.get('notify_on_low_stock', False)
+        unsubscribe_expiry = request.data.get('notify_on_expiry', False)
+
+        result = stored_reagent.unsubscribe_user(
+            request.user,
+            notify_low_stock=unsubscribe_low_stock,
+            notify_expiry=unsubscribe_expiry
+        )
+
+        return Response({
+            'success': True,
+            'unsubscribed': {
+                'notify_on_low_stock': unsubscribe_low_stock,
+                'notify_on_expiry': unsubscribe_expiry
+            }
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
+    def subscribers(self, request, pk=None):
+        stored_reagent = self.get_object()
+
+        if request.user == stored_reagent.user or request.user.is_staff:
+            subscribers = stored_reagent.subscriptions.all()
+            data = [{
+                'user_id': sub.user.id,
+                'username': sub.user.username,
+                'notify_on_low_stock': sub.notify_on_low_stock,
+                'notify_on_expiry': sub.notify_on_expiry
+            } for sub in subscribers]
+            return Response(data)
+
+        return Response({
+            'error': 'You do not have permission to view subscribers'
+        }, status=status.HTTP_403_FORBIDDEN)
 
 class ReagentActionViewSet(ModelViewSet, FilterMixin):
     permission_classes = [IsAuthenticated]
@@ -5344,3 +5425,51 @@ class MessageAttachmentViewSet(ReadOnlyModelViewSet):
             Q(message__thread__participants=user) |
             Q(message__thread__lab_group__in=user.lab_groups.all())
         ).distinct()
+
+    class ReagentSubscriptionViewSet(ModelViewSet):
+        serializer_class = ReagentSubscriptionSerializer
+
+        def get_queryset(self):
+            user = self.request.user
+            if user.is_staff:
+                return ReagentSubscription.objects.all()
+            return ReagentSubscription.objects.filter(user=user)
+
+        def perform_create(self, serializer):
+            serializer.save(user=self.request.user)
+
+        @action(detail=False, methods=['post'])
+        def subscribe(self, request):
+            reagent_id = request.data.get('stored_reagent')
+            notify_low_stock = request.data.get('notify_on_low_stock', True)
+            notify_expiry = request.data.get('notify_on_expiry', True)
+
+            try:
+                stored_reagent = StoredReagent.objects.get(id=reagent_id)
+                subscription = stored_reagent.subscribe_user(
+                    request.user,
+                    notify_low_stock=notify_low_stock,
+                    notify_expiry=notify_expiry
+                )
+                return Response(
+                    ReagentSubscriptionSerializer(subscription).data,
+                    status=status.HTTP_201_CREATED
+                )
+            except StoredReagent.DoesNotExist:
+                return Response(
+                    {'error': 'Reagent not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+        @action(detail=False, methods=['post'])
+        def unsubscribe(self, request):
+            reagent_id = request.data.get('stored_reagent')
+            try:
+                stored_reagent = StoredReagent.objects.get(id=reagent_id)
+                result = stored_reagent.unsubscribe_user(request.user)
+                return Response({'success': result}, status=status.HTTP_200_OK)
+            except StoredReagent.DoesNotExist:
+                return Response(
+                    {'error': 'Reagent not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )

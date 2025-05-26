@@ -1,4 +1,5 @@
 from django.contrib.auth.models import User
+from rest_framework.fields import ReadOnlyField
 from rest_framework.serializers import ModelSerializer, SerializerMethodField, PrimaryKeyRelatedField
 import json
 from cc.models import ProtocolModel, ProtocolStep, Annotation, StepVariation, Session, TimeKeeper, ProtocolSection, \
@@ -6,7 +7,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, StepVariation, Se
     Instrument, InstrumentUsage, StorageObject, StoredReagent, ReagentAction, LabGroup, MSUniqueVocabularies, \
     HumanDisease, Tissue, SubcellularLocation, MetadataColumn, Species, Unimod, InstrumentJob, FavouriteMetadataOption, \
     Preset, MetadataTableTemplate, ExternalContactDetails, SupportInformation, ExternalContact, MaintenanceLog, \
-    MessageRecipient, MessageThread, Message, MessageAttachment
+    MessageRecipient, MessageThread, Message, MessageAttachment, ReagentSubscription
 
 
 class UserBasicSerializer(ModelSerializer):
@@ -575,11 +576,11 @@ class StorageObjectSerializer(ModelSerializer):
 
         if instance and parent:
             if instance.id == parent.id:
-                raise serializers.ValidationError("A storage object cannot be its own parent")
+                raise ValidationError("A storage object cannot be its own parent")
 
             children = instance.get_all_children()
             if parent.id in [child.id for child in children]:
-                raise serializers.ValidationError(
+                raise ValidationError(
                     "Cannot set parent to be one of the object's children"
                 )
 
@@ -604,6 +605,34 @@ class StorageObjectSerializer(ModelSerializer):
             'child_count'
         ]
 
+class ReagentSubscriptionSerializer(ModelSerializer):
+    user = UserBasicSerializer(read_only=True)
+
+    class Meta:
+        model = ReagentSubscription
+        fields = [
+            'id', 'user', 'stored_reagent',
+            'notify_on_low_stock', 'notify_on_expiry',
+            'created_at'
+        ]
+        read_only_fields = ['id', 'user', 'created_at']
+
+    def create(self, validated_data):
+        user = self.context['request'].user
+        validated_data['user'] = user
+
+        try:
+            subscription = ReagentSubscription.objects.get(
+                user=user,
+                stored_reagent=validated_data['stored_reagent']
+            )
+            subscription.notify_on_low_stock = validated_data.get('notify_on_low_stock',
+                                                                  subscription.notify_on_low_stock)
+            subscription.notify_on_expiry = validated_data.get('notify_on_expiry', subscription.notify_on_expiry)
+            subscription.save()
+            return subscription
+        except ReagentSubscription.DoesNotExist:
+            return super().create(validated_data)
 
 class StoredReagentSerializer(ModelSerializer):
     reagent = ReagentSerializer(read_only=True)
@@ -622,12 +651,9 @@ class StoredReagentSerializer(ModelSerializer):
         write_only=True,
         source='storage_object'
     )
-
-    #def get_reagent(self, obj):
-    #    return ReagentSerializer(obj.reagent, many=False).data
-
-    #def get_user(self, obj):
-    #    return obj.user.username
+    is_subscribed = SerializerMethodField()
+    subscription = SerializerMethodField()
+    subscriber_count = SerializerMethodField()
 
     def get_storage_object(self, obj):
         return {"id": obj.storage_object.id, "object_name": obj.storage_object.object_name}
@@ -650,6 +676,31 @@ class StoredReagentSerializer(ModelSerializer):
             return ProtocolStepSerializer(obj.created_by_step, many=False).data
         return None
 
+    def get_is_subscribed(self, obj):
+        request = self.context.get('request')
+        if request and hasattr(request, 'user') and request.user.is_authenticated:
+            return obj.subscriptions.filter(user=request.user).exists()
+        return False
+
+    def get_subscription(self, obj):
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return None
+
+        try:
+            subscription = obj.subscriptions.get(user=request.user)
+            return {
+                'id': subscription.id,
+                'notify_on_low_stock': subscription.notify_on_low_stock,
+                'notify_on_expiry': subscription.notify_on_expiry,
+                'created_at': subscription.created_at
+            }
+        except ReagentSubscription.DoesNotExist:
+            return None
+
+    def get_subscriber_count(self, obj):
+        return obj.subscriptions.count()
+
     class Meta:
         model = StoredReagent
         fields = [
@@ -658,10 +709,10 @@ class StoredReagentSerializer(ModelSerializer):
             'png_base64', 'barcode', 'shareable', 'expiration_date', 'created_by_session',
             'created_by_step', 'metadata_columns',
             'notify_on_low_stock', 'last_notification_sent', 'low_stock_threshold',
-            'notify_days_before_expiry', 'notify_on_expiry', 'last_expiry_notification_sent'
+            'notify_days_before_expiry', 'notify_on_expiry', 'last_expiry_notification_sent',
+            'is_subscribed', 'subscription', 'subscriber_count'
         ]
         read_only_fields = ['created_at', 'updated_at', 'last_notification_sent', 'last_expiry_notification_sent']
-
 
 class ReagentActionSerializer(ModelSerializer):
     user = SerializerMethodField()
@@ -928,14 +979,8 @@ class MessageAttachmentSerializer(ModelSerializer):
 
     class Meta:
         model = MessageAttachment
-        fields = ['id', 'file', 'file_name', 'file_size', 'content_type', 'created_at', 'download_url']
+        fields = ['id', 'file', 'file_name', 'file_size', 'content_type', 'created_at']
         read_only_fields = ['file_size', 'content_type', 'created_at']
-
-    def get_download_url(self, obj):
-        request = self.context.get('request')
-        if request and obj.file:
-            return request.build_absolute_uri(obj.file.url)
-        return None
 
     def validate(self, attrs):
         if 'file' in attrs:

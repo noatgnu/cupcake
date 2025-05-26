@@ -1144,47 +1144,34 @@ class StoredReagent(models.Model):
 
     def check_low_stock(self):
         """Check if current quantity is below threshold and send notification if needed"""
-        if not self.notify_on_low_stock or not self.low_stock_threshold:
-            return False
-
         current_quantity = self.get_current_quantity()
-
-        # Check if below threshold and notification needed
-        if current_quantity <= self.low_stock_threshold:
-            # Don't send notifications too frequently (once per day)
-            if not self.last_notification_sent or (timezone.now() - self.last_notification_sent).days >= 7:
-                self.send_low_stock_notification(current_quantity)
-                return True
-
+        if self.low_stock_threshold and current_quantity <= self.low_stock_threshold:
+            self.send_low_stock_notification(current_quantity)
+            return True
         return False
 
     def send_low_stock_notification(self, current_quantity):
-        """Send a low stock notification to the reagent owner"""
-        if not self.user:
-            return
-
-        # Create a system thread for the notification
+        """Send a low stock notification to the reagent owner and subscribers"""
+        # Create the notification thread
         thread = MessageThread.objects.create(
             title=f"Low Stock Alert: {self.reagent.name}",
             is_system_thread=True,
             creator=self.user
         )
-        thread.participants.add(self.user)
 
-        # Format the message content as HTML for Quill
+        # Format the message content
         content = f"""
-            <h3 style="color: #d9534f;">⚠️ Low Stock Alert</h3>
-            <div style="padding: 10px; border-left: 3px solid #d9534f; margin-bottom: 15px;">
-                <p><strong>Reagent:</strong> <a href="{self.get_item_link()}">{self.reagent.name}</a></p>
-                <p><strong>Current quantity:</strong> {current_quantity} {self.reagent.unit}</p>
-                <p><strong>Threshold:</strong> {self.low_stock_threshold} {self.reagent.unit}</p>
-                <p><strong>Storage location:</strong> {self.storage_object.object_name}</p>
-                <p><strong>Path to storage:</strong> {"/".join([i["name"] for i in self.storage_object.get_path_to_root()])}</p>
-                <p><strong>Expiration date:</strong> {self.expiration_date.strftime('%Y-%m-%d') if self.expiration_date else 'Not specified'}</p>
-            </div>
-            <p>Please restock this reagent soon to ensure continued availability for experiments.</p>
-            <p>You can view this reagent in the inventory system to restock or update the threshold settings.</p>
-            """
+        <h3 style="color: #d9534f;">⚠️ Low Stock Alert</h3>
+        <div style="padding: 10px; border-left: 3px solid #d9534f; margin-bottom: 15px;">
+            <p><strong>Reagent:</strong> <a href="{self.get_item_link()}">{self.reagent.name}</a></p>
+            <p><strong>Current quantity:</strong> {current_quantity} {self.reagent.unit}</p>
+            <p><strong>Threshold:</strong> {self.low_stock_threshold} {self.reagent.unit}</p>
+            <p><strong>Storage location:</strong> {self.storage_object.object_name}</p>
+            <p><strong>Path to storage:</strong> {"/".join([i["name"] for i in self.storage_object.get_path_to_root()])}</p>
+            <p><strong>Expiration date:</strong> {self.expiration_date.strftime('%Y-%m-%d') if self.expiration_date else 'Not specified'}</p>
+        </div>
+        <p>Please restock this reagent soon to ensure continued availability for experiments.</p>
+        """
 
         # Create the alert message
         message = Message.objects.create(
@@ -1196,46 +1183,37 @@ class StoredReagent(models.Model):
             stored_reagent=self
         )
 
-        # Create a recipient entry
-        MessageRecipient.objects.create(
-            message=message,
-            user=self.user,
-            is_read=False
-        )
+        for subscription in self.subscriptions.filter(notify_on_low_stock=True):
+            if subscription.notify_on_low_stock:
+                thread.participants.add(subscription.user)
+                MessageRecipient.objects.create(
+                    message=message,
+                    user=subscription.user,
+                    is_read=False
+                )
 
-        # Update the last notification timestamp
         self.last_notification_sent = timezone.now()
         self.save(update_fields=['last_notification_sent'])
 
     def check_expiration(self):
         """Check if reagent is approaching expiration date and send notification if needed"""
-        if not self.notify_on_expiry or not self.expiration_date or not self.notify_days_before_expiry:
-            return False
-
-        days_until_expiry = (self.expiration_date - timezone.now().date()).days
-
-        # Check if within notification threshold and notification needed
-        if days_until_expiry <= self.notify_days_before_expiry and days_until_expiry >= 0:
-            # Don't send notifications too frequently (once per week)
-            if not self.last_expiry_notification_sent or (
-                    timezone.now() - self.last_expiry_notification_sent).days >= 7:
+        if self.expiration_date:
+            days_until_expiry = (self.expiration_date - timezone.now().date()).days
+            if days_until_expiry <= self.notify_days_before_expiry:
                 self.send_expiry_notification(days_until_expiry)
                 return True
-
         return False
 
     def send_expiry_notification(self, days_until_expiry):
-        """Send an expiration notification to the reagent owner"""
-        if not self.user:
-            return
-
+        """Send an expiration notification to the reagent owner and subscribers"""
+        # Create the notification thread
         thread = MessageThread.objects.create(
             title=f"Expiration Alert: {self.reagent.name}",
             is_system_thread=True,
             creator=self.user
         )
-        thread.participants.add(self.user)
 
+        # Format the message content
         content = f"""
         <h3 style="color: #d9534f;">⚠️ Expiration Alert</h3>
         <div style="padding: 10px; border-left: 3px solid #d9534f; margin-bottom: 15px;">
@@ -1249,21 +1227,27 @@ class StoredReagent(models.Model):
         <p>This reagent will expire soon. Please check if it needs to be replaced or discarded.</p>
         """
 
+        # Create the alert message
         message = Message.objects.create(
             thread=thread,
-            sender=None,
+            sender=None,  # System message
             content=content,
             message_type="alert",
             priority="high",
             stored_reagent=self
         )
 
-        MessageRecipient.objects.create(
-            message=message,
-            user=self.user,
-            is_read=False
-        )
+        # Notify subscribers who opted for expiry notifications
+        for subscription in self.subscriptions.filter(notify_on_expiry=True):
+            if subscription.notify_on_expiry:
+                thread.participants.add(subscription.user)
+                MessageRecipient.objects.create(
+                    message=message,
+                    user=subscription.user,
+                    is_read=False
+                )
 
+        # Update the last notification timestamp
         self.last_expiry_notification_sent = timezone.now()
         self.save(update_fields=['last_expiry_notification_sent'])
 
@@ -1274,6 +1258,68 @@ class StoredReagent(models.Model):
         """
 
         return f"/#/reagent-store/{self.storage_object.id}/{self.id}"
+
+    def subscribe_user(self, user, notify_low_stock=False, notify_expiry=False):
+        """Subscribe a user to notifications for this reagent"""
+        subscription, created = ReagentSubscription.objects.get_or_create(
+            user=user,
+            stored_reagent=self,
+            defaults={
+                'notify_on_low_stock': notify_low_stock,
+                'notify_on_expiry': notify_expiry
+            }
+        )
+
+        if not created:
+            if notify_low_stock:
+                subscription.notify_on_low_stock = True
+            if notify_expiry:
+                subscription.notify_on_expiry = True
+            subscription.save()
+
+        return subscription
+
+    def unsubscribe_user(self, user, notify_low_stock=False, notify_expiry=False):
+        try:
+            subscription = self.subscriptions.get(user=user)
+
+            if notify_low_stock and notify_expiry:
+                subscription.delete()
+                return True
+
+            if notify_low_stock:
+                subscription.notify_on_low_stock = False
+            if notify_expiry:
+                subscription.notify_on_expiry = False
+
+            if not subscription.notify_on_low_stock and not subscription.notify_on_expiry:
+                subscription.delete()
+            else:
+                subscription.save()
+
+            return True
+        except ReagentSubscription.DoesNotExist:
+            return False
+
+    def get_subscribers(self):
+        return [subscription.user for subscription in self.subscriptions.all()]
+
+
+class ReagentSubscription(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+                             related_name="reagent_subscriptions")
+    stored_reagent = models.ForeignKey(StoredReagent, on_delete=models.CASCADE,
+                                       related_name="subscriptions")
+    notify_on_low_stock = models.BooleanField(default=True)
+    notify_on_expiry = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        app_label = "cc"
+        unique_together = ['user', 'stored_reagent']
+
+    def __str__(self):
+        return f"{self.user.username} - {self.stored_reagent.reagent.name}"
 
 class ReagentAction(models.Model):
     action_type_choices = [
@@ -1771,3 +1817,12 @@ def check_reagent_stock_after_action(sender, instance=None, created=False, **kwa
     if instance and instance.reagent:
         instance.reagent.check_low_stock()
         instance.reagent.check_expiration()
+
+@receiver(post_save, sender=StoredReagent)
+def create_owner_subscription(sender, instance=None, created=False, **kwargs):
+    if created and instance.user:
+        instance.subscribe_user(
+            user=instance.user,
+            notify_low_stock=instance.notify_on_low_stock,
+            notify_expiry=instance.notify_on_expiry
+        )

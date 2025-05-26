@@ -1141,6 +1141,7 @@ class StoredReagent(models.Model):
             return
         manual_folder = AnnotationFolder.objects.create(folder_name="Manuals", stored_reagent=self)
         certificate_folder = AnnotationFolder.objects.create(folder_name="Certificates", stored_reagent=self)
+        msds_folder = AnnotationFolder.objects.create(folder_name="MSDS", stored_reagent=self)
 
     def check_low_stock(self):
         """Check if current quantity is below threshold and send notification if needed"""

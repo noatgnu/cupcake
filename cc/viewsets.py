@@ -5474,3 +5474,271 @@ class MessageAttachmentViewSet(ReadOnlyModelViewSet):
                     {'error': 'Reagent not found'},
                     status=status.HTTP_404_NOT_FOUND
                 )
+
+
+class ReagentDocumentViewSet(ModelViewSet):
+    serializer_class = AnnotationSerializer
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, JSONParser]
+    queryset = Annotation.objects.all()
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    ordering_fields = ['id', 'created_at', 'updated_at']
+    pagination_class = LimitOffsetPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_staff and self.request.query_params.get('all') == 'true':
+            return Annotation.objects.all()
+
+        reagent_id = self.request.query_params.get('reagent_id')
+        folder_name = self.request.query_params.get('folder_name')
+
+        if not reagent_id:
+            return Annotation.objects.none()
+
+        try:
+            reagent = StoredReagent.objects.get(id=reagent_id)
+            if not self.has_reagent_permission_view(reagent):
+                return Annotation.objects.none()
+
+            if folder_name:
+                folder = AnnotationFolder.objects.filter(
+                    stored_reagent=reagent,
+                    folder_name=folder_name
+                ).first()
+
+                if folder:
+                    return Annotation.objects.filter(folder=folder)
+
+            return Annotation.objects.filter(
+                folder__stored_reagent=reagent
+            )
+        except StoredReagent.DoesNotExist:
+            return Annotation.objects.none()
+
+    def create(self, request, *args, **kwargs):
+        reagent_id = request.data.get('reagent_id')
+        folder_name = request.data.get('folder_name', '')
+        file = request.FILES.get('file')
+
+        try:
+            reagent = StoredReagent.objects.get(id=reagent_id)
+            if not self.has_reagent_permission_edit(reagent):
+                return Response(
+                    {'error': 'You do not have permission to add documents to this reagent'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            folder = AnnotationFolder.objects.filter(
+                stored_reagent=reagent,
+                folder_name=folder_name
+            ).first()
+
+            if not folder:
+                return Response(
+                    {'error': f'Folder "{folder_name}" not found for this reagent'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+
+            annotation_data = {
+                'annotation': request.data.get('annotation', ''),
+                'annotation_name': file.name if file else request.data.get('annotation_name', ''),
+                'file': file,
+                'folder': folder.id,
+                'user': request.user.id,
+                'annotation_type': "file"
+            }
+
+            serializer = self.get_serializer(data=annotation_data)
+            serializer.is_valid(raise_exception=True)
+            self.perform_create(serializer)
+
+            headers = self.get_success_headers(serializer.data)
+            return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+        except StoredReagent.DoesNotExist:
+            return Response(
+                {'error': 'Reagent not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+    def has_reagent_permission_edit(self, reagent):
+        user = self.request.user
+        return (
+                user.is_staff or
+                user == reagent.user
+        )
+
+    def has_reagent_permission_view(self, reagent):
+        user = self.request.user
+        return (
+            user.is_staff or
+            user == reagent.user or
+            (reagent.lab_group and reagent.lab_group in user.lab_groups.all()) or reagent.access_all or user in reagent.access_users
+        )
+
+    @action(detail=False, methods=['get'])
+    def folder_list(self, request):
+        """Return list of available folders for a reagent"""
+        reagent_id = request.query_params.get('reagent_id')
+
+        try:
+            reagent = StoredReagent.objects.get(id=reagent_id)
+            if not self.has_reagent_permission_edit(reagent):
+                return Response(
+                    {'error': 'You do not have permission to view this reagent'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            folders = reagent.annotation_folders.all()
+            return Response([{
+                'id': folder.id,
+                'name': folder.folder_name
+            } for folder in folders])
+
+        except StoredReagent.DoesNotExist:
+            return Response(
+                {'error': 'Reagent not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+    def destroy(self, request, *args, **kwargs):
+        annotation = self.get_object()
+        if not self.has_reagent_permission_edit(annotation.folder.stored_reagent):
+            return Response(
+                {'error': 'You do not have permission to delete this document'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if annotation.file:
+            annotation.file.delete(save=False)
+
+        return super().destroy(request, *args, **kwargs)
+
+    @action(detail=False, methods=['post'])
+    def bind_chunked_file(self, request):
+        """
+        Bind a file that was uploaded in chunks to a reagent document
+        """
+        upload_id = request.data.get('upload_id')
+        reagent_id = request.data.get('reagent_id')
+        folder_name = request.data.get('folder_name', '')
+        annotation_name = request.data.get('annotation_name', '')
+        annotation_text = request.data.get('annotation', '')
+
+        if not upload_id or not reagent_id:
+            return Response(
+                {'error': 'Both upload_id and reagent_id are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            chunked_upload = ChunkedUpload.objects.get(id=upload_id)
+            if chunked_upload.user != request.user and not request.user.is_staff:
+                return Response(
+                    {'error': 'You do not have permission to use this upload'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            reagent = StoredReagent.objects.get(id=reagent_id)
+            if not self.has_reagent_permission_edit(reagent):
+                return Response(
+                    {'error': 'You do not have permission to add documents to this reagent'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+            folder = AnnotationFolder.objects.filter(
+                stored_reagent=reagent,
+                folder_name=folder_name
+            ).first()
+
+            if not folder:
+                return Response(
+                    {'error': f'Folder {folder_name} not found for this reagent'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+            # Create a proper file name if not provided
+            if not annotation_name:
+                annotation_name = chunked_upload.filename
+
+            # Create the annotation
+            annotation_data = {
+                'annotation': annotation_text,
+                'annotation_name': annotation_name,
+                'folder': folder.id,
+                'user': request.user.id,
+                'annotation_type': "file"
+            }
+
+            # Save the chunked file to the annotation
+            with open(chunked_upload.file.path, 'rb') as file:
+                django_file = djangoFile(file)
+                annotation = Annotation(
+                    annotation=annotation_data['annotation'],
+                    annotation_name=annotation_data['annotation_name'],
+                    folder_id=annotation_data['folder'],
+                    user_id=annotation_data['user'],
+                    annotation_type=annotation_data['annotation_type']
+                )
+                annotation.file.save(annotation_name, django_file, save=True)
+            chunked_upload.delete()
+
+            serializer = self.get_serializer(annotation)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+        except ChunkedUpload.DoesNotExist:
+            return Response(
+                {'error': 'Upload not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except StoredReagent.DoesNotExist:
+            return Response(
+                {'error': 'Reagent not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {'error': f'An error occurred: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['get'])
+    def get_download_token(self, request, pk=None):
+        """Generate a signed URL for downloading the reagent document"""
+        annotation = request.query_params.get('annotation_id', None)
+        if not annotation:
+            return Response({"error": "No annotation ID provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        annotation = Annotation.objects.get(id=annotation)
+        if not annotation.file:
+            return Response({"error": "No file attached to this document"}, status=status.HTTP_404_NOT_FOUND)
+
+
+        signer = TimestampSigner()
+        token = signer.sign(str(annotation.id))
+
+        return Response({"token": token}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], permission_classes=[AllowAny])
+    def download_signed(self, request):
+        """Download a file using a signed token"""
+        token = request.query_params.get('token', None)
+        if not token:
+            return Response({"error": "No token provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        signer = TimestampSigner()
+        try:
+            annotation_id = signer.unsign(token, max_age=60 * 30)  # 30 minute expiration
+            response = HttpResponse(status=200)
+            annotation = Annotation.objects.get(id=annotation_id)
+            if not annotation.file:
+                return Response({"error": "No file attached to this document"}, status=status.HTTP_404_NOT_FOUND)
+            filename = annotation.file.name.split('/')[-1]
+
+            response["Content-Disposition"] = f'attachment; filename="{filename}"'
+            response["X-Accel-Redirect"] = f"/media/annotations/{filename}"
+            return response
+        except (BadSignature, SignatureExpired) as e:
+            return Response({"error": "Invalid or expired token"}, status=status.HTTP_400_BAD_REQUEST)

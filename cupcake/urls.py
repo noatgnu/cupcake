@@ -27,7 +27,8 @@ from cc.viewsets import ProtocolViewSet, SessionViewSet, StepViewSet, Annotation
     MetadataColumnViewSet, TissueViewSet, SubcellularLocationViewSet, HumanDiseaseViewSet, MSUniqueVocabulariesViewSet, \
     UnimodViewSets, InstrumentJobViewSets, FavouriteMetadataOptionViewSets, PresetViewSet, \
     MetadataTableTemplateViewSets, SupportInformationViewSet, ExternalContactViewSet, ExternalContactDetailsViewSet, \
-    MaintenanceLogViewSet, MessageThreadViewSet, MessageViewSet, MessageRecipientViewSet, MessageAttachmentViewSet
+    MaintenanceLogViewSet, MessageThreadViewSet, MessageViewSet, MessageRecipientViewSet, MessageAttachmentViewSet, \
+    ReagentDocumentViewSet
 
 router = routers.DefaultRouter()
 router.register(r'protocol', ProtocolViewSet)
@@ -69,7 +70,7 @@ router.register(r'message_threads', MessageThreadViewSet)
 router.register(r'messages', MessageViewSet)
 router.register(r'message_recipients', MessageRecipientViewSet)
 router.register(r'message_attachments', MessageAttachmentViewSet)
-
+router.register(r'reagent_documents', ReagentDocumentViewSet, basename="reagent_documents")
 
 urlpatterns = [
     path('admin/', admin.site.urls),

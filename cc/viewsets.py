@@ -1606,6 +1606,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
         if user.is_authenticated:
             if user.is_staff:
                 permission_list = [{"permission": {"edit": True, "view": True, "delete": True}, "stored_reagent": sr.id} for sr in stored_reagents]
+                print(permission_list)
                 return Response(permission_list, status=status.HTTP_200_OK)
 
         for sr in stored_reagents:

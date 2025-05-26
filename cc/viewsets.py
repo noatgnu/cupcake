@@ -5482,6 +5482,7 @@ class ReagentDocumentViewSet(ModelViewSet):
     parser_classes = [MultiPartParser, JSONParser]
     queryset = Annotation.objects.all()
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    search_fields = ['annotation', 'annotation_name']
     ordering_fields = ['id', 'created_at', 'updated_at']
     pagination_class = LimitOffsetPagination
 

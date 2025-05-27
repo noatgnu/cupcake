@@ -1605,28 +1605,29 @@ class UserViewSet(ModelViewSet, FilterMixin):
         permission_list = []
         if request.user.is_authenticated:
             if request.user.is_staff:
-                permission_list = [{"permission": {"edit": True, "view": True, "delete": True}, "stored_reagent": sr.id} for sr in stored_reagents]
-                print(permission_list)
+                permission_list = [{"permission": {"edit": True, "view": True, "delete": True, "use": True}, "stored_reagent": sr.id} for sr in stored_reagents]
                 return Response(permission_list, status=status.HTTP_200_OK)
 
         for sr in stored_reagents:
             permission = {
                 "edit": False,
                 "view": True,
-                "delete": False
+                "delete": False,
+                "use": False
             }
             if sr.user == request.user:
                 permission['delete'] = True
                 permission['edit'] = True
+                permission['use'] = True
             else:
                 if sr.shareable:
                     if request.user in sr.access_users.all():
-                        permission['edit'] = True
+                        permission['use'] = True
                     else:
                         lab_groups = request.user.lab_groups.all()
                         if sr.access_lab_groups.filter(
                             id__in=lab_groups.values_list('id', flat=True)).exists():
-                            permission['edit'] = True
+                            permission['use'] = True
             permission_list.append({"permission": permission, "stored_reagent": sr.id})
         return Response(permission_list, status=status.HTTP_200_OK)
 

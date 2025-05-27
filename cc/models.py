@@ -644,6 +644,8 @@ class Instrument(models.Model):
     max_days_ahead_pre_approval = models.IntegerField(blank=True, null=True, default=0)
     max_days_within_usage_pre_approval = models.IntegerField(blank=True, null=True, default=0)
     support_information = models.ManyToManyField("SupportInformation", blank=True)
+    last_warranty_notification_sent = models.DateTimeField(blank=True, null=True)
+    last_maintenance_notification_sent = models.DateTimeField(blank=True, null=True)
 
     def __str__(self):
         return self.instrument_name
@@ -664,6 +666,184 @@ class Instrument(models.Model):
             return
         manual_folder = AnnotationFolder.objects.create(folder_name="Manuals", instrument=self)
         certificate_folder = AnnotationFolder.objects.create(folder_name="Certificates", instrument=self)
+        maintenance = AnnotationFolder.objects.create(folder_name="Maintenance", instrument=self)
+
+    def notify_instrument_managers(self, message: str, subject: str = "Instrument Notification"):
+        """
+        Notify instrument managers via email
+        :param message: Message to send
+        :param subject: Subject of the email
+        :return:
+        """
+
+        manager_permissions = InstrumentPermission.objects.filter(
+            instrument=self, can_manage=True
+        )
+
+        managers = [perm.user for perm in manager_permissions]
+
+        if not managers:
+            return False
+
+        thread = MessageThread.objects.create(
+            title=subject or f"Maintenance notification for {instrument.instrument_name}",
+            is_system_thread=True
+        )
+
+        for manager in managers:
+            thread.participants.add(manager)
+
+        system_message = Message.objects.create(
+            thread=thread,
+            content=message,
+            message_type="system_notification",
+            sender=None
+        )
+
+        for manager in managers:
+            MessageRecipient.objects.create(
+                message=system_message,
+                user=manager,
+                is_read=False
+            )
+
+        return True
+
+    @classmethod
+    def check_all_instruments(cls, days_threshold=30):
+        """
+        Check all instruments for warranty expiration and upcoming maintenance
+        and send notifications for those meeting the threshold criteria
+
+        Args:
+            days_threshold: Number of days threshold for notifications
+
+        Returns:
+            tuple: (warranty_notification_count, maintenance_notification_count)
+        """
+        from django.utils import timezone
+        from datetime import timedelta
+
+        today = timezone.now().date()
+        threshold_date = today + timedelta(days=days_threshold)
+
+        warranty_count = 0
+        maintenance_count = 0
+
+        instruments = cls.objects.filter(enabled=True).prefetch_related('support_information')
+
+        for instrument in instruments:
+            if instrument.check_warranty_expiration(days_threshold):
+                warranty_count += 1
+
+            if instrument.check_upcoming_maintenance(days_threshold):
+                maintenance_count += 1
+
+        return warranty_count, maintenance_count
+
+    def check_warranty_expiration(self, days_threshold=30):
+        """
+        Check if instrument warranty is expiring soon and send notification
+
+        Args:
+            days_threshold: Days before expiration to trigger notification
+
+        Returns:
+            bool: True if notification was sent, False otherwise
+        """
+        from django.utils import timezone
+
+        today = timezone.now().date()
+
+        if self.last_warranty_notification_sent and timezone.now() - self.last_warranty_notification_sent < timedelta(
+                days=7):
+            return False
+
+        for support_info in self.support_information.all():
+            if not support_info.warranty_end_date:
+                continue
+
+            days_remaining = (support_info.warranty_end_date - today).days
+
+            if 0 < days_remaining <= days_threshold:
+                subject = f"Warranty Expiration Alert - {self.instrument_name}"
+                message = (
+                    f"⚠️ **Warranty Expiration Alert**\n\n"
+                    f"The warranty for {self.instrument_name} will expire in {days_remaining} "
+                    f"{'day' if days_remaining == 1 else 'days'} on {support_info.warranty_end_date.strftime('%Y-%m-%d')}.\n\n"
+                )
+
+                if support_info.vendor_name:
+                    message += f"**Vendor:** {support_info.vendor_name}\n"
+
+                    vendor_contacts = support_info.vendor_contacts.all()
+                    if vendor_contacts.exists():
+                        message += "\n**Vendor Contacts:**\n"
+                        for contact in vendor_contacts:
+                            message += f"- {contact.contact_name}\n"
+                            for detail in contact.contact_details.all():
+                                message += f"  {detail.contact_type}: {detail.contact_value}\n"
+
+                if self.notify_instrument_managers(message, subject):
+                    self.last_warranty_notification_sent = timezone.now()
+                    self.save(update_fields=['last_warranty_notification_sent'])
+                    return True
+
+        return False
+
+    def check_upcoming_maintenance(self, days_threshold=14):
+        """
+        Check if instrument is due for maintenance and send notification
+
+        Args:
+            days_threshold: Days before maintenance to trigger notification
+
+        Returns:
+            bool: True if notification was sent, False otherwise
+        """
+        from django.utils import timezone
+        from datetime import timedelta
+
+        today = timezone.now().date()
+
+        if self.last_maintenance_notification_sent and timezone.now() - self.last_maintenance_notification_sent < timedelta(
+                days=7):
+            return False
+
+        for support_info in self.support_information.all():
+            if not support_info.maintenance_frequency_days:
+                continue
+
+            last_maintenance = self.maintenance_logs.filter(
+                status='completed'
+            ).order_by('-maintenance_date').first()
+
+            if last_maintenance:
+                next_maintenance_date = (
+                        last_maintenance.maintenance_date.date() +
+                        timedelta(days=support_info.maintenance_frequency_days)
+                )
+
+                days_remaining = (next_maintenance_date - today).days
+
+                if 0 < days_remaining <= days_threshold:
+                    subject = f"Scheduled Maintenance Reminder - {self.instrument_name}"
+                    message = (
+                        f"🔧 **Scheduled Maintenance Reminder**\n\n"
+                        f"The {self.instrument_name} is due for maintenance in {days_remaining} "
+                        f"{'day' if days_remaining == 1 else 'days'} on {next_maintenance_date.strftime('%Y-%m-%d')}.\n\n"
+                        f"Last maintenance was performed on {last_maintenance.maintenance_date.strftime('%Y-%m-%d')}.\n"
+                    )
+
+                    message += f"\nMaintenance frequency: Every {support_info.maintenance_frequency_days} days\n"
+
+                    if self.notify_instrument_managers(message, subject):
+                        self.last_maintenance_notification_sent = timezone.now()
+                        self.save(update_fields=['last_maintenance_notification_sent'])
+                        return True
+
+        return False
+
 
 class InstrumentUsage(models.Model):
     instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name="instrument_usage")

@@ -1,1 +1,11 @@
+# Database and media backups weekly on Sunday at midnight
 0 0 * * 0 python /app/manage.py dbbackup && python /app/manage.py mediabackup
+
+# Check reagent stock levels daily at 8:00 AM
+0 8 * * * python /app/manage.py check_low_stock
+
+# Check reagent expiration dates daily at 8:30 AM
+30 8 * * * python /app/manage.py check_reagent_expirations
+
+# Check instrument warranty and maintenance weekly on Monday at 9:00 AM
+0 9 * * 1 python /app/manage.py check_instrument

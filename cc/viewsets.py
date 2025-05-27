@@ -2117,12 +2117,12 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
             return Instrument.objects.all()
         if user.is_authenticated:
             query_permission = Q(user=user)
-            query_permission = query_permission + Q(Q(can_book=True) | Q(can_view=True) | Q(can_manage=True))
+            query_permission = query_permission & Q(Q(can_book=True) | Q(can_view=True) | Q(can_manage=True))
             i_permission = InstrumentPermission.objects.filter(query_permission)
             if i_permission.exists():
                 instruments = []
                 for i in i_permission:
-                    instruments.append(i.instrument)
+                    instruments.append(i.instrument.id)
                 return Instrument.objects.filter(id__in=instruments)
 
         return Instrument.objects.filter(enabled=True)

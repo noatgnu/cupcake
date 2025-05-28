@@ -11,6 +11,7 @@ from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from cc.utils import default_columns
 
+
 # Create your models here.
 
 class Project(models.Model):
@@ -686,7 +687,7 @@ class Instrument(models.Model):
             return False
 
         thread = MessageThread.objects.create(
-            title=subject or f"Maintenance notification for {instrument.instrument_name}",
+            title=subject or f"Maintenance notification for {self.instrument_name}",
             is_system_thread=True
         )
 
@@ -751,7 +752,7 @@ class Instrument(models.Model):
         Returns:
             bool: True if notification was sent, False otherwise
         """
-        from django.utils import timezone
+
 
         today = timezone.now().date()
 

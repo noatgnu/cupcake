@@ -47,7 +47,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission, IsParticipantOrAdmin
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
-    import_sdrf_file, validate_sdrf_file, export_excel_template, export_instrument_usage, import_excel, sdrf_validate, export_reagent_actions, import_reagents_from_file
+    import_sdrf_file, validate_sdrf_file, export_excel_template, export_instrument_usage, import_excel, sdrf_validate, export_reagent_actions, import_reagents_from_file, check_instrument_warranty_maintenance
 from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, AnnotationSerializer, \
     SessionSerializer, StepVariationSerializer, TimeKeeperSerializer, ProtocolSectionSerializer, UserSerializer, \
     ProtocolRatingSerializer, ReagentSerializer, StepReagentSerializer, ProtocolReagentSerializer, \
@@ -2491,6 +2491,38 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
         else:
             return Response({"error": "Failed to send message to Slack"},
                             status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['post'])
+    def trigger_instrument_check(self, request):
+        """
+        Manually trigger instrument checks for specific or all instruments.
+        Only accessible by staff users.
+        """
+        if not request.user.is_staff:
+            return Response({"error": "You don't have permission to trigger instrument checks"},
+                            status=status.HTTP_403_FORBIDDEN)
+
+        instrument_id = request.data.get('instrument_id', None)
+        days_before_warranty_warning = request.data.get('days_before_warranty_warning', None)
+        days_before_maintenance_warning = request.data.get('days_before_maintenance_warning', None)
+        instance_id = request.data.get('instance_id', None)
+
+        if instrument_id:
+            try:
+                instrument = Instrument.objects.get(id=instrument_id)
+                job = check_instrument_warranty_maintenance.delay([instrument.id], days_before_warranty_warning, days_before_maintenance_warning, request.user.id, instance_id)
+                return Response({
+                    "message": f"Check triggered for instrument: {instrument.instrument_name}",
+                    "task_id": job.id
+                }, status=status.HTTP_200_OK)
+            except Instrument.DoesNotExist:
+                return Response({"error": "Instrument not found"}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            job = check_instrument_warranty_maintenance.delay([], days_before_warranty_warning, days_before_maintenance_warning, request.user.id, instance_id)
+            return Response({
+                "message": "Check triggered for all instruments",
+                "task_id": job.id
+            }, status=status.HTTP_200_OK)
 
 class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
     permission_classes = [InstrumentUsagePermission]

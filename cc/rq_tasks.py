@@ -37,7 +37,7 @@ from sdrf_pipelines.sdrf.sdrf import SdrfDataFrame
 from cc.models import Annotation, ProtocolModel, ProtocolStep, StepVariation, ProtocolSection, Session, \
     AnnotationFolder, Reagent, ProtocolReagent, StepReagent, ProtocolTag, StepTag, Tag, Project, MetadataColumn, \
     InstrumentJob, SubcellularLocation, Species, MSUniqueVocabularies, Unimod, FavouriteMetadataOption, InstrumentUsage, \
-    LabGroup, Tissue, StorageObject, ReagentAction, StoredReagent
+    LabGroup, Tissue, StorageObject, ReagentAction, StoredReagent, Instrument
 from django.conf import settings
 import numpy as np
 import subprocess
@@ -2867,4 +2867,40 @@ def import_reagents_from_file(file_path: str, storage_object_id: int, user_id: i
     )
 
 
+@job('maintenance', timeout='1h')
+def check_instrument_warranty_maintenance(instrument_ids: list[int], days_before_warranty_warning=30, days_before_maintenance_warning=15,
+                                          user_id: int = None, instance_id: str = None, send_email: bool = True):
+    if not instrument_ids:
+        instruments = Instrument.objects.all()
+    else:
+        instruments = Instrument.objects.filter(id__in=instrument_ids)
+    if not instruments.exists():
+        return {"status": "error", "message": "No instruments found for the provided IDs."}
+    channel_layer = get_channel_layer()
+    async_to_sync(channel_layer.group_send)(
+        f"user_{user_id}",
+        {
+            "type": "maintenance_check_message",
+            "message": {
+                "instance_id": instance_id,
+                "status": "started",
+                "message": "Checking instrument warranty and maintenance status"
+            },
+        }
+    )
 
+    for i in instruments:
+        i.check_upcoming_maintenance(days_before_maintenance_warning)
+        i.check_warranty_expiration(days_before_warranty_warning)
+
+    async_to_sync(channel_layer.group_send)(
+        f"user_{user_id}",
+        {
+            "type": "maintenance_check_message",
+            "message": {
+                "instance_id": instance_id,
+                "status": "completed",
+                "message": "Instrument warranty and maintenance check completed"
+            },
+        }
+    )

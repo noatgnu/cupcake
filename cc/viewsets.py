@@ -2194,6 +2194,10 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
             instance.max_days_within_usage_pre_approval = request.data['max_days_within_usage_pre_approval']
         if 'image' in request.data:
             instance.image = request.data['image']
+        if 'days_before_maintenance_notification' in request.data:
+            instance.days_before_maintenance_notification = request.data['days_before_maintenance_notification']
+        if 'days_before_warranty_notification' in request.data:
+            instance.days_before_warranty_notification = request.data['days_before_warranty_notification']
         instance.save()
         data = self.get_serializer(instance).data
         return Response(data, status=status.HTTP_200_OK)

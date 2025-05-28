@@ -513,6 +513,10 @@ class InstrumentSerializer(ModelSerializer):
             'annotation_folders',
             'image',
             'support_information',
+            'days_before_maintenance_notification',
+            'days_before_warranty_notification',
+            'last_maintenance_notification_sent',
+            'last_warranty_notification_sent'
         ]
 
 

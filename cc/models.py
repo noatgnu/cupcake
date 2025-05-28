@@ -647,6 +647,8 @@ class Instrument(models.Model):
     support_information = models.ManyToManyField("SupportInformation", blank=True)
     last_warranty_notification_sent = models.DateTimeField(blank=True, null=True)
     last_maintenance_notification_sent = models.DateTimeField(blank=True, null=True)
+    days_before_warranty_notification = models.IntegerField(blank=True, null=True, default=30)
+    days_before_maintenance_notification = models.IntegerField(blank=True, null=True, default=14)
 
     def __str__(self):
         return self.instrument_name
@@ -753,6 +755,9 @@ class Instrument(models.Model):
             bool: True if notification was sent, False otherwise
         """
 
+        if not days_threshold:
+            days_threshold = self.days_before_warranty_notification or 30
+
 
         today = timezone.now().date()
 
@@ -802,8 +807,8 @@ class Instrument(models.Model):
         Returns:
             bool: True if notification was sent, False otherwise
         """
-        from django.utils import timezone
-        from datetime import timedelta
+        if not days_threshold:
+            days_threshold = self.days_before_maintenance_notification or 14
 
         today = timezone.now().date()
 

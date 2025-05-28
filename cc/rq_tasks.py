@@ -2880,7 +2880,7 @@ def check_instrument_warranty_maintenance(instrument_ids: list[int], days_before
     async_to_sync(channel_layer.group_send)(
         f"user_{user_id}",
         {
-            "type": "maintenance_check_message",
+            "type": "maintenance_message",
             "message": {
                 "instance_id": instance_id,
                 "status": "started",
@@ -2889,18 +2889,25 @@ def check_instrument_warranty_maintenance(instrument_ids: list[int], days_before
         }
     )
 
+    task_ran_count ={
+        "warranty": 0,
+        "maintenance": 0
+    }
+
     for i in instruments:
-        i.check_upcoming_maintenance(days_before_maintenance_warning)
-        i.check_warranty_expiration(days_before_warranty_warning)
+        if i.check_upcoming_maintenance(days_before_maintenance_warning):
+            task_ran_count["warranty"] += 1
+        if i.check_warranty_expiration(days_before_warranty_warning):
+            task_ran_count["maintenance"] += 1
 
     async_to_sync(channel_layer.group_send)(
         f"user_{user_id}",
         {
-            "type": "maintenance_check_message",
+            "type": "maintenance_message",
             "message": {
                 "instance_id": instance_id,
                 "status": "completed",
-                "message": "Instrument warranty and maintenance check completed"
+                "message": f"Instrument warranty and maintenance check completed with {task_ran_count['warranty']} warranty warnings and {task_ran_count['maintenance']} maintenance warnings.",
             },
         }
     )

@@ -487,7 +487,7 @@ class InstrumentSerializer(ModelSerializer):
         return []
 
     def get_annotation_folders(self, obj):
-        folders = obj.annotation_folders.filter(folder_name__in=["Manuals", "Certificates"])
+        folders = obj.annotation_folders.filter(folder_name__in=["Manuals", "Certificates", "Maintenance")
         if folders.exists():
             return AnnotationFolderSerializer(folders, many=True).data
         return []

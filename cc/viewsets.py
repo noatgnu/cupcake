@@ -811,6 +811,23 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
         # Check if session is enabled, and if the user is the owner of the session
         queryset = self.queryset
         user = self.request.user
+
+        if not user.is_staff:
+
+            protected_annotations = Annotation.objects.filter(
+                Q(folder__name='Certificates') | Q(folder__name='Maintenance'),
+                folder__parent_folders__instrument__isnull=False
+            )
+            permissions = InstrumentPermission.objects.filter(can_manage=False, user=user)
+
+            if permissions.exists():
+                protected_annotations = protected_annotations.filter(
+                    folder__parent_folders__instrument__in=permissions.values_list('instrument', flat=True)
+                )
+
+            queryset = queryset.exclude(id__in=protected_annotations.values_list('id', flat=True))
+
+
         if self.request.method in ["GET", "OPTIONS"]:
             if user.is_authenticated:
                 return queryset.filter(Q(session__user=user)|Q(session__enabled=True)|Q(session__viewers=user)|Q(session__editors=user)|Q(user=user))
@@ -825,6 +842,21 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
     @action(detail=True, methods=['get'])
     def download_file(self, request, pk=None):
         annotation = self.get_object()
+        if not user.is_staff:
+            protected_annotations = Annotation.objects.filter(
+                Q(folder__name='Certificates') | Q(folder__name='Maintenance'),
+                folder__parent_folders__instrument__isnull=False
+            )
+            permissions = InstrumentPermission.objects.filter(can_manage=False, user=user)
+
+            if permissions.exists():
+                protected_annotations = protected_annotations.filter(
+                    folder__parent_folders__instrument__in=permissions.values_list('instrument', flat=True)
+                )
+
+            if annotation in protected_annotations:
+                return Response(status=status.HTTP_403_FORBIDDEN)
+
         file_name = annotation.file.name
         response = HttpResponse(status=200)
         response["Content-Disposition"] = f'attachment; filename="{file_name.split("/")[-1]}"'

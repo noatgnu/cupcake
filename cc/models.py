@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import requests
 from bs4 import BeautifulSoup
@@ -713,7 +713,7 @@ class Instrument(models.Model):
         return True
 
     @classmethod
-    def check_all_instruments(cls, days_threshold=30):
+    def check_all_instruments(self, days_threshold=30):
         """
         Check all instruments for warranty expiration and upcoming maintenance
         and send notifications for those meeting the threshold criteria
@@ -724,16 +724,13 @@ class Instrument(models.Model):
         Returns:
             tuple: (warranty_notification_count, maintenance_notification_count)
         """
-        from django.utils import timezone
-        from datetime import timedelta
-
+        print(days_threshold)
         today = timezone.now().date()
-        threshold_date = today + timedelta(days=days_threshold)
 
         warranty_count = 0
         maintenance_count = 0
 
-        instruments = cls.objects.filter(enabled=True).prefetch_related('support_information')
+        instruments = self.objects.filter(enabled=True).prefetch_related('support_information')
 
         for instrument in instruments:
             if instrument.check_warranty_expiration(days_threshold):
@@ -774,21 +771,21 @@ class Instrument(models.Model):
             if 0 < days_remaining <= days_threshold:
                 subject = f"Warranty Expiration Alert - {self.instrument_name}"
                 message = (
-                    f"⚠️ **Warranty Expiration Alert**\n\n"
+                    f"⚠️ **Warranty Expiration Alert**<br>"
                     f"The warranty for {self.instrument_name} will expire in {days_remaining} "
-                    f"{'day' if days_remaining == 1 else 'days'} on {support_info.warranty_end_date.strftime('%Y-%m-%d')}.\n\n"
+                    f"{'day' if days_remaining == 1 else 'days'} on {support_info.warranty_end_date.strftime('%Y-%m-%d')}.<br>"
                 )
 
                 if support_info.vendor_name:
-                    message += f"**Vendor:** {support_info.vendor_name}\n"
+                    message += f"**Vendor:** {support_info.vendor_name}<br>"
 
                     vendor_contacts = support_info.vendor_contacts.all()
                     if vendor_contacts.exists():
-                        message += "\n**Vendor Contacts:**\n"
+                        message += "**Vendor Contacts:**<br>"
                         for contact in vendor_contacts:
-                            message += f"- {contact.contact_name}\n"
+                            message += f"- {contact.contact_name}<br>"
                             for detail in contact.contact_details.all():
-                                message += f"  {detail.contact_type}: {detail.contact_value}\n"
+                                message += f"  {detail.contact_type}: {detail.contact_value}<br>"
 
                 if self.notify_instrument_managers(message, subject):
                     self.last_warranty_notification_sent = timezone.now()
@@ -809,7 +806,7 @@ class Instrument(models.Model):
         """
         if not days_threshold:
             days_threshold = self.days_before_maintenance_notification or 14
-
+        print(days_threshold)
         today = timezone.now().date()
 
         if self.last_maintenance_notification_sent and timezone.now() - self.last_maintenance_notification_sent < timedelta(
@@ -835,13 +832,26 @@ class Instrument(models.Model):
                 if 0 < days_remaining <= days_threshold:
                     subject = f"Scheduled Maintenance Reminder - {self.instrument_name}"
                     message = (
-                        f"🔧 **Scheduled Maintenance Reminder**\n\n"
-                        f"The {self.instrument_name} is due for maintenance in {days_remaining} "
-                        f"{'day' if days_remaining == 1 else 'days'} on {next_maintenance_date.strftime('%Y-%m-%d')}.\n\n"
-                        f"Last maintenance was performed on {last_maintenance.maintenance_date.strftime('%Y-%m-%d')}.\n"
+                        f"🔧 **Scheduled Maintenance Reminder**<br>"
+                        f"The {self.instrument_name} is due for maintenance in {days_remaining} <br>"
+                        f"{'day' if days_remaining == 1 else 'days'} on {next_maintenance_date.strftime('%Y-%m-%d')}.<br>"
+                        f"Last maintenance was performed on {last_maintenance.maintenance_date.strftime('%Y-%m-%d')}.<br>"
                     )
 
-                    message += f"\nMaintenance frequency: Every {support_info.maintenance_frequency_days} days\n"
+                    message += f"\nMaintenance frequency: Every {support_info.maintenance_frequency_days} days<br>"
+
+                    if self.notify_instrument_managers(message, subject):
+                        self.last_maintenance_notification_sent = timezone.now()
+                        self.save(update_fields=['last_maintenance_notification_sent'])
+                        return True
+            else:
+                if support_info.maintenance_frequency_days <= days_threshold:
+                    subject = f"Initial Maintenance Required - {self.instrument_name}"
+                    message = (
+                        f"🔧 **Initial Maintenance Required**<br>"
+                        f"The {self.instrument_name} requires initial maintenance as no previous logs exist.<br>"
+                        f"Please schedule maintenance as soon as possible.<br>"
+                    )
 
                     if self.notify_instrument_managers(message, subject):
                         self.last_maintenance_notification_sent = timezone.now()

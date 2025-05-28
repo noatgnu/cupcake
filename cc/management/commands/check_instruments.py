@@ -9,13 +9,13 @@ class Command(BaseCommand):
         parser.add_argument(
             '--days',
             type=int,
-            default=30,
+            default=0,
             help='Days threshold for warranty notifications (default: 30)'
         )
         parser.add_argument(
             '--maintenance-days',
             type=int,
-            default=14,
+            default=0,
             help='Days threshold for maintenance notifications (default: 14)'
         )
         parser.add_argument(

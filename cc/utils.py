@@ -225,12 +225,10 @@ def identify_barcode_format(barcode):
     if not barcode or not isinstance(barcode, str):
         return "Invalid"
 
-    # Remove any whitespace
     barcode = barcode.strip()
     length = len(barcode)
     is_numeric = barcode.isdigit()
 
-    # Check common barcode formats
     if is_numeric:
         if length == 8:
             if barcode[0] == '0':
@@ -245,24 +243,27 @@ def identify_barcode_format(barcode):
         elif length == 14:
             return "GTIN-14"
 
-    # Code 39: uppercase letters, digits, and specific special chars
     if re.match(r'^[A-Z0-9\-\.\/\+\%\$\s]+$', barcode):
         return "Code 39"
 
-    # Code 128: Can encode all ASCII characters
     if any(c.isalpha() for c in barcode) and any(c.isdigit() for c in barcode):
         return "Code 128"
 
-    # GS1 DataBar/GS1-128: Often contains Application Identifiers in parentheses
     if re.search(r'\(\d{2,4}\)', barcode):
         return "GS1-128"
 
-    # QR or Data Matrix: Often contain URLs or longer data
     if re.match(r'^https?://', barcode) or length > 30:
         return "2D Barcode (QR/DataMatrix)"
 
-    # Check for lab-specific formats
     if re.match(r'^[A-Z]{2,3}-\d+$', barcode):
         return "Lab Format"
 
     return "Unknown"
+
+def get_all_template():
+    try:
+        from sdrf_pipelines.sdrf.sdrf_schema import ALL_TEMPLATES
+        return ALL_TEMPLATES
+    except ImportError:
+        pass
+

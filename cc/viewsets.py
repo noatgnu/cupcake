@@ -842,6 +842,7 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
     @action(detail=True, methods=['get'])
     def download_file(self, request, pk=None):
         annotation = self.get_object()
+        user = self.request.user
         if not user.is_staff:
             protected_annotations = Annotation.objects.filter(
                 Q(folder__name='Certificates') | Q(folder__name='Maintenance'),

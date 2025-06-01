@@ -1365,61 +1365,60 @@ class TimeKeeperViewSet(ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         user = request.user
-        # check if timekeeper already exists
-        timekeeper = TimeKeeper.objects.filter(user=user, session__unique_id=request.data['session'], step=request.data['step'])
-        if timekeeper.exists():
-            return Response({"error": "TimeKeeper already exists"}, status=status.HTTP_400_BAD_REQUEST)
-        session = Session.objects.get(unique_id=request.data['session'])
-        step = ProtocolStep.objects.get(id=request.data['step'])
-        started = False
-        if "started" in request.data:
-            started = request.data['started']
-        start_time = None
-        if "start_time" in request.data:
-            start_time = request.data['start_time']
-        current_duration = 0
-        if "current_duration" in request.data:
-            current_duration = request.data['current_duration']
-        time_keeper = TimeKeeper()
-        time_keeper.session = session
-        time_keeper.step = step
-        time_keeper.user = user
-        if start_time:
-            time_keeper.start_time = start_time
-        time_keeper.started = started
-        time_keeper.current_duration = current_duration
-        time_keeper.save()
-        data = self.get_serializer(time_keeper).data
-        channel_layer = get_channel_layer()
-        async_to_sync(channel_layer.group_send)(
-            f"timer_{session.unique_id}",
-            {
-                "type": "timer_message",
-                "message": data
-            }
-        )
-        return Response(data, status=status.HTTP_201_CREATED)
+        data = {}
+
+        if 'session' in request.data and request.data['session']:
+            try:
+                session = Session.objects.get(unique_id=request.data['session'])
+                data['session'] = session
+            except Session.DoesNotExist:
+                return Response(
+                    {"error": "Session not found"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+        if 'step' in request.data and request.data['step']:
+            try:
+                step = ProtocolStep.objects.get(id=request.data['step'])
+                data['step'] = step
+            except ProtocolStep.DoesNotExist:
+                return Response(
+                    {"error": "Step not found"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+
+        data['user'] = user
+
+        if 'started' in request.data:
+            data['started'] = request.data['started']
+
+        if 'start_time' in request.data:
+            data['start_time'] = request.data['start_time']
+
+        if 'current_duration' in request.data:
+            data['current_duration'] = request.data['current_duration']
+
+        timekeeper = TimeKeeper.objects.create(**data)
+
+        serializer = self.get_serializer(timekeeper)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
-        if "start_time" in request.data:
-            instance.start_time = request.data['start_time']
-        if "started" in request.data:
+
+        if 'started' in request.data:
             instance.started = request.data['started']
-        if "current_duration" in request.data:
+
+        if 'start_time' in request.data:
+            instance.start_time = request.data['start_time']
+
+        if 'current_duration' in request.data:
             instance.current_duration = request.data['current_duration']
+
         instance.save()
-        data = self.get_serializer(instance).data
-        channel_layer = get_channel_layer()
-        session = instance.session
-        async_to_sync(channel_layer.group_send)(
-            f"timer_{session.unique_id}",
-            {
-                "type": "timer_message",
-                "message": data
-            }
-        )
-        return Response(data, status=status.HTTP_200_OK)
+
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()

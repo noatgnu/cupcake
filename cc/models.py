@@ -1048,13 +1048,14 @@ class StepVariation(models.Model):
 
 class TimeKeeper(models.Model):
     start_time = models.DateTimeField(auto_now=True)
-    session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="time_keeper")
+    session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="time_keeper", blank=True, null=True)
     step = models.ForeignKey(ProtocolStep, on_delete=models.CASCADE, related_name="time_keeper", blank=True, null=True)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="time_keeper")
     started = models.BooleanField(default=False)
     current_duration = models.IntegerField(blank=True, null=True)
     remote_id = models.BigIntegerField(blank=True, null=True)
     remote_host = models.ForeignKey("RemoteHost", on_delete=models.CASCADE, related_name="time_keeper", blank=True, null=True)
+    
 
     class Meta:
         app_label = "cc"

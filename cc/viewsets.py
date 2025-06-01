@@ -1354,8 +1354,10 @@ class TimeKeeperViewSet(ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         query = Q(user=user)
-        started = self.request.query_params.get('started', 'false').lower() == 'true'
-        if started:
+        started = self.request.query_params.get('started', None)
+        print(started)
+        if started is not None:
+            started = started.lower() == 'true'
             query &= Q(started=started)
         return TimeKeeper.objects.filter(user=user)
 

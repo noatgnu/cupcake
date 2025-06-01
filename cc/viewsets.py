@@ -1359,7 +1359,7 @@ class TimeKeeperViewSet(ModelViewSet):
         if started is not None:
             started = started.lower() == 'true'
             query &= Q(started=started)
-        return TimeKeeper.objects.filter(user=user)
+        return self.queryset.filter(query)
 
     def get_object(self):
         obj = super().get_object()

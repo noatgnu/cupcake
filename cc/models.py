@@ -10,6 +10,8 @@ from django.dispatch import receiver
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from cc.utils import default_columns
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
 
 
 # Create your models here.
@@ -2023,4 +2025,60 @@ def create_owner_subscription(sender, instance=None, created=False, **kwargs):
             user=instance.user,
             notify_low_stock=instance.notify_on_low_stock,
             notify_expiry=instance.notify_on_expiry
+        )
+
+
+@receiver(post_save, sender=TimeKeeper)
+def notify_timekeeper_changes(sender, instance=None, created=False, **kwargs):
+    """Send notifications when a TimeKeeper is created or updated"""
+
+    if not instance:
+        return
+
+    if created:
+        action = "started"
+        title = f"Timer Started: {instance.step.step_description if instance.step else 'Session Timer'}"
+    else:
+        action = "updated"
+        title = f"Timer Updated: {instance.step.step_description if instance.step else 'Session Timer'}"
+
+    notification_data = {
+        "type": "timer_notification",
+        "action": action,
+        "title": title,
+        "timer_id": instance.id,
+        "started": instance.started,
+        "current_duration": instance.current_duration or 0,
+        "timestamp": timezone.now().isoformat()
+    }
+
+    if instance.session:
+        notification_data["session_id"] = str(instance.session.unique_id)
+        notification_data["session_name"] = instance.session.name or f"Session {instance.session.id}"
+
+    if instance.step:
+        notification_data["step_id"] = instance.step.id
+        notification_data["step_description"] = instance.step.step_description
+
+    channel_layer = get_channel_layer()
+
+    users_to_notify = set()
+
+    users_to_notify.add(instance.user.id)
+
+    if instance.session:
+        users_to_notify.add(instance.session.user.id)
+
+        for editor in instance.session.editors.all():
+            users_to_notify.add(editor.id)
+        for viewer in instance.session.viewers.all():
+            users_to_notify.add(viewer.id)
+
+    for user_id in users_to_notify:
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}_notifications",
+            {
+                "type": "notification_message",
+                "message": notification_data
+            }
         )

@@ -445,3 +445,58 @@ class InstrumentJobConsumer(AsyncJsonWebsocketConsumer):
     async def download_message(self, event):
         content = event["message"]
         await self.send_json(content)
+
+
+class NotificationConsumer(AsyncJsonWebsocketConsumer):
+    async def connect(self):
+        self.user_id = str(self.scope["user"].id)
+
+        await self.channel_layer.group_add(
+            f"user_{self.user_id}_notifications",
+            self.channel_name
+        )
+
+        await self.accept()
+        await self.send_json({"message": "Connected to notification channel"})
+
+    async def disconnect(self, close_code):
+        await self.channel_layer.group_discard(
+            f"user_{self.user_id}_notifications",
+            self.channel_name
+        )
+
+    async def receive_json(self, content):
+        await self.channel_layer.group_send(
+            f"user_{self.user_id}_notifications",
+            {
+                "type": "notification_message",
+                "message": content,
+            }
+        )
+
+    # Handler for general notifications
+    async def notification_message(self, event):
+        content = event["message"]
+        await self.send_json(content)
+
+    # Handlers for specific notification types
+    async def alert_message(self, event):
+        content = event["message"]
+        await self.send_json({
+            "type": "alert",
+            "data": content
+        })
+
+    async def info_message(self, event):
+        content = event["message"]
+        await self.send_json({
+            "type": "info",
+            "data": content
+        })
+
+    async def error_message(self, event):
+        content = event["message"]
+        await self.send_json({
+            "type": "error",
+            "data": content
+        })

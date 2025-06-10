@@ -279,7 +279,22 @@ class ProtocolStepSerializer(ModelSerializer):
 
     class Meta:
         model = ProtocolStep
-        fields = ['id', 'protocol', 'step_id', 'step_description', 'step_section', 'step_duration', 'next_step', 'annotations', 'variations', 'previous_step', 'reagents', 'tags', 'created_at', 'updated_at']
+        fields = [
+            'id',
+            'protocol',
+            'step_id',
+            'step_description',
+            'step_section',
+            'step_duration',
+            'next_step',
+            'annotations',
+            'variations',
+            'previous_step',
+            'reagents',
+            'tags',
+            'created_at',
+            'updated_at'
+        ]
 
 
 class AnnotationSerializer(ModelSerializer):
@@ -312,13 +327,38 @@ class AnnotationSerializer(ModelSerializer):
 
     class Meta:
         model = Annotation
-        fields = ['id', 'step', 'session', 'annotation', 'file', 'created_at', 'updated_at', 'annotation_type', 'transcribed', 'transcription', 'language', 'translation', 'scratched', 'annotation_name', 'folder', 'summary', 'instrument_usage', 'metadata_columns', 'fixed', 'user', 'stored_reagent']
+        fields = [
+            'id',
+            'step',
+            'session',
+            'annotation',
+            'file',
+            'created_at',
+            'updated_at',
+            'annotation_type',
+            'transcribed',
+            'transcription',
+            'language',
+            'translation',
+            'scratched',
+            'annotation_name',
+            'folder',
+            'summary',
+            'instrument_usage',
+            'metadata_columns',
+            'fixed',
+            'user',
+            'stored_reagent']
 
 
 class StepVariationSerializer(ModelSerializer):
     class Meta:
         model = StepVariation
-        fields = ['id', 'step', 'variation_description', 'variation_duration']
+        fields = [
+            'id',
+            'step',
+            'variation_description',
+            'variation_duration']
 
 
 class SessionSerializer(ModelSerializer):

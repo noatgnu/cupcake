@@ -630,6 +630,7 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
     ordering_fields = ['created_at']
     serializer_class = AnnotationSerializer
     filterset_fields = ['step', 'session__unique_id']
+    pagination_class = LimitOffsetPagination
 
     def create(self, request, *args, **kwargs):
         step = None

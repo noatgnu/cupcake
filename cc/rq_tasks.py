@@ -66,9 +66,12 @@ def transcribe_audio(audio_path: str, model_path: str, step_annotation_id: int, 
     :param step_annotation_id:
     :return:
     """
-
-    # Convert audio from webm to wav using ffmpeg
-    wav_path = audio_path.replace(".webm", ".wav")
+    if audio_path.endswith(".webm"):
+        wav_path = audio_path.replace(".webm", ".wav")
+    elif audio_path.endswith(".m4a"):
+        wav_path = audio_path.replace(".m4a", ".wav")
+    else:
+        wav_path = audio_path + ".wav"
     #ffmpeg.input(audio_path).output(wav_path, format="s16le", acodec="pcm_s16le", ac=1, ar=44100).run(cmd=['ffmpeg', '-nostdin'], capture_stdout=True, capture_stderr=True)
     subprocess.run(["ffmpeg", "-y", "-i", audio_path, "-vn", "-ar", "16000", wav_path])
     # Transcribe audio using whisper model
@@ -147,7 +150,12 @@ def transcribe_audio_from_video(video_path: str, model_path: str, step_annotatio
     """
 
     # Convert audio from webm video to wav using ffmpeg specify the kHz to 16 kHz
-    wav_path = video_path.replace(".webm", ".wav")
+    if video_path.endswith(".webm"):
+        wav_path = video_path.replace(".webm", ".wav")
+    elif video_path.endswith(".mp4"):
+        wav_path = video_path.replace(".mp4", ".wav")
+    else:
+        wav_path = video_path + ".wav"
     #ffmpeg.input(video_path).output(wav_path, format="s16le", acodec="pcm_s16le", ac=1, ar=44100).run(cmd=['ffmpeg', '-nostdin'], capture_stdout=True, capture_stderr=True)
     #subprocess.run(["ffmpeg", "-i", video_path, "-vn", "-ar", "44100", wav_path])
     subprocess.run(["ffmpeg", "-y", "-i", video_path, "-vn", "-ar", "16000", wav_path])

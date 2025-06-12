@@ -949,6 +949,14 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
             annotation = Annotation.objects.get(id=data['id'])
             if annotation.file:
                 response = HttpResponse(status=200)
+                content_type = "application/octet-stream"
+                if annotation.file.name.endswith(".m4a"):
+                    content_type = "audio/mp4"
+                elif annotation.file.name.endswith(".mp3"):
+                    content_type = "audio/mpeg"
+                elif annotation.file.name.endswith(".mp4"):
+                    content_type = "video/mp4"
+                response["Content-Type"] = content_type
                 response["Content-Disposition"] = f'attachment; filename="{annotation.file.name.split("/")[-1]}"'
                 response["X-Accel-Redirect"] = f"/media/{data['file']}"
                 return response

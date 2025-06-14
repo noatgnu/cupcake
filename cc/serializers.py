@@ -371,14 +371,35 @@ class SessionSerializer(ModelSerializer):
 
     class Meta:
         model = Session
-        fields = ['id', 'user', 'unique_id', 'enabled', 'created_at', 'updated_at', 'protocols', 'name', 'time_keeper', 'enabled', 'started_at', 'ended_at', 'projects']
+        fields = [
+            'id',
+                  'user',
+            'unique_id',
+            'enabled',
+            'created_at',
+            'updated_at',
+            'protocols',
+            'name',
+            'time_keeper',
+            'enabled',
+            'started_at',
+            'ended_at',
+            'projects'
+        ]
         lookup_field = 'unique_id'
 
 
 class TimeKeeperSerializer(ModelSerializer):
     class Meta:
         model = TimeKeeper
-        fields = ['id', 'start_time', 'session', 'step', 'started', 'current_duration']
+        fields = [
+            'id',
+            'start_time',
+            'session',
+            'step',
+            'started',
+            'current_duration'
+        ]
 
 
 class ProtocolSectionSerializer(ModelSerializer):

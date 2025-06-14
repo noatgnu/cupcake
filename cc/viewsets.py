@@ -2163,10 +2163,14 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
 
     def get_queryset(self):
         user = self.request.user
+        serial_number = self.request.query_params.get('serial_number', None)
+        query = Q()
+        if serial_number:
+            query = query & Q(support_information__serial_number=serial_number)
         if user.is_staff:
-            return Instrument.objects.all()
+            return self.queryset.filter(query)
         if user.is_authenticated:
-            query_permission = Q(user=user)
+            query_permission = query & Q(user=user)
             query_permission = query_permission & Q(Q(can_book=True) | Q(can_view=True) | Q(can_manage=True))
             i_permission = InstrumentPermission.objects.filter(query_permission)
             if i_permission.exists():

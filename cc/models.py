@@ -12,11 +12,13 @@ from rest_framework.authtoken.models import Token
 from cc.utils import default_columns
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
+from simple_history.models import HistoricalRecords
 
 
 # Create your models here.
 
 class Project(models.Model):
+    history = HistoricalRecords()
     project_name = models.CharField(max_length=255)
     project_description = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -41,6 +43,7 @@ class Project(models.Model):
         super(Project, self).delete(using=using, keep_parents=keep_parents)
 
 class ProtocolRating(models.Model):
+    history = HistoricalRecords()
     protocol = models.ForeignKey("ProtocolModel", on_delete=models.CASCADE, related_name="ratings")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="ratings")
     complexity_rating = models.IntegerField(blank=False, null=False, default=0)
@@ -69,6 +72,7 @@ class ProtocolRating(models.Model):
 
 
 class ProtocolModel(models.Model):
+    history = HistoricalRecords()
     protocol_id = models.BigIntegerField(blank=True, null=True)
     protocol_created_on = models.DateTimeField(blank=False, null=False, auto_now=True)
     protocol_doi = models.TextField(blank=True, null=True)
@@ -244,6 +248,7 @@ class ProtocolModel(models.Model):
 
 
 class ProtocolStep(models.Model):
+    history = HistoricalRecords()
     protocol = models.ForeignKey(ProtocolModel, on_delete=models.CASCADE, related_name="steps", blank=False, null=False)
     step_id = models.BigIntegerField(blank=True, null=True)
     step_description = models.TextField(blank=False, null=False)
@@ -482,6 +487,7 @@ class ProtocolStep(models.Model):
 
 
 class ProtocolSection(models.Model):
+    history = HistoricalRecords()
     protocol = models.ForeignKey(ProtocolModel, on_delete=models.CASCADE, related_name="sections")
     section_description = models.TextField(blank=True, null=True)
     section_duration = models.IntegerField(blank=True, null=True)
@@ -607,6 +613,7 @@ class ProtocolSection(models.Model):
 
 
 class Session(models.Model):
+    history = HistoricalRecords()
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="sessions")
     unique_id = models.UUIDField(blank=False, null=False, unique=True, db_index=True)
     enabled = models.BooleanField(default=False)
@@ -636,6 +643,7 @@ class Session(models.Model):
 
 
 class Instrument(models.Model):
+    history = HistoricalRecords()
     instrument_name = models.TextField(blank=False, null=False)
     instrument_description = models.TextField(blank=True, null=True)
     image = models.TextField(blank=True, null=True)
@@ -864,6 +872,7 @@ class Instrument(models.Model):
 
 
 class InstrumentUsage(models.Model):
+    history = HistoricalRecords()
     instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name="instrument_usage")
     annotation = models.ForeignKey("Annotation", on_delete=models.CASCADE, related_name="instrument_usage", blank=True, null=True)
     time_started = models.DateTimeField(blank=True, null=True)
@@ -885,6 +894,7 @@ class InstrumentUsage(models.Model):
 
 
 class InstrumentPermission(models.Model):
+    history = HistoricalRecords()
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="instrument_permissions")
     instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name="instrument_permissions")
     can_view = models.BooleanField(default=False)
@@ -893,6 +903,7 @@ class InstrumentPermission(models.Model):
 
 
 class Annotation(models.Model):
+    history = HistoricalRecords()
     session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="annotations", blank=True, null=True)
     step = models.ForeignKey(ProtocolStep, on_delete=models.CASCADE, related_name="annotations", blank=True, null=True)
     stored_reagent = models.ForeignKey("StoredReagent", on_delete=models.CASCADE, related_name="annotations", blank=True, null=True)
@@ -1006,6 +1017,7 @@ class Annotation(models.Model):
         return False
 
 class AnnotationFolder(models.Model):
+    history = HistoricalRecords()
     session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="annotation_folders", blank=True, null=True)
     instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name="annotation_folders", blank=True, null=True)
     stored_reagent = models.ForeignKey("StoredReagent", on_delete=models.CASCADE, related_name="annotation_folders", blank=True, null=True)
@@ -1030,6 +1042,7 @@ class AnnotationFolder(models.Model):
         super(AnnotationFolder, self).delete(using=using, keep_parents=keep_parents)
 
 class StepVariation(models.Model):
+    history = HistoricalRecords()
     step = models.ForeignKey(ProtocolStep, on_delete=models.CASCADE, related_name="variations")
     variation_description = models.TextField(blank=False, null=False)
     variation_duration = models.IntegerField(blank=False, null=False)
@@ -1049,6 +1062,7 @@ class StepVariation(models.Model):
         return self.variation_description
 
 class TimeKeeper(models.Model):
+    history = HistoricalRecords()
     start_time = models.DateTimeField(auto_now=True)
     session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="time_keeper", blank=True, null=True)
     step = models.ForeignKey(ProtocolStep, on_delete=models.CASCADE, related_name="time_keeper", blank=True, null=True)
@@ -1125,6 +1139,7 @@ class WebRTCUserOffer(models.Model):
 
 
 class Reagent(models.Model):
+    history = HistoricalRecords()
     name = models.CharField(max_length=255)
     unit = models.CharField(max_length=255)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1132,6 +1147,7 @@ class Reagent(models.Model):
 
 
 class ProtocolReagent(models.Model):
+    history = HistoricalRecords()
     protocol = models.ForeignKey(ProtocolModel, on_delete=models.CASCADE, related_name="reagents")
     reagent = models.ForeignKey(Reagent, on_delete=models.CASCADE)
     quantity = models.FloatField()
@@ -1141,6 +1157,7 @@ class ProtocolReagent(models.Model):
 
 
 class StepReagent(models.Model):
+    history = HistoricalRecords()
     step = models.ForeignKey(ProtocolStep, on_delete=models.CASCADE, related_name="reagents")
     reagent = models.ForeignKey(Reagent, on_delete=models.CASCADE)
     quantity = models.FloatField()
@@ -1151,6 +1168,7 @@ class StepReagent(models.Model):
     remote_id = models.BigIntegerField(blank=True, null=True)
 
 class Tag(models.Model):
+    history = HistoricalRecords()
     tag = models.CharField(max_length=255)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1170,6 +1188,7 @@ class Tag(models.Model):
         super(Tag, self).delete(using=using, keep_parents=keep_parents)
 
 class ProtocolTag(models.Model):
+    history = HistoricalRecords()
     protocol = models.ForeignKey(ProtocolModel, on_delete=models.CASCADE, related_name="tags")
     tag = models.ForeignKey(Tag, on_delete=models.CASCADE)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1191,6 +1210,7 @@ class ProtocolTag(models.Model):
 
 
 class StepTag(models.Model):
+    history = HistoricalRecords()
     step = models.ForeignKey(ProtocolStep, on_delete=models.CASCADE, related_name="tags")
     tag = models.ForeignKey(Tag, on_delete=models.CASCADE)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1212,6 +1232,7 @@ class StepTag(models.Model):
 
 
 class RemoteHost(models.Model):
+    history = HistoricalRecords()
     host_name = models.CharField(max_length=255)
     host_port = models.IntegerField()
     host_protocol = models.CharField(max_length=255)
@@ -1239,6 +1260,7 @@ class RemoteHost(models.Model):
 
 
 class StorageObject(models.Model):
+    history = HistoricalRecords()
     object_type_choices = [
         ("shelf", "Shelf"),
         ("box", "Box"),
@@ -1287,6 +1309,7 @@ class StorageObject(models.Model):
 
 
 class StoredReagent(models.Model):
+    history = HistoricalRecords()
     reagent = models.ForeignKey(Reagent, on_delete=models.CASCADE, related_name="stored_reagents")
     storage_object = models.ForeignKey(StorageObject, on_delete=models.CASCADE, related_name="stored_reagents")
     quantity = models.FloatField()
@@ -1522,6 +1545,7 @@ class ReagentSubscription(models.Model):
         return f"{self.user.username} - {self.stored_reagent.reagent.name}"
 
 class ReagentAction(models.Model):
+    history = HistoricalRecords()
     action_type_choices = [
         ("add", "Add"),
         ("reserve", "Reserve"),
@@ -1541,6 +1565,7 @@ class ReagentAction(models.Model):
         ordering = ["id"]
 
 class LabGroup(models.Model):
+    history = HistoricalRecords()
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1687,6 +1712,7 @@ class Unimod(models.Model):
         return self.accession
 
 class InstrumentJob(models.Model):
+    history = HistoricalRecords()
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name='instrument_jobs', blank=True, null=True)
     project = models.ForeignKey(Project, on_delete=models.SET_NULL, related_name='instrument_jobs', blank=True, null=True)
     instrument = models.ForeignKey(Instrument, on_delete=models.SET_NULL, related_name='instrument_jobs', blank=True, null=True)
@@ -1755,6 +1781,7 @@ class Preset(models.Model):
         ordering = ['id']
 
 class FavouriteMetadataOption(models.Model):
+    history = HistoricalRecords()
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name='favourite_metadata_options', blank=True, null=True)
     name = models.CharField(max_length=255)
     type = models.CharField(max_length=255)
@@ -1772,6 +1799,7 @@ class FavouriteMetadataOption(models.Model):
         ordering = ['id']
 
 class MetadataTableTemplate(models.Model):
+    history = HistoricalRecords()
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, related_name='metadata_table_templates', blank=True, null=True)
     name = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1788,6 +1816,7 @@ class MetadataTableTemplate(models.Model):
         ordering = ['id']
 
 class ExternalContactDetails(models.Model):
+    history = HistoricalRecords()
     contact_method_alt_name = models.CharField(max_length=255, blank=False, null=False)
     contact_type_choices = [
         ("email", "Email"),
@@ -1805,6 +1834,7 @@ class ExternalContactDetails(models.Model):
         ordering = ["id"]
 
 class ExternalContact(models.Model):
+    history = HistoricalRecords()
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
                              related_name="external_contact_details", blank=True, null=True)
     contact_name = models.CharField(max_length=255, blank=False, null=False)
@@ -1816,6 +1846,7 @@ class ExternalContact(models.Model):
 
 
 class SupportInformation(models.Model):
+    history = HistoricalRecords()
     vendor_name = models.CharField(max_length=255, blank=True, null=True)
     vendor_contacts = models.ManyToManyField("ExternalContact", blank=True, related_name="vendor_contact")
     manufacturer_name = models.CharField(max_length=255, blank=True, null=True)
@@ -1833,6 +1864,7 @@ class SupportInformation(models.Model):
         ordering = ["id"]
 
 class MaintenanceLog(models.Model):
+    history = HistoricalRecords()
     instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name="maintenance_logs")
     maintenance_date = models.DateTimeField(auto_now_add=True)
     maintenance_type_choices = [

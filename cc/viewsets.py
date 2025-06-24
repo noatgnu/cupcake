@@ -844,6 +844,7 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
     def download_file(self, request, pk=None):
         annotation = self.get_object()
         user = self.request.user
+        view = request.query_params.get('view', None)
         if not user.is_staff:
             protected_annotations = Annotation.objects.filter(
                 Q(folder__name='Certificates') | Q(folder__name='Maintenance'),
@@ -861,7 +862,12 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
 
         file_name = annotation.file.name
         response = HttpResponse(status=200)
-        response["Content-Disposition"] = f'attachment; filename="{file_name.split("/")[-1]}"'
+        if view:
+            if file_name.endswith(".pdf"):
+                content_type = "application/pdf"
+                response["Content-Disposition"] = f'inline; filename="{file_name.split("/")[-1]}"'
+        else:
+            response["Content-Disposition"] = f'attachment; filename="{file_name.split("/")[-1]}"'
         response["X-Accel-Redirect"] = f"/media/{file_name}"
         return response
 
@@ -944,6 +950,7 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
         if not token:
             return Response(status=status.HTTP_400_BAD_REQUEST)
         signer = TimestampSigner()
+        view = request.query_params.get('view', None)
         try:
             data = signer.unsign_object(token, max_age=60*30)
             annotation = Annotation.objects.get(id=data['id'])
@@ -951,7 +958,10 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
                 response = HttpResponse(status=200)
                 response["Content-Disposition"] = f'attachment; filename="{annotation.file.name.split("/")[-1]}"'
                 content_type = "application/octet-stream"
-                if annotation.file.name.endswith(".m4a"):
+                if annotation.file.name.endswith(".pdf"):
+                    content_type = "application/pdf"
+                    response["Content-Disposition"] = f'inline; filename="{annotation.file.name.split("/")[-1]}"'
+                elif annotation.file.name.endswith(".m4a"):
                     content_type = "audio/mp4"
                     response["Content-Disposition"] = f'inline; filename="{annotation.file.name.split("/")[-1]}"'
                 elif annotation.file.name.endswith(".mp3"):

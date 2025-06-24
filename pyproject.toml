@@ -36,6 +36,10 @@ django-ses = "^4.4.0"
 sdrf-pipelines = "^0.0.32"
 openpyxl = "^3.1.5"
 slack-sdk = "^3.35.0"
+django-simple-history = "^3.8.0"
+
+[tool.poetry.group.dev.dependencies]
+testcontainers = "^4.10.0"
 
 [build-system]
 requires = ["poetry-core"]

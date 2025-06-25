@@ -7,7 +7,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, StepVariation, Se
     Instrument, InstrumentUsage, StorageObject, StoredReagent, ReagentAction, LabGroup, MSUniqueVocabularies, \
     HumanDisease, Tissue, SubcellularLocation, MetadataColumn, Species, Unimod, InstrumentJob, FavouriteMetadataOption, \
     Preset, MetadataTableTemplate, ExternalContactDetails, SupportInformation, ExternalContact, MaintenanceLog, \
-    MessageRecipient, MessageThread, Message, MessageAttachment, ReagentSubscription
+    MessageRecipient, MessageThread, Message, MessageAttachment, ReagentSubscription, SiteSettings
 
 
 class UserBasicSerializer(ModelSerializer):
@@ -1187,3 +1187,32 @@ class MessageThreadDetailSerializer(MessageThreadSerializer):
     def get_messages(self, obj):
         messages = obj.messages.order_by('created_at')
         return ThreadMessageSerializer(messages, many=True, context=self.context).data
+
+
+class SiteSettingsSerializer(ModelSerializer):
+    """Serializer for site settings management"""
+    updated_by = UserBasicSerializer(read_only=True)
+    
+    class Meta:
+        model = SiteSettings
+        fields = [
+            'id', 'is_active', 'site_name', 'site_tagline', 'logo', 'favicon',
+            'banner_enabled', 'banner_text', 'banner_color', 'banner_text_color', 
+            'banner_dismissible', 'primary_color', 'secondary_color', 'footer_text',
+            'created_at', 'updated_at', 'updated_by'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'updated_by']
+        
+    def create(self, validated_data):
+        # Set updated_by from request user
+        request = self.context.get('request')
+        if request and hasattr(request, 'user'):
+            validated_data['updated_by'] = request.user
+        return super().create(validated_data)
+    
+    def update(self, instance, validated_data):
+        # Set updated_by from request user
+        request = self.context.get('request')
+        if request and hasattr(request, 'user'):
+            validated_data['updated_by'] = request.user
+        return super().update(instance, validated_data)

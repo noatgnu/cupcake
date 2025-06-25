@@ -1866,7 +1866,7 @@ class SupportInformation(models.Model):
 class MaintenanceLog(models.Model):
     history = HistoricalRecords()
     instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE, related_name="maintenance_logs")
-    maintenance_date = models.DateTimeField(auto_now_add=True)
+    maintenance_date = models.DateTimeField(blank=False, null=False)
     maintenance_type_choices = [
         ("routine", "Routine"),
         ("emergency", "Emergency"),
@@ -2017,6 +2017,70 @@ class MessageAttachment(models.Model):
 
     def __str__(self):
         return self.file_name
+
+
+class SiteSettings(models.Model):
+    """Site-wide configuration settings"""
+    history = HistoricalRecords()
+    
+    # Singleton pattern - only one instance should exist
+    is_active = models.BooleanField(default=True)
+    
+    # Branding settings
+    site_name = models.CharField(max_length=255, default="CUPCAKE", help_text="Name displayed in the application")
+    site_tagline = models.CharField(max_length=500, blank=True, null=True, help_text="Tagline or description")
+    
+    # Visual branding
+    logo = models.ImageField(upload_to="site_settings/logos/", blank=True, null=True, help_text="Site logo")
+    favicon = models.ImageField(upload_to="site_settings/favicons/", blank=True, null=True, help_text="Site favicon")
+    
+    # Banner settings
+    banner_enabled = models.BooleanField(default=False, help_text="Enable site-wide banner")
+    banner_text = models.TextField(blank=True, null=True, help_text="Banner message text")
+    banner_color = models.CharField(max_length=7, default="#0066cc", help_text="Banner background color (hex)")
+    banner_text_color = models.CharField(max_length=7, default="#ffffff", help_text="Banner text color (hex)")
+    banner_dismissible = models.BooleanField(default=True, help_text="Allow users to dismiss banner")
+    
+    # Theme settings
+    primary_color = models.CharField(max_length=7, default="#0066cc", help_text="Primary theme color (hex)")
+    secondary_color = models.CharField(max_length=7, default="#6c757d", help_text="Secondary theme color (hex)")
+    
+    # Footer settings
+    footer_text = models.TextField(blank=True, null=True, help_text="Custom footer text")
+    
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="site_settings_updates")
+    
+    class Meta:
+        app_label = "cc"
+        verbose_name = "Site Settings"
+        verbose_name_plural = "Site Settings"
+        ordering = ["-updated_at"]
+    
+    def __str__(self):
+        return f"Site Settings - {self.site_name}"
+    
+    def save(self, *args, **kwargs):
+        # Singleton pattern - ensure only one active instance
+        if self.is_active:
+            SiteSettings.objects.filter(is_active=True).exclude(pk=self.pk).update(is_active=False)
+        super().save(*args, **kwargs)
+    
+    @classmethod
+    def get_current(cls):
+        """Get the current active site settings"""
+        return cls.objects.filter(is_active=True).first()
+    
+    @classmethod
+    def get_or_create_default(cls):
+        """Get current settings or create default if none exist"""
+        settings_obj = cls.get_current()
+        if not settings_obj:
+            settings_obj = cls.objects.create(is_active=True)
+        return settings_obj
+
 
 @receiver(post_save, sender=settings.AUTH_USER_MODEL)
 def create_auth_token(sender, instance=None, created=False, **kwargs):

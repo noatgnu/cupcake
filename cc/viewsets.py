@@ -43,7 +43,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
     SubcellularLocation, HumanDisease, Tissue, MetadataColumn, MSUniqueVocabularies, Unimod, InstrumentJob, \
     FavouriteMetadataOption, Preset, MetadataTableTemplate, MaintenanceLog, SupportInformation, ExternalContact, \
     ExternalContactDetails, Message, MessageRecipient, MessageAttachment, MessageRecipient, MessageThread, \
-    ReagentSubscription
+    ReagentSubscription, SiteSettings
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission, IsParticipantOrAdmin
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
@@ -58,7 +58,8 @@ from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, Anno
     UnimodSerializer, InstrumentJobSerializer, FavouriteMetadataOptionSerializer, PresetSerializer, \
     MetadataTableTemplateSerializer, MaintenanceLogSerializer, SupportInformationSerializer, ExternalContactSerializer, \
     ExternalContactDetailsSerializer, MessageSerializer, MessageRecipientSerializer, MessageAttachmentSerializer, \
-    MessageRecipientSerializer, MessageThreadSerializer, MessageThreadDetailSerializer, ReagentSubscriptionSerializer
+    MessageRecipientSerializer, MessageThreadSerializer, MessageThreadDetailSerializer, ReagentSubscriptionSerializer, \
+    SiteSettingsSerializer
 from cc.utils import user_metadata, staff_metadata, send_slack_notification
 
 class ProtocolViewSet(ModelViewSet, FilterMixin):
@@ -5089,13 +5090,13 @@ class MaintenanceLogViewSet(ModelViewSet, FilterMixin):
             maintenance_log.refresh_from_db()
 
         annotation_data = request.data.copy()
-        annotation_data['folder'] = maintenance_log.annotation_folder.id
-
-        serializer = AnnotationSerializer(data=annotation_data, context={'request': request})
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        if "annotation" not in annotation_data:
+            annotation_data['annotation'] = f'annotation file from maintenance log {maintenance_log.id}'
+        a = Annotation(**annotation_data)
+        a.folder = maintenance_log.annotation_folder
+        a.save()
+        serialized = AnnotationSerializer(a, many=False)
+        return Response(serialized.data, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'])
     def notify_slack(self, request, pk=None):
@@ -5840,6 +5841,171 @@ class ReagentDocumentViewSet(ModelViewSet):
 
             response["Content-Disposition"] = f'attachment; filename="{filename}"'
             response["X-Accel-Redirect"] = f"/media/annotations/{filename}"
+            return response
+        except (BadSignature, SignatureExpired) as e:
+            return Response({"error": "Invalid or expired token"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class SiteSettingsViewSet(ModelViewSet):
+    """ViewSet for managing site settings"""
+    queryset = SiteSettings.objects.all()
+    serializer_class = SiteSettingsSerializer
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        """Return only active site settings"""
+        return SiteSettings.objects.filter(is_active=True)
+    
+    def list(self, request, *args, **kwargs):
+        """Get current site settings (singleton pattern)"""
+        current_settings = SiteSettings.get_or_create_default()
+        serializer = self.get_serializer(current_settings)
+        return Response(serializer.data)
+    
+    def create(self, request, *args, **kwargs):
+        """Create new site settings (replaces existing)"""
+        # Only staff/superusers can modify site settings
+        if not request.user.is_staff:
+            raise PermissionDenied("Only staff members can modify site settings")
+        
+        # Deactivate existing settings
+        SiteSettings.objects.filter(is_active=True).update(is_active=False)
+        
+        return super().create(request, *args, **kwargs)
+    
+    def update(self, request, *args, **kwargs):
+        """Update existing site settings"""
+        # Only staff/superusers can modify site settings
+        if not request.user.is_staff:
+            raise PermissionDenied("Only staff members can modify site settings")
+
+        return super().update(request, *args, **kwargs)
+    
+    def partial_update(self, request, *args, **kwargs):
+        """Partially update site settings"""
+        # Only staff/superusers can modify site settings
+        if not request.user.is_staff:
+            raise PermissionDenied("Only staff members can modify site settings")
+        
+        return super().partial_update(request, *args, **kwargs)
+    
+    def destroy(self, request, *args, **kwargs):
+        """Prevent deletion of site settings"""
+        return Response(
+            {"error": "Site settings cannot be deleted"}, 
+            status=status.HTTP_405_METHOD_NOT_ALLOWED
+        )
+    
+    @action(detail=False, methods=['get'], permission_classes=[AllowAny])
+    def public(self, request):
+        """Get public site settings (no authentication required)"""
+        current_settings = SiteSettings.get_or_create_default()
+        # Return only public fields
+        public_data = {
+            'site_name': current_settings.site_name,
+            'site_tagline': current_settings.site_tagline,
+            'logo': current_settings.logo.url if current_settings.logo else None,
+            'favicon': current_settings.favicon.url if current_settings.favicon else None,
+            'banner_enabled': current_settings.banner_enabled,
+            'banner_text': current_settings.banner_text,
+            'banner_color': current_settings.banner_color,
+            'banner_text_color': current_settings.banner_text_color,
+            'banner_dismissible': current_settings.banner_dismissible,
+            'primary_color': current_settings.primary_color,
+            'secondary_color': current_settings.secondary_color,
+            'footer_text': current_settings.footer_text,
+        }
+        return Response(public_data)
+    
+    @action(detail=False, methods=['get'], permission_classes=[AllowAny])
+    def download_logo(self, request):
+        """Download site logo using X-Accel-Redirect"""
+        current_settings = SiteSettings.get_or_create_default()
+        if not current_settings.logo:
+            return Response({"error": "No logo file available"}, status=status.HTTP_404_NOT_FOUND)
+        
+        response = HttpResponse(status=200)
+        filename = current_settings.logo.name.split('/')[-1]
+        response["Content-Disposition"] = f'inline; filename="{filename}"'
+        response["X-Accel-Redirect"] = f"/media/{current_settings.logo.name}"
+        return response
+    
+    @action(detail=False, methods=['get'], permission_classes=[AllowAny])
+    def download_favicon(self, request):
+        """Download site favicon using X-Accel-Redirect"""
+        current_settings = SiteSettings.get_or_create_default()
+        if not current_settings.favicon:
+            return Response({"error": "No favicon file available"}, status=status.HTTP_404_NOT_FOUND)
+        
+        response = HttpResponse(status=200)
+        filename = current_settings.favicon.name.split('/')[-1]
+        response["Content-Disposition"] = f'inline; filename="{filename}"'
+        response["X-Accel-Redirect"] = f"/media/{current_settings.favicon.name}"
+        return response
+    
+    @action(detail=False, methods=['post'])
+    def get_logo_signed_url(self, request):
+        """Get signed URL for logo download"""
+        current_settings = SiteSettings.get_or_create_default()
+        if not current_settings.logo:
+            return Response({"error": "No logo file available"}, status=status.HTTP_404_NOT_FOUND)
+        
+        signer = TimestampSigner()
+        filename = current_settings.logo.name.split('/')[-1]
+        token = signer.sign(filename)
+        return Response({"token": token, "filename": filename})
+    
+    @action(detail=False, methods=['post'])
+    def get_favicon_signed_url(self, request):
+        """Get signed URL for favicon download"""
+        current_settings = SiteSettings.get_or_create_default()
+        if not current_settings.favicon:
+            return Response({"error": "No favicon file available"}, status=status.HTTP_404_NOT_FOUND)
+        
+        signer = TimestampSigner()
+        filename = current_settings.favicon.name.split('/')[-1]
+        token = signer.sign(filename)
+        return Response({"token": token, "filename": filename})
+    
+    @action(detail=False, methods=['get'])
+    def download_logo_signed(self, request):
+        """Download logo using a signed token"""
+        token = request.query_params.get('token', None)
+        if not token:
+            return Response({"error": "No token provided"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        signer = TimestampSigner()
+        try:
+            filename = signer.unsign(token, max_age=60 * 30)  # 30 minute expiration
+            current_settings = SiteSettings.get_or_create_default()
+            if not current_settings.logo:
+                return Response({"error": "No logo file available"}, status=status.HTTP_404_NOT_FOUND)
+            
+            response = HttpResponse(status=200)
+            response["Content-Disposition"] = f'inline; filename="{filename}"'
+            response["X-Accel-Redirect"] = f"/media/{current_settings.logo.name}"
+            return response
+        except (BadSignature, SignatureExpired) as e:
+            return Response({"error": "Invalid or expired token"}, status=status.HTTP_400_BAD_REQUEST)
+    
+    @action(detail=False, methods=['get'])
+    def download_favicon_signed(self, request):
+        """Download favicon using a signed token"""
+        token = request.query_params.get('token', None)
+        if not token:
+            return Response({"error": "No token provided"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        signer = TimestampSigner()
+        try:
+            filename = signer.unsign(token, max_age=60 * 30)  # 30 minute expiration
+            current_settings = SiteSettings.get_or_create_default()
+            if not current_settings.favicon:
+                return Response({"error": "No favicon file available"}, status=status.HTTP_404_NOT_FOUND)
+            
+            response = HttpResponse(status=200)
+            response["Content-Disposition"] = f'inline; filename="{filename}"'
+            response["X-Accel-Redirect"] = f"/media/{current_settings.favicon.name}"
             return response
         except (BadSignature, SignatureExpired) as e:
             return Response({"error": "Invalid or expired token"}, status=status.HTTP_400_BAD_REQUEST)

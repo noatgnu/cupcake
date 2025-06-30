@@ -960,6 +960,17 @@ class Annotation(models.Model):
         super(Annotation, self).delete(using=using, keep_parents=keep_parents)
 
     def check_for_right(self, user, right: str) -> bool:
+        # Check shared document permissions first
+        if self.folder and self.folder.is_shared_document_folder:
+            permission_map = {
+                'view': 'can_view',
+                'edit': 'can_edit', 
+                'delete': 'can_delete'
+            }
+            required_permission = permission_map.get(right)
+            if required_permission:
+                return DocumentPermission.user_can_access_annotation_with_folder_inheritance(user, self, required_permission)
+        
         if self.session:
             if self.session.enabled:
                 if not self.scratched:
@@ -2097,31 +2108,25 @@ class DocumentPermission(models.Model):
         ('share', 'Share'),
         ('delete', 'Delete'),
     ]
-    
-    # The document being shared (must be annotation with file)
+
     annotation = models.ForeignKey('Annotation', on_delete=models.CASCADE, related_name='document_permissions', null=True, blank=True)
-    
-    # The folder being shared (for folder-level permissions)
+
     folder = models.ForeignKey('AnnotationFolder', on_delete=models.CASCADE, related_name='folder_permissions', null=True, blank=True)
-    
-    # Who has access
+
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True)
     lab_group = models.ForeignKey('LabGroup', on_delete=models.CASCADE, null=True, blank=True)
-    
-    # Permissions
+
     can_view = models.BooleanField(default=True)
     can_download = models.BooleanField(default=True)
     can_comment = models.BooleanField(default=False)
     can_edit = models.BooleanField(default=False)
     can_share = models.BooleanField(default=False)
     can_delete = models.BooleanField(default=False)
-    
-    # Sharing metadata
+
     shared_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='shared_documents')
     shared_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField(null=True, blank=True, help_text="Optional expiration date for access")
-    
-    # Access tracking
+
     last_accessed = models.DateTimeField(null=True, blank=True)
     access_count = models.PositiveIntegerField(default=0)
     

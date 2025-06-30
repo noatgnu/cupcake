@@ -851,6 +851,11 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
         annotation = self.get_object()
         user = self.request.user
         view = request.query_params.get('view', None)
+
+        if annotation.folder and annotation.folder.is_shared_document_folder:
+            if not DocumentPermission.user_can_access_annotation_with_folder_inheritance(user, annotation, 'can_download'):
+                return Response(status=status.HTTP_403_FORBIDDEN)
+        
         if not user.is_staff:
             protected_annotations = Annotation.objects.filter(
                 Q(folder__name='Certificates') | Q(folder__name='Maintenance'),
@@ -880,6 +885,13 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
     def get_object(self):
         obj: Annotation = super().get_object()
         user = self.request.user
+        
+        # Check if this is a shared document and validate permissions
+        if obj.folder and obj.folder.is_shared_document_folder:
+            if DocumentPermission.user_can_access_annotation_with_folder_inheritance(user, obj, 'can_view'):
+                return obj
+            raise PermissionDenied
+        
         if obj.user == user:
             return obj
         if obj.session:
@@ -908,6 +920,13 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
         signer = TimestampSigner()
         annotation = Annotation.objects.get(id=pk)
         user = self.request.user
+        
+        # Check if this is a shared document and validate permissions
+        if annotation.folder and annotation.folder.is_shared_document_folder:
+            from .models import DocumentPermission
+            if not DocumentPermission.user_can_access_annotation_with_folder_inheritance(user, annotation, 'can_view'):
+                return Response(status=status.HTTP_401_UNAUTHORIZED)
+        
         file = {'file': annotation.file.name, 'id': annotation.id}
         signed_token = signer.sign_object(file)
         if annotation.check_for_right(user, "view"):

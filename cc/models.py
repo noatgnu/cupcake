@@ -659,6 +659,7 @@ class Instrument(models.Model):
     last_maintenance_notification_sent = models.DateTimeField(blank=True, null=True)
     days_before_warranty_notification = models.IntegerField(blank=True, null=True, default=30)
     days_before_maintenance_notification = models.IntegerField(blank=True, null=True, default=14)
+    accepts_bookings = models.BooleanField(default=True)
 
     def __str__(self):
         return self.instrument_name
@@ -1025,6 +1026,8 @@ class AnnotationFolder(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     parent_folder = models.ForeignKey("self", on_delete=models.CASCADE, related_name="child_folders", blank=True, null=True)
+    is_shared_document_folder = models.BooleanField(default=False, help_text="Indicates if this folder is specifically for shared documents (file annotations)")
+    owner = models.ForeignKey("auth.User", on_delete=models.CASCADE, related_name="owned_annotation_folders", blank=True, null=True, help_text="User who owns this folder")
     remote_id = models.BigIntegerField(blank=True, null=True)
     remote_host = models.ForeignKey("RemoteHost", on_delete=models.CASCADE, related_name="annotation_folders", blank=True, null=True)
 
@@ -2080,6 +2083,287 @@ class SiteSettings(models.Model):
         if not settings_obj:
             settings_obj = cls.objects.create(is_active=True)
         return settings_obj
+
+
+class DocumentPermission(models.Model):
+    """Granular permissions for shared documents (annotations with file type) and folders"""
+    history = HistoricalRecords()
+    
+    PERMISSION_CHOICES = [
+        ('view', 'View'),
+        ('download', 'Download'),
+        ('comment', 'Comment'),
+        ('edit', 'Edit'),
+        ('share', 'Share'),
+        ('delete', 'Delete'),
+    ]
+    
+    # The document being shared (must be annotation with file)
+    annotation = models.ForeignKey('Annotation', on_delete=models.CASCADE, related_name='document_permissions', null=True, blank=True)
+    
+    # The folder being shared (for folder-level permissions)
+    folder = models.ForeignKey('AnnotationFolder', on_delete=models.CASCADE, related_name='folder_permissions', null=True, blank=True)
+    
+    # Who has access
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, null=True, blank=True)
+    lab_group = models.ForeignKey('LabGroup', on_delete=models.CASCADE, null=True, blank=True)
+    
+    # Permissions
+    can_view = models.BooleanField(default=True)
+    can_download = models.BooleanField(default=True)
+    can_comment = models.BooleanField(default=False)
+    can_edit = models.BooleanField(default=False)
+    can_share = models.BooleanField(default=False)
+    can_delete = models.BooleanField(default=False)
+    
+    # Sharing metadata
+    shared_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='shared_documents')
+    shared_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(null=True, blank=True, help_text="Optional expiration date for access")
+    
+    # Access tracking
+    last_accessed = models.DateTimeField(null=True, blank=True)
+    access_count = models.PositiveIntegerField(default=0)
+    
+    class Meta:
+        app_label = "cc"
+        unique_together = [
+            ('annotation', 'user'),
+            ('annotation', 'lab_group'),
+            ('folder', 'user'),
+            ('folder', 'lab_group'),
+        ]
+        indexes = [
+            models.Index(fields=['annotation', 'user']),
+            models.Index(fields=['annotation', 'lab_group']),
+            models.Index(fields=['folder', 'user']),
+            models.Index(fields=['folder', 'lab_group']),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(annotation__isnull=False, folder__isnull=True) |
+                    models.Q(annotation__isnull=True, folder__isnull=False)
+                ),
+                name='document_permission_either_annotation_or_folder'
+            ),
+            models.CheckConstraint(
+                check=(
+                    models.Q(user__isnull=False, lab_group__isnull=True) |
+                    models.Q(user__isnull=True, lab_group__isnull=False)
+                ),
+                name='document_permission_either_user_or_lab_group'
+            )
+        ]
+    
+    def __str__(self):
+        target = self.user.username if self.user else f"Lab Group: {self.lab_group.name}"
+        if self.annotation:
+            return f"Document Permission: {self.annotation.annotation_name or 'Unnamed'} -> {target}"
+        elif self.folder:
+            return f"Folder Permission: {self.folder.folder_name} -> {target}"
+        else:
+            return f"Permission: Unknown target -> {target}"
+    
+    def is_expired(self):
+        """Check if the permission has expired"""
+        if self.expires_at:
+            from django.utils import timezone
+            return timezone.now() > self.expires_at
+        return False
+    
+    def record_access(self):
+        """Record an access to this document"""
+        from django.utils import timezone
+        self.last_accessed = timezone.now()
+        self.access_count += 1
+        self.save(update_fields=['last_accessed', 'access_count'])
+    
+    @classmethod
+    def user_can_access(cls, annotation, user, permission_type='view'):
+        """Check if user can access annotation with specific permission"""
+        if not annotation.file:
+            return False  # Not a document
+            
+        # Owner always has full access
+        if annotation.user == user:
+            return True
+            
+        # Check direct user permissions
+        user_perm = cls.objects.filter(annotation=annotation, user=user).first()
+        if user_perm and not user_perm.is_expired():
+            return getattr(user_perm, f'can_{permission_type}', False)
+        
+        # Check lab group permissions
+        user_groups = user.lab_groups.all()
+        for group in user_groups:
+            group_perm = cls.objects.filter(annotation=annotation, lab_group=group).first()
+            if group_perm and not group_perm.is_expired():
+                return getattr(group_perm, f'can_{permission_type}', False)
+        
+        return False
+    
+    @classmethod
+    def user_can_access_folder(cls, folder, user, permission_type='view'):
+        """Check if user can access folder with specific permission"""
+        # Owner always has full access
+        if folder.owner == user:
+            return True
+            
+        # Check direct folder permissions
+        user_perm = cls.objects.filter(folder=folder, user=user).first()
+        if user_perm and not user_perm.is_expired():
+            return getattr(user_perm, f'can_{permission_type}', False)
+        
+        # Check lab group permissions
+        user_groups = user.lab_groups.all()
+        for group in user_groups:
+            group_perm = cls.objects.filter(folder=folder, lab_group=group).first()
+            if group_perm and not group_perm.is_expired():
+                return getattr(group_perm, f'can_{permission_type}', False)
+        
+        # Check parent folder permissions (inheritance)
+        if folder.parent_folder:
+            return cls.user_can_access_folder(folder.parent_folder, user, permission_type)
+        
+        return False
+    
+    @classmethod
+    def user_can_access_annotation_with_folder_inheritance(cls, annotation, user, permission_type='view'):
+        """Check if user can access annotation with specific permission, including folder inheritance"""
+        if not annotation.file:
+            return False  # Not a document
+            
+        # Owner always has full access
+        if annotation.user == user:
+            return True
+            
+        # Check direct annotation permissions first
+        user_perm = cls.objects.filter(annotation=annotation, user=user).first()
+        if user_perm and not user_perm.is_expired():
+            return getattr(user_perm, f'can_{permission_type}', False)
+        
+        # Check lab group permissions for annotation
+        user_groups = user.lab_groups.all()
+        for group in user_groups:
+            group_perm = cls.objects.filter(annotation=annotation, lab_group=group).first()
+            if group_perm and not group_perm.is_expired():
+                return getattr(group_perm, f'can_{permission_type}', False)
+        
+        # Check folder permissions (inheritance from folder hierarchy)
+        if annotation.folder:
+            return cls.user_can_access_folder(annotation.folder, user, permission_type)
+        
+        return False
+    
+    def clean(self):
+        """Validate that either annotation or folder is set, but not both"""
+        from django.core.exceptions import ValidationError
+        
+        if not self.annotation and not self.folder:
+            raise ValidationError("Either annotation or folder must be specified")
+        
+        if self.annotation and self.folder:
+            raise ValidationError("Cannot specify both annotation and folder")
+            
+        if not self.user and not self.lab_group:
+            raise ValidationError("Either user or lab_group must be specified")
+            
+        if self.user and self.lab_group:
+            raise ValidationError("Cannot specify both user and lab_group")
+            
+        # Validate annotation has file if specified
+        if self.annotation and not self.annotation.file:
+            raise ValidationError("Can only set permissions on annotations with files")
+            
+        # Validate folder is shared document folder if specified
+        if self.folder and not self.folder.is_shared_document_folder:
+            raise ValidationError("Can only set permissions on shared document folders")
+    
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)
+
+
+class BackupLog(models.Model):
+    """Track backup operations for monitoring and logging"""
+    history = HistoricalRecords()
+    
+    BACKUP_TYPE_CHOICES = [
+        ('database', 'Database Backup'),
+        ('media', 'Media Backup'),
+        ('full', 'Full Backup'),
+    ]
+    
+    STATUS_CHOICES = [
+        ('running', 'Running'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+        ('cancelled', 'Cancelled'),
+    ]
+    
+    backup_type = models.CharField(max_length=20, choices=BACKUP_TYPE_CHOICES)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='running')
+    started_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    duration_seconds = models.PositiveIntegerField(null=True, blank=True, help_text="Backup duration in seconds")
+    
+    # File information
+    backup_file_path = models.TextField(null=True, blank=True, help_text="Path to backup file")
+    file_size_bytes = models.BigIntegerField(null=True, blank=True, help_text="Backup file size in bytes")
+    
+    # Status information
+    error_message = models.TextField(null=True, blank=True, help_text="Error details if backup failed")
+    success_message = models.TextField(null=True, blank=True, help_text="Success details")
+    
+    # Metadata
+    triggered_by = models.CharField(max_length=100, default='cron', help_text="What triggered the backup (cron, manual, etc.)")
+    container_id = models.CharField(max_length=64, null=True, blank=True, help_text="Docker container ID that ran the backup")
+    
+    class Meta:
+        app_label = "cc"
+        ordering = ['-started_at']
+        indexes = [
+            models.Index(fields=['backup_type', 'status']),
+            models.Index(fields=['started_at']),
+        ]
+    
+    def __str__(self):
+        return f"{self.get_backup_type_display()} - {self.get_status_display()} at {self.started_at}"
+    
+    @property
+    def file_size_mb(self):
+        """Return file size in MB"""
+        if self.file_size_bytes:
+            return round(self.file_size_bytes / (1024 * 1024), 2)
+        return None
+    
+    def mark_completed(self, file_path=None, file_size=None, success_message=None):
+        """Mark backup as completed"""
+        from django.utils import timezone
+        self.status = 'completed'
+        self.completed_at = timezone.now()
+        if self.started_at:
+            duration = self.completed_at - self.started_at
+            self.duration_seconds = int(duration.total_seconds())
+        if file_path:
+            self.backup_file_path = file_path
+        if file_size:
+            self.file_size_bytes = file_size
+        if success_message:
+            self.success_message = success_message
+        self.save()
+    
+    def mark_failed(self, error_message):
+        """Mark backup as failed"""
+        from django.utils import timezone
+        self.status = 'failed'
+        self.completed_at = timezone.now()
+        if self.started_at:
+            duration = self.completed_at - self.started_at
+            self.duration_seconds = int(duration.total_seconds())
+        self.error_message = error_message
+        self.save()
 
 
 @receiver(post_save, sender=settings.AUTH_USER_MODEL)

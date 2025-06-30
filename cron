@@ -1,5 +1,5 @@
-# Database and media backups weekly on Sunday at midnight
-0 0 * * 0 python /app/manage.py dbbackup && python /app/manage.py mediabackup
+# Database and media backups weekly on Sunday at midnight with logging
+0 0 * * 0 python /app/manage.py tracked_backup --triggered-by=cron
 
 # Check reagent stock levels daily at 8:00 AM
 0 8 * * * python /app/manage.py check_low_stock

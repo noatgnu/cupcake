@@ -1,5 +1,7 @@
 from django.contrib.auth.models import User
-from rest_framework.fields import ReadOnlyField
+from rest_framework.exceptions import ValidationError
+from rest_framework.fields import ReadOnlyField, CharField, IntegerField
+from rest_framework.relations import StringRelatedField
 from rest_framework.serializers import ModelSerializer, SerializerMethodField, PrimaryKeyRelatedField
 import json
 from cc.models import ProtocolModel, ProtocolStep, Annotation, StepVariation, Session, TimeKeeper, ProtocolSection, \
@@ -7,7 +9,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, StepVariation, Se
     Instrument, InstrumentUsage, StorageObject, StoredReagent, ReagentAction, LabGroup, MSUniqueVocabularies, \
     HumanDisease, Tissue, SubcellularLocation, MetadataColumn, Species, Unimod, InstrumentJob, FavouriteMetadataOption, \
     Preset, MetadataTableTemplate, ExternalContactDetails, SupportInformation, ExternalContact, MaintenanceLog, \
-    MessageRecipient, MessageThread, Message, MessageAttachment, ReagentSubscription, SiteSettings
+    MessageRecipient, MessageThread, Message, MessageAttachment, ReagentSubscription, SiteSettings, BackupLog, DocumentPermission
 
 
 class UserBasicSerializer(ModelSerializer):
@@ -474,9 +476,11 @@ class TagSerializer(ModelSerializer):
         fields = ['id', 'tag', 'created_at', 'updated_at']
 
 class AnnotationFolderSerializer(ModelSerializer):
+    owner = UserBasicSerializer(read_only=True)
+    
     class Meta:
         model = AnnotationFolder
-        fields = ['id', 'folder_name', 'created_at', 'updated_at', 'parent_folder', 'session', 'instrument', 'stored_reagent']
+        fields = ['id', 'folder_name', 'created_at', 'updated_at', 'parent_folder', 'session', 'instrument', 'stored_reagent', 'is_shared_document_folder', 'owner']
 
 class ProjectSerializer(ModelSerializer):
     sessions = SerializerMethodField()
@@ -577,7 +581,8 @@ class InstrumentSerializer(ModelSerializer):
             'days_before_maintenance_notification',
             'days_before_warranty_notification',
             'last_maintenance_notification_sent',
-            'last_warranty_notification_sent'
+            'last_warranty_notification_sent',
+            'accepts_bookings'
         ]
 
 
@@ -1216,3 +1221,173 @@ class SiteSettingsSerializer(ModelSerializer):
         if request and hasattr(request, 'user'):
             validated_data['updated_by'] = request.user
         return super().update(instance, validated_data)
+
+
+class BackupLogSerializer(ModelSerializer):
+    """Serializer for backup log entries"""
+    file_size_mb = ReadOnlyField()
+    backup_type_display = CharField(source='get_backup_type_display', read_only=True)
+    status_display = CharField(source='get_status_display', read_only=True)
+    
+    class Meta:
+        model = BackupLog
+        fields = [
+            'id', 'backup_type', 'backup_type_display', 'status', 'status_display',
+            'started_at', 'completed_at', 'duration_seconds', 'backup_file_path',
+            'file_size_bytes', 'file_size_mb', 'error_message', 'success_message',
+            'triggered_by', 'container_id'
+        ]
+        read_only_fields = ['id', 'started_at']
+
+
+class DocumentPermissionSerializer(ModelSerializer):
+    """Serializer for document permissions and folder permissions"""
+    user = UserBasicSerializer(read_only=True)
+    lab_group = StringRelatedField(read_only=True)
+    shared_by = UserBasicSerializer(read_only=True)
+    is_expired = ReadOnlyField()
+    
+    # Input fields for creating permissions
+    user_id = IntegerField(write_only=True, required=False)
+    lab_group_id = IntegerField(write_only=True, required=False)
+    
+    class Meta:
+        model = DocumentPermission
+        fields = [
+            'id', 'annotation', 'folder', 'user', 'lab_group', 'user_id', 'lab_group_id',
+            'can_view', 'can_download', 'can_comment', 'can_edit', 'can_share', 'can_delete',
+            'shared_by', 'shared_at', 'expires_at', 'last_accessed', 'access_count', 'is_expired'
+        ]
+        read_only_fields = ['id', 'shared_by', 'shared_at', 'last_accessed', 'access_count']
+    
+    def validate(self, data):
+        """Validate permission creation constraints"""
+        user_id = data.get('user_id')
+        lab_group_id = data.get('lab_group_id')
+        annotation = data.get('annotation')
+        folder = data.get('folder')
+        
+        # Ensure either user_id or lab_group_id is provided, but not both
+        if not user_id and not lab_group_id:
+            raise ValidationError("Either user_id or lab_group_id must be provided")
+        
+        if user_id and lab_group_id:
+            raise ValidationError("Cannot specify both user_id and lab_group_id")
+        
+        # Ensure either annotation or folder is provided, but not both
+        if not annotation and not folder:
+            raise ValidationError("Either annotation or folder must be provided")
+        
+        if annotation and folder:
+            raise ValidationError("Cannot specify both annotation and folder")
+        
+        # Validate annotation has file if specified
+        if annotation and not annotation.file:
+            raise ValidationError("Can only set permissions on annotations with files")
+        
+        # Validate folder is shared document folder if specified
+        if folder and not folder.is_shared_document_folder:
+            raise ValidationError("Can only set permissions on shared document folders")
+        
+        return data
+    
+    def create(self, validated_data):
+        user_id = validated_data.pop('user_id', None)
+        lab_group_id = validated_data.pop('lab_group_id', None)
+        
+        # Set the shared_by to the current user
+        request = self.context.get('request')
+        if request and hasattr(request, 'user'):
+            validated_data['shared_by'] = request.user
+        
+        # Set user or lab_group based on provided ID
+        if user_id:
+            validated_data['user_id'] = user_id
+        if lab_group_id:
+            validated_data['lab_group_id'] = lab_group_id
+        
+        return super().create(validated_data)
+
+
+class SharedDocumentSerializer(AnnotationSerializer):
+    """Extended annotation serializer for document sharing"""
+    document_permissions = DocumentPermissionSerializer(many=True, read_only=True)
+    user_permissions = SerializerMethodField()
+    sharing_stats = SerializerMethodField()
+    file_info = SerializerMethodField()
+    
+    class Meta(AnnotationSerializer.Meta):
+        fields = AnnotationSerializer.Meta.fields + [
+            'document_permissions', 'user_permissions', 'sharing_stats', 'file_info'
+        ]
+    
+    def get_user_permissions(self, obj):
+        """Get current user's permissions for this document"""
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            return None
+        
+        # Owner has all permissions
+        if obj.user == request.user:
+            return {
+                'can_view': True,
+                'can_download': True,
+                'can_comment': True,
+                'can_edit': True,
+                'can_share': True,
+                'can_delete': True,
+                'is_owner': True
+            }
+        
+        # Check specific permissions
+        permissions = {}
+        for perm_type in ['view', 'download', 'comment', 'edit', 'share', 'delete']:
+            permissions[f'can_{perm_type}'] = DocumentPermission.user_can_access(
+                obj, request.user, perm_type
+            )
+        permissions['is_owner'] = False
+        
+        return permissions
+    
+    def get_sharing_stats(self, obj):
+        """Get sharing statistics"""
+        if not obj.file:
+            return None
+        
+        permissions = obj.document_permissions.all()
+        total_shared = permissions.count()
+        total_users = permissions.filter(user__isnull=False).count()
+        total_groups = permissions.filter(lab_group__isnull=False).count()
+        total_access_count = sum(p.access_count for p in permissions)
+        
+        return {
+            'total_shared': total_shared,
+            'shared_with_users': total_users,
+            'shared_with_groups': total_groups,
+            'total_access_count': total_access_count,
+        }
+    
+    def get_file_info(self, obj):
+        """Get file information"""
+        if not obj.file:
+            return None
+        
+        try:
+            import os
+            file_path = obj.file.path
+            file_size = os.path.getsize(file_path)
+            file_name = os.path.basename(obj.file.name)
+            file_ext = os.path.splitext(file_name)[1].lower()
+            
+            return {
+                'name': file_name,
+                'size': file_size,
+                'size_mb': round(file_size / (1024 * 1024), 2),
+                'extension': file_ext,
+                'url': obj.file.url if obj.file else None,
+            }
+        except (OSError, AttributeError):
+            return {
+                'name': os.path.basename(obj.file.name) if obj.file else None,
+                'url': obj.file.url if obj.file else None,
+            }

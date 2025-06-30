@@ -21,14 +21,14 @@ from django.views.decorators.csrf import ensure_csrf_cookie, csrf_protect
 from django_filters.views import FilterMixin
 from drf_chunked_upload.models import ChunkedUpload
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.generics import get_object_or_404
 from rest_framework.parsers import MultiPartParser, JSONParser
 from rest_framework.viewsets import ModelViewSet, ReadOnlyModelViewSet
 from rest_framework.filters import SearchFilter, OrderingFilter
 from django.core.files.base import File as djangoFile
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly, AllowAny
+from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly, AllowAny, IsAdminUser
 from rest_framework.authentication import TokenAuthentication, SessionAuthentication
 from rest_framework.response import Response
 from rest_framework import status
@@ -43,7 +43,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
     SubcellularLocation, HumanDisease, Tissue, MetadataColumn, MSUniqueVocabularies, Unimod, InstrumentJob, \
     FavouriteMetadataOption, Preset, MetadataTableTemplate, MaintenanceLog, SupportInformation, ExternalContact, \
     ExternalContactDetails, Message, MessageRecipient, MessageAttachment, MessageRecipient, MessageThread, \
-    ReagentSubscription, SiteSettings
+    ReagentSubscription, SiteSettings, BackupLog, DocumentPermission
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission, IsParticipantOrAdmin
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
@@ -59,7 +59,7 @@ from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, Anno
     MetadataTableTemplateSerializer, MaintenanceLogSerializer, SupportInformationSerializer, ExternalContactSerializer, \
     ExternalContactDetailsSerializer, MessageSerializer, MessageRecipientSerializer, MessageAttachmentSerializer, \
     MessageRecipientSerializer, MessageThreadSerializer, MessageThreadDetailSerializer, ReagentSubscriptionSerializer, \
-    SiteSettingsSerializer
+    SiteSettingsSerializer, BackupLogSerializer, DocumentPermissionSerializer, SharedDocumentSerializer
 from cc.utils import user_metadata, staff_metadata, send_slack_notification
 
 class ProtocolViewSet(ModelViewSet, FilterMixin):
@@ -661,6 +661,11 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
             if not instrument.exists():
                 return Response(status=status.HTTP_400_BAD_REQUEST)
             instrument = instrument.first()
+            if not instrument.accepts_bookings:
+                return Response(
+                    {'error': 'This instrument does not accept bookings'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
             meta_cols = instrument.metadata_columns.all()
             if meta_cols.exists():
                 for meta_col in meta_cols:
@@ -2175,9 +2180,15 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
     def get_queryset(self):
         user = self.request.user
         serial_number = self.request.query_params.get('serial_number', None)
+        accepts_bookings = self.request.query_params.get('accepts_bookings', None)
+
+
         query = Q()
         if serial_number:
             query = query & Q(support_information__serial_number=serial_number)
+        if accepts_bookings:
+            accepts_bookings = True if accepts_bookings.lower() == 'true' else False
+            query = query & Q(accepts_bookings=accepts_bookings)
         if user.is_staff:
             return self.queryset.filter(query)
         if user.is_authenticated:
@@ -2231,6 +2242,8 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
             instance.days_before_maintenance_notification = request.data['days_before_maintenance_notification']
         if 'days_before_warranty_notification' in request.data:
             instance.days_before_warranty_notification = request.data['days_before_warranty_notification']
+        if 'accepts_bookings' in request.data:
+            instance.accepts_bookings = request.data['accepts_bookings']
         instance.save()
         data = self.get_serializer(instance).data
         return Response(data, status=status.HTTP_200_OK)
@@ -2592,6 +2605,26 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
                 "message": "Check triggered for all instruments",
                 "task_id": job.id
             }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'])
+    def can_manage_instruments(self, request):
+        """
+        Check if the current user can manage at least one instrument
+        """
+        user = request.user
+        if not user.is_authenticated:
+            return Response({'can_manage': False}, status=status.HTTP_200_OK)
+        
+        if user.is_staff:
+            return Response({'can_manage': True}, status=status.HTTP_200_OK)
+        
+        # Check if user has manage permission for any instrument
+        has_manage_permission = InstrumentPermission.objects.filter(
+            user=user,
+            can_manage=True
+        ).exists()
+        
+        return Response({'can_manage': has_manage_permission}, status=status.HTTP_200_OK)
 
 class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
     permission_classes = [InstrumentUsagePermission]
@@ -3927,6 +3960,11 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
         )
         if 'instrument' in request.data:
             instrument = Instrument.objects.get(id=request.data['instrument'])
+            if not instrument.accepts_bookings:
+                return Response(
+                    {'error': 'This instrument does not accept bookings'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
             instrument_job.instrument = instrument
         if 'staff' in request.data:
             staff = User.objects.get(username=request.data['staff'])
@@ -3991,6 +4029,11 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             using.append('job_name')
         if 'instrument' in request.data:
             instrument = Instrument.objects.get(id=request.data['instrument'])
+            if not instrument.accepts_bookings:
+                return Response(
+                    {'error': 'This instrument does not accept bookings'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
             instrument_job.instrument = instrument
             using.append('instrument')
         if 'staff' in request.data:
@@ -6009,3 +6052,1490 @@ class SiteSettingsViewSet(ModelViewSet):
             return response
         except (BadSignature, SignatureExpired) as e:
             return Response({"error": "Invalid or expired token"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+class BackupLogViewSet(ModelViewSet, FilterMixin):
+    """ViewSet for managing backup logs"""
+    queryset = BackupLog.objects.all()
+    serializer_class = BackupLogSerializer
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ["backup_type", "status", "triggered_by"]
+    search_fields = ["backup_file_path", "error_message", "success_message"]
+    ordering_fields = ["started_at", "completed_at", "duration_seconds", "file_size_bytes"]
+    ordering = ["-started_at"]
+    pagination_class = LimitOffsetPagination
+    
+    def get_permissions(self):
+        """Only staff users can view backup logs"""
+        if self.action in ["list", "retrieve"]:
+            return [IsAuthenticated(), IsAdminUser()]
+        else:
+            # Backup logs should be read-only via API
+            return [IsAdminUser()]
+    
+    @action(detail=False, methods=["get"])
+    def backup_status(self, request):
+        """Get summary of recent backup status"""
+        # Get backup status from last 30 days
+        thirty_days_ago = timezone.now() - timedelta(days=30)
+        recent_backups = BackupLog.objects.filter(started_at__gte=thirty_days_ago)
+        
+        # Count by status
+        status_counts = {}
+        for status_choice in BackupLog.STATUS_CHOICES:
+            status_key = status_choice[0]
+            status_counts[status_key] = recent_backups.filter(status=status_key).count()
+        
+        # Get latest backup for each type
+        latest_backups = {}
+        for backup_type in ["database", "media"]:
+            latest = recent_backups.filter(backup_type=backup_type).first()
+            if latest:
+                latest_backups[backup_type] = BackupLogSerializer(latest).data
+        
+        # Calculate success rate
+        total_backups = recent_backups.count()
+        successful_backups = recent_backups.filter(status="completed").count()
+        success_rate = (successful_backups / total_backups * 100) if total_backups > 0 else 0
+        
+        return Response({
+            "period_days": 30,
+            "total_backups": total_backups,
+            "success_rate": round(success_rate, 1),
+            "status_counts": status_counts,
+            "latest_backups": latest_backups,
+        })
+
+
+class SharedDocumentViewSet(ModelViewSet, FilterMixin):
+    """ViewSet for managing shared documents (annotations with files)"""
+    queryset = Annotation.objects.all()
+    serializer_class = SharedDocumentSerializer
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    search_fields = ["annotation", "annotation_name"]
+    ordering_fields = ["created_at", "updated_at"]
+    ordering = ["-created_at"]
+    pagination_class = LimitOffsetPagination
+    filterset_fields = ["annotation_type", "created_at", "updated_at", "user", "folder", "session"]
+    
+    def get_queryset(self):
+        """Get annotations that are specifically shared documents (files in shared document folders or with document permissions)"""
+        user = self.request.user
+        
+        # Start with annotations that have files AND are in shared document folders OR have document permissions
+        queryset = Annotation.objects.filter(
+            file__isnull=False
+        ).filter(
+            Q(folder__is_shared_document_folder=True) |  # In shared document folder
+            Q(folder__isnull=True, document_permissions__isnull=False) |  # Root level with permissions
+            Q(document_permissions__isnull=False)  # Has document permissions
+        ).select_related("user", "folder", "session").distinct()
+        
+        # Filter by access permissions
+        accessible_annotations = []
+        for annotation in queryset:
+            # Owner can always access
+            if annotation.user == user:
+                accessible_annotations.append(annotation.id)
+                continue
+            
+            # Check document permissions
+            if DocumentPermission.user_can_access_annotation_with_folder_inheritance(annotation, user, "view"):
+                accessible_annotations.append(annotation.id)
+        
+        return Annotation.objects.filter(id__in=accessible_annotations).select_related("user", "folder", "session")
+    
+    def perform_create(self, serializer):
+        """Override create to ensure user and handle file uploads for shared documents"""
+        # Ensure this is a file annotation
+        if not serializer.validated_data.get('file'):
+            raise ValidationError("SharedDocumentViewSet only handles file annotations")
+        
+        # If folder is specified, ensure it's a shared document folder
+        folder = serializer.validated_data.get('folder')
+        if folder and not folder.is_shared_document_folder:
+            raise ValidationError("Files can only be added to shared document folders")
+        
+        serializer.save(user=self.request.user, annotation_type="file")
+    
+    @action(detail=True, methods=["post"])
+    def share(self, request, pk=None):
+        """Share document with specific users or groups"""
+        annotation = self.get_object()
+        
+        # Check if user can share this document
+        if annotation.user != request.user and not DocumentPermission.user_can_access_annotation_with_folder_inheritance(annotation, request.user, "share"):
+            return Response(
+                {"error": "You do not have permission to share this document"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Validate required fields
+        permissions_data = request.data.get("permissions", {})
+        if not permissions_data:
+            return Response(
+                {"error": "permissions field is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        created_permissions = []
+        errors = []
+
+        for user in request.data["users"]:
+            permissions_data['annotation'] = annotation.id
+            permissions_data['user_id'] = user
+            serializer = DocumentPermissionSerializer(data=permissions_data, context={"request": request})
+            
+            if serializer.is_valid():
+                # check if the user already has permission
+                existing_perm = DocumentPermission.objects.filter(
+                    annotation=annotation,
+                    user_id=user
+                ).first()
+                if existing_perm:
+                    for key, value in permissions_data.items():
+                        if key.startswith("can_"):
+                            # Only update can_* fields
+                            setattr(existing_perm, key, value)
+                    existing_perm.save()
+                    permission = existing_perm
+                else:
+                    permission = serializer.save()
+                created_permissions.append(permission)
+            else:
+                errors.append(serializer.errors)
+        
+        if errors:
+            # Clean up any successfully created permissions if there were errors
+            for perm in created_permissions:
+                perm.delete()
+            return Response({"errors": errors}, status=status.HTTP_400_BAD_REQUEST)
+        
+        return Response({
+            "message": f"Document shared with {len(created_permissions)} recipients",
+            "permissions": DocumentPermissionSerializer(created_permissions, many=True).data
+        }, status=status.HTTP_201_CREATED)
+    
+    @action(detail=True, methods=["delete"])
+    def unshare(self, request, pk=None):
+        """Remove sharing permissions for specific users or groups"""
+        annotation = self.get_object()
+        
+        # Check if user can share this document
+        if annotation.user != request.user and not DocumentPermission.user_can_access_annotation_with_folder_inheritance(annotation, request.user, "share"):
+            return Response(
+                {"error": "You do not have permission to manage sharing for this document"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        user_id = request.data.get("user_id")
+        lab_group_id = request.data.get("lab_group_id")
+        
+        if not user_id and not lab_group_id:
+            return Response(
+                {"error": "Either user_id or lab_group_id must be provided"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Remove the permission
+        filter_kwargs = {"annotation": annotation}
+        if user_id:
+            filter_kwargs["user_id"] = user_id
+        if lab_group_id:
+            filter_kwargs["lab_group_id"] = lab_group_id
+        
+        deleted_count, _ = DocumentPermission.objects.filter(**filter_kwargs).delete()
+        
+        return Response({
+            "message": f"Removed {deleted_count} permission(s)",
+            "deleted_count": deleted_count
+        }, status=status.HTTP_200_OK)
+    
+    @action(detail=True, methods=["get"])
+    def download(self, request, pk=None):
+        """Download document with permission check and access tracking using X-Accel-Redirect"""
+        annotation = self.get_object()
+        
+        # Check download permissions
+        if annotation.user != request.user and not DocumentPermission.user_can_access_annotation_with_folder_inheritance(annotation, request.user, "download"):
+            return Response(
+                {"error": "You do not have permission to download this document"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Record access if not the owner
+        if annotation.user != request.user:
+            perm = DocumentPermission.objects.filter(
+                annotation=annotation,
+                user=request.user
+            ).first()
+            if not perm:
+                # Check lab group permissions
+                user_groups = request.user.lab_groups.all()
+                for group in user_groups:
+                    perm = DocumentPermission.objects.filter(
+                        annotation=annotation,
+                        lab_group=group
+                    ).first()
+                    if perm:
+                        break
+            
+            if perm:
+                perm.record_access()
+        
+        if not annotation.file:
+            return Response(
+                {"error": "No file attached to this annotation"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Use X-Accel-Redirect for efficient nginx file delivery
+        file_name = annotation.file.name
+        filename = file_name.split('/')[-1]
+        view = request.query_params.get('view', None)
+        
+        response = HttpResponse(status=200)
+        
+        # Set appropriate content type and disposition based on file extension
+        if view:
+            if file_name.endswith(".pdf"):
+                response["Content-Type"] = "application/pdf"
+                response["Content-Disposition"] = f'inline; filename="{filename}"'
+            elif file_name.endswith((".jpg", ".jpeg", ".png", ".gif")):
+                response["Content-Type"] = "image/*"
+                response["Content-Disposition"] = f'inline; filename="{filename}"'
+            elif file_name.endswith((".mp4", ".webm", ".avi")):
+                response["Content-Type"] = "video/mp4"
+                response["Content-Disposition"] = f'inline; filename="{filename}"'
+            elif file_name.endswith((".mp3", ".m4a", ".wav")):
+                response["Content-Type"] = "audio/mpeg"
+                response["Content-Disposition"] = f'inline; filename="{filename}"'
+            else:
+                response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        else:
+            response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        
+        # Let nginx handle the actual file serving
+        response["X-Accel-Redirect"] = f"/media/{file_name}"
+        return response
+    
+    @action(detail=True, methods=["get"])
+    def get_signed_url(self, request, pk=None):
+        """Generate a signed, time-limited download URL for secure access"""
+        annotation = self.get_object()
+        
+        # Check download permissions
+        if annotation.user != request.user and not DocumentPermission.user_can_access_annotation_with_folder_inheritance(annotation, request.user, "download"):
+            return Response(
+                {"error": "You do not have permission to download this document"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        if not annotation.file:
+            return Response(
+                {"error": "No file attached to this document"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        signer = TimestampSigner()
+        
+        # Sign the annotation data for secure access
+        file_data = {
+            'file': annotation.file.name,
+            'id': annotation.id,
+            'user_id': request.user.id
+        }
+        signed_token = signer.sign_object(file_data)
+        
+        return Response({
+            "signed_token": signed_token,
+            "expires_in": 1800  # 30 minutes
+        }, status=status.HTTP_200_OK)
+    
+    @action(detail=False, methods=["get"], permission_classes=[AllowAny])
+    def download_signed(self, request):
+        """Download document using a signed token (no authentication required)"""
+        token = request.query_params.get('token', None)
+        if not token:
+            return Response(
+                {"error": "No token provided"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        signer = TimestampSigner()
+        view = request.query_params.get('view', None)
+        
+        try:
+            file_data = signer.unsign_object(token, max_age=60*30)
+            annotation = Annotation.objects.get(id=file_data['id'])
+            
+            if not annotation.file:
+                return Response(
+                    {"error": "No file attached to this document"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            print(file_data)
+            try:
+                token_user = User.objects.get(id=file_data['user_id'])
+                if annotation.user != token_user:
+                    perm = DocumentPermission.objects.filter(
+                        annotation=annotation,
+                        user=token_user
+                    ).first()
+                    if not perm:
+                        user_groups = token_user.lab_groups.all()
+                        for group in user_groups:
+                            perm = DocumentPermission.objects.filter(
+                                annotation=annotation,
+                                lab_group=group
+                            ).first()
+                            if perm:
+                                break
+                    
+                    if perm:
+                        perm.record_access()
+            except User.DoesNotExist:
+                pass
+
+            file_name = annotation.file.name
+            filename = file_name.split('/')[-1]
+            
+            response = HttpResponse(status=200)
+
+            if view:
+                if file_name.endswith(".pdf"):
+                    response["Content-Type"] = "application/pdf"
+                    response["Content-Disposition"] = f'inline; filename="{filename}"'
+                elif file_name.endswith((".jpg", ".jpeg", ".png", ".gif")):
+                    response["Content-Type"] = "image/*"
+                    response["Content-Disposition"] = f'inline; filename="{filename}"'
+                elif file_name.endswith((".mp4", ".webm", ".avi")):
+                    response["Content-Type"] = "video/mp4"
+                    response["Content-Disposition"] = f'inline; filename="{filename}"'
+                elif file_name.endswith((".mp3", ".m4a", ".wav")):
+                    response["Content-Type"] = "audio/mpeg"
+                    response["Content-Disposition"] = f'inline; filename="{filename}"'
+                else:
+                    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+            else:
+                response["Content-Disposition"] = f'attachment; filename="{filename}"'
+            
+            # Let nginx handle the actual file serving
+            response["X-Accel-Redirect"] = f"/media/{file_name}"
+            return response
+            
+        except (BadSignature, SignatureExpired):
+            return Response(
+                {"error": "Invalid or expired token"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Annotation.DoesNotExist:
+            return Response(
+                {"error": "Document not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {"error": "Failed to process download request"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=False, methods=["get"])
+    def browse(self, request):
+        """Browse documents and folders in a hierarchical structure"""
+        folder_id = request.query_params.get('folder_id', None)
+        filter_type = request.query_params.get('filter_type', 'all')  # 'all', 'personal', 'shared'
+        user = request.user
+        
+        # Get the current folder or root level
+        current_folder = None
+        if folder_id:
+            try:
+                current_folder = AnnotationFolder.objects.get(id=folder_id)
+            except AnnotationFolder.DoesNotExist:
+                return Response(
+                    {"error": "Folder not found"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+        
+        # Get subfolders in current directory that contain shared documents
+        subfolders = self._get_folders_with_shared_documents(current_folder, filter_type)
+        
+        # Filter documents in this specific folder
+        if current_folder:
+            folder_documents = self.get_queryset().filter(folder=current_folder)
+        else:
+            folder_documents = self.get_queryset().filter(folder__isnull=True)
+        
+        # Build folder structure with metadata
+        folders_data = []
+        for folder in subfolders:
+            # Count documents in this folder (including subfolders)
+            folder_doc_count = self._count_documents_in_folder(folder, user, filter_type)
+            # Only include if folder has documents or accessible subfolders with documents
+            # OR if it's a personal folder owned by the user (when filter_type is 'personal' or 'all')
+            should_include = (
+                folder_doc_count > 0 or 
+                self._folder_has_accessible_content(folder, user) or
+                (filter_type in ['personal', 'all'] and folder.owner == user)
+            )
+            if should_include:
+                # Get folder permissions
+                folder_permissions = DocumentPermission.objects.filter(folder=folder).select_related('user', 'lab_group', 'shared_by')
+                
+                # Calculate user's permissions for this folder
+                is_folder_owner = folder.owner == user
+                user_folder_permissions = {
+                    'can_view': is_folder_owner or DocumentPermission.user_can_access_folder(folder, user, 'view'),
+                    'can_download': is_folder_owner or DocumentPermission.user_can_access_folder(folder, user, 'download'),
+                    'can_comment': is_folder_owner or DocumentPermission.user_can_access_folder(folder, user, 'comment'),
+                    'can_edit': is_folder_owner or DocumentPermission.user_can_access_folder(folder, user, 'edit'),
+                    'can_share': is_folder_owner or DocumentPermission.user_can_access_folder(folder, user, 'share'),
+                    'can_delete': is_folder_owner or DocumentPermission.user_can_access_folder(folder, user, 'delete'),
+                    'is_owner': is_folder_owner
+                }
+                
+                folders_data.append({
+                    'id': folder.id,
+                    'name': folder.folder_name,
+                    'type': 'folder',
+                    'created_at': folder.created_at,
+                    'updated_at': folder.updated_at,
+                    'document_count': folder_doc_count,
+                    'has_subfolders': self._get_folders_with_shared_documents(folder, filter_type).exists(),
+                    'is_shared_document_folder': folder.is_shared_document_folder,
+                    'owner': {
+                        'id': folder.owner.id,
+                        'username': folder.owner.username,
+                        'first_name': folder.owner.first_name,
+                        'last_name': folder.owner.last_name
+                    } if folder.owner else None,
+                    'is_personal': folder.owner == user if folder.owner else False,
+                    'permissions': DocumentPermissionSerializer(folder_permissions, many=True).data,
+                    'user_permissions': user_folder_permissions,
+                    'sharing_stats': {
+                        'total_shared': folder_permissions.count(),
+                        'shared_users': folder_permissions.filter(user__isnull=False).count(),
+                        'shared_groups': folder_permissions.filter(lab_group__isnull=False).count(),
+                        'total_access_count': sum(perm.access_count for perm in folder_permissions)
+                    }
+                })
+        
+        # Get documents in current folder with filtering
+        documents_data = []
+        for doc in folder_documents:
+            is_owner = doc.user == user
+            has_shared_access = DocumentPermission.user_can_access_annotation_with_folder_inheritance(doc, user, 'view')
+            can_view = is_owner or has_shared_access
+            
+            # Apply filter_type logic
+            include_document = False
+            if filter_type == 'all' and can_view:
+                include_document = True
+            elif filter_type == 'personal' and is_owner:
+                include_document = True
+            elif filter_type == 'shared' and has_shared_access and not is_owner:
+                include_document = True
+            
+            if include_document:
+                doc_serializer = self.get_serializer(doc)
+                doc_data = doc_serializer.data
+                doc_data['type'] = 'file'
+                doc_data['is_personal'] = is_owner
+                doc_data['is_shared'] = has_shared_access and not is_owner
+                documents_data.append(doc_data)
+        
+        # Build breadcrumb path
+        breadcrumbs = self._build_breadcrumbs(current_folder)
+        
+        return Response({
+            'current_folder': {
+                'id': current_folder.id if current_folder else None,
+                'name': current_folder.folder_name if current_folder else 'Root',
+                'parent_id': current_folder.parent_folder.id if current_folder and current_folder.parent_folder else None,
+                'is_shared_document_folder': current_folder.is_shared_document_folder if current_folder else True
+            },
+            'breadcrumbs': breadcrumbs,
+            'folders': folders_data,
+            'documents': documents_data,
+            'total_folders': len(folders_data),
+            'total_documents': len(documents_data),
+            'filter_type': filter_type
+        })
+    
+    def _count_documents_in_folder(self, folder, user, filter_type='all'):
+        """Recursively count documents user can access in folder and subfolders"""
+        count = 0
+        
+        # Count documents directly in this folder
+        folder_docs = self.get_queryset().filter(folder=folder)
+        for doc in folder_docs:
+            is_owner = doc.user == user
+            has_shared_access = DocumentPermission.user_can_access_annotation_with_folder_inheritance(doc, user, 'view')
+            can_view = is_owner or has_shared_access
+            
+            # Apply filter_type logic
+            include_document = False
+            if filter_type == 'all' and can_view:
+                include_document = True
+            elif filter_type == 'personal' and is_owner:
+                include_document = True
+            elif filter_type == 'shared' and has_shared_access and not is_owner:
+                include_document = True
+            
+            if include_document:
+                count += 1
+        
+        # Count documents in subfolders that have shared documents
+        subfolders = self._get_folders_with_shared_documents(folder, filter_type)
+        for subfolder in subfolders:
+            count += self._count_documents_in_folder(subfolder, user, filter_type)
+        
+        return count
+    
+    def _build_breadcrumbs(self, current_folder):
+        """Build breadcrumb navigation path"""
+        breadcrumbs = []
+        folder = current_folder
+        
+        while folder:
+            breadcrumbs.insert(0, {
+                'id': folder.id,
+                'name': folder.folder_name
+            })
+            folder = folder.parent_folder
+        
+        # Add root
+        breadcrumbs.insert(0, {
+            'id': None,
+            'name': 'Root'
+        })
+        
+        return breadcrumbs
+    
+    @action(detail=False, methods=["get"])
+    def my_documents(self, request):
+        """Get documents owned by the current user organized by folder"""
+        user = request.user
+        folder_id = request.query_params.get('folder_id', None)
+        
+        # Get user's shared documents only (in shared document folders or root level with permissions)
+        user_documents = Annotation.objects.filter(
+            user=user,
+            file__isnull=False
+        ).filter(
+            Q(folder__is_shared_document_folder=True) |  # In shared document folder
+            Q(folder__isnull=True, document_permissions__isnull=False) |  # Root level with permissions
+            Q(document_permissions__isnull=False)  # Has document permissions
+        ).select_related('folder', 'session').distinct()
+        
+        if folder_id:
+            try:
+                folder = AnnotationFolder.objects.get(id=folder_id, is_shared_document_folder=True)
+                user_documents = user_documents.filter(folder=folder)
+            except AnnotationFolder.DoesNotExist:
+                return Response(
+                    {"error": "Folder not found"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+        else:
+            user_documents = user_documents.filter(folder__isnull=True)
+        
+        # Get user's folders at this level that contain shared documents
+        if folder_id:
+            current_folder = AnnotationFolder.objects.get(id=folder_id)
+        else:
+            current_folder = None
+        
+        # Get folders that contain file annotations accessible to this user (personal only)
+        user_folders = self._get_folders_with_shared_documents(current_folder, 'personal')
+        
+        # Build response
+        folders_data = []
+        for folder in user_folders:
+            doc_count = Annotation.objects.filter(
+                user=user,
+                file__isnull=False,
+                folder=folder,
+                folder__is_shared_document_folder=True
+            ).count()
+            
+            # Get folder permissions (since this is my_documents, user is owner so they have full permissions)
+            folder_permissions = DocumentPermission.objects.filter(folder=folder).select_related('user', 'lab_group', 'shared_by')
+            is_folder_owner = folder.owner == user
+            user_folder_permissions = {
+                'can_view': True,  # Owner always has full permissions
+                'can_download': True,
+                'can_comment': True,
+                'can_edit': True,
+                'can_share': True,
+                'can_delete': True,
+                'is_owner': is_folder_owner
+            }
+            
+            folders_data.append({
+                'id': folder.id,
+                'name': folder.folder_name,
+                'type': 'folder',
+                'created_at': folder.created_at,
+                'updated_at': folder.updated_at,
+                'document_count': doc_count,
+                'has_subfolders': self._get_folders_with_shared_documents(folder, 'personal').exists(),
+                'is_shared_document_folder': folder.is_shared_document_folder,
+                'owner': {
+                    'id': folder.owner.id,
+                    'username': folder.owner.username,
+                    'first_name': folder.owner.first_name,
+                    'last_name': folder.owner.last_name
+                } if folder.owner else None,
+                'is_personal': folder.owner == user if folder.owner else False,
+                'permissions': DocumentPermissionSerializer(folder_permissions, many=True).data,
+                'user_permissions': user_folder_permissions,
+                'sharing_stats': {
+                    'total_shared': folder_permissions.count(),
+                    'shared_users': folder_permissions.filter(user__isnull=False).count(),
+                    'shared_groups': folder_permissions.filter(lab_group__isnull=False).count(),
+                    'total_access_count': sum(perm.access_count for perm in folder_permissions)
+                }
+            })
+        
+        # Serialize documents
+        documents_data = []
+        for doc in user_documents:
+            doc_serializer = self.get_serializer(doc)
+            doc_data = doc_serializer.data
+            doc_data['type'] = 'file'
+            doc_data['folder_path'] = self._get_folder_path_string(doc_data.get('folder'))
+            documents_data.append(doc_data)
+        
+        # Build breadcrumbs
+        breadcrumbs = self._build_breadcrumbs(current_folder)
+        
+        return Response({
+            'current_folder': {
+                'id': current_folder.id if current_folder else None,
+                'name': current_folder.folder_name if current_folder else 'My Documents',
+                'parent_id': current_folder.parent_folder.id if current_folder and current_folder.parent_folder else None,
+                'is_shared_document_folder': current_folder.is_shared_document_folder if current_folder else True
+            },
+            'breadcrumbs': breadcrumbs,
+            'folders': folders_data,
+            'documents': documents_data,
+            'total_folders': len(folders_data),
+            'total_documents': len(documents_data)
+        })
+    
+    @action(detail=False, methods=["post"])
+    def create_folder(self, request):
+        """Create a new folder for organizing documents"""
+        folder_name = request.data.get('folder_name', '').strip()
+        parent_folder_id = request.data.get('parent_folder_id')
+        
+        if not folder_name:
+            return Response(
+                {"error": "folder_name is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate parent folder if provided
+        parent_folder = None
+        if parent_folder_id:
+            try:
+                parent_folder = AnnotationFolder.objects.get(id=parent_folder_id)
+                permission = DocumentPermission.objects.filter(
+                    folder=parent_folder,
+                    user=request.user
+                ).first()
+                if not permission or not permission.can_edit:
+                    return Response(
+                        {"error": "You do not have permission to create folders in this location"},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+            except AnnotationFolder.DoesNotExist:
+                return Response(
+                    {"error": "Parent folder not found"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+        
+        # Check for duplicate folder names at the same level
+        existing_folder = AnnotationFolder.objects.filter(
+            folder_name=folder_name,
+            parent_folder=parent_folder,
+            is_shared_document_folder=True
+        ).first()
+        
+        if existing_folder:
+            return Response(
+                {"error": "A folder with this name already exists at this location"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Create the folder marked as shared document folder
+        folder = AnnotationFolder.objects.create(
+            folder_name=folder_name,
+            parent_folder=parent_folder,
+            is_shared_document_folder=True,
+            owner=request.user
+        )
+        
+        # Get folder permissions (newly created folder has no shared permissions yet)
+        folder_permissions = DocumentPermission.objects.filter(folder=folder).select_related('user', 'lab_group', 'shared_by')
+        user_folder_permissions = {
+            'can_view': True,  # Owner always has full permissions
+            'can_download': True,
+            'can_comment': True,
+            'can_edit': True,
+            'can_share': True,
+            'can_delete': True,
+            'is_owner': True
+        }
+        
+        return Response({
+            'id': folder.id,
+            'name': folder.folder_name,
+            'type': 'folder',
+            'parent_id': folder.parent_folder.id if folder.parent_folder else None,
+            'created_at': folder.created_at,
+            'updated_at': folder.updated_at,
+            'document_count': 0,
+            'has_subfolders': False,
+            'is_shared_document_folder': folder.is_shared_document_folder,
+            'owner': {
+                'id': folder.owner.id,
+                'username': folder.owner.username,
+                'first_name': folder.owner.first_name,
+                'last_name': folder.owner.last_name
+            } if folder.owner else None,
+            'is_personal': folder.owner == request.user if folder.owner else False,
+            'permissions': DocumentPermissionSerializer(folder_permissions, many=True).data,
+            'user_permissions': user_folder_permissions,
+            'sharing_stats': {
+                'total_shared': 0,  # Newly created folder has no shares
+                'shared_users': 0,
+                'shared_groups': 0,
+                'total_access_count': 0
+            }
+        }, status=status.HTTP_201_CREATED)
+    
+    @action(detail=False, methods=["get"])
+    def search(self, request):
+        """Search documents and folders with full-text search"""
+        query = request.query_params.get('q', '').strip()
+        folder_id = request.query_params.get('folder_id')  # Optional: search within specific folder
+        
+        if not query:
+            return Response(
+                {"error": "Search query 'q' parameter is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        user = request.user
+        
+        # Search in documents (annotation content and names)
+        document_query = Q(annotation__icontains=query) | Q(annotation_name__icontains=query)
+        if folder_id:
+            document_query &= Q(folder_id=folder_id)
+        
+        documents = self.get_queryset().filter(document_query)
+        
+        # Filter by permissions
+        accessible_documents = []
+        for doc in documents:
+            if doc.user == user or DocumentPermission.user_can_access_annotation_with_folder_inheritance(doc, user, 'view'):
+                accessible_documents.append(doc)
+        
+        # Search in folders
+        folder_query = Q(folder_name__icontains=query)
+        if folder_id:
+            # Search within subfolder hierarchy
+            try:
+                parent_folder = AnnotationFolder.objects.get(id=folder_id)
+                folder_query &= Q(parent_folder=parent_folder)
+            except AnnotationFolder.DoesNotExist:
+                pass
+        
+        # Filter folders to only those with shared documents
+        all_folders = AnnotationFolder.objects.filter(folder_query)
+        folders = []
+        for folder in all_folders:
+            if self._folder_has_accessible_content(folder, user):
+                folders.append(folder)
+        
+        # Serialize results
+        documents_data = []
+        for doc in accessible_documents:
+            doc_serializer = self.get_serializer(doc)
+            doc_data = doc_serializer.data
+            doc_data['type'] = 'file'
+            # Add folder path for context
+            if doc.folder:
+                doc_data['folder_path'] = self._get_folder_path(doc.folder)
+            else:
+                doc_data['folder_path'] = "Root"
+            documents_data.append(doc_data)
+        
+        folders_data = []
+        for folder in folders:
+            doc_count = self._count_documents_in_folder(folder, user, 'all')
+            
+            # Get folder permissions
+            folder_permissions = DocumentPermission.objects.filter(folder=folder).select_related('user', 'lab_group', 'shared_by')
+            
+            # Calculate user's permissions for this folder
+            is_folder_owner = folder.owner == user
+            user_folder_permissions = {
+                'can_view': is_folder_owner or DocumentPermission.user_can_access_folder(folder, user, 'view'),
+                'can_download': is_folder_owner or DocumentPermission.user_can_access_folder(folder, user, 'download'),
+                'can_comment': is_folder_owner or DocumentPermission.user_can_access_folder(folder, user, 'comment'),
+                'can_edit': is_folder_owner or DocumentPermission.user_can_access_folder(folder, user, 'edit'),
+                'can_share': is_folder_owner or DocumentPermission.user_can_access_folder(folder, user, 'share'),
+                'can_delete': is_folder_owner or DocumentPermission.user_can_access_folder(folder, user, 'delete'),
+                'is_owner': is_folder_owner
+            }
+            
+            folders_data.append({
+                'id': folder.id,
+                'name': folder.folder_name,
+                'type': 'folder',
+                'created_at': folder.created_at,
+                'updated_at': folder.updated_at,
+                'document_count': doc_count,
+                'folder_path': self._get_folder_path(folder) if folder.parent_folder else "Root",
+                'has_subfolders': self._get_folders_with_shared_documents(folder, 'all').exists(),
+                'is_shared_document_folder': folder.is_shared_document_folder,
+                'owner': {
+                    'id': folder.owner.id,
+                    'username': folder.owner.username,
+                    'first_name': folder.owner.first_name,
+                    'last_name': folder.owner.last_name
+                } if folder.owner else None,
+                'is_personal': folder.owner == user if folder.owner else False,
+                'permissions': DocumentPermissionSerializer(folder_permissions, many=True).data,
+                'user_permissions': user_folder_permissions,
+                'sharing_stats': {
+                    'total_shared': folder_permissions.count(),
+                    'shared_users': folder_permissions.filter(user__isnull=False).count(),
+                    'shared_groups': folder_permissions.filter(lab_group__isnull=False).count(),
+                    'total_access_count': sum(perm.access_count for perm in folder_permissions)
+                }
+            })
+        
+        return Response({
+            'query': query,
+            'total_results': len(documents_data) + len(folders_data),
+            'folders': folders_data,
+            'documents': documents_data
+        })
+    
+    def _get_folder_path(self, folder):
+        """Get the full path to a folder"""
+        path_parts = []
+        current = folder
+        while current:
+            path_parts.insert(0, current.folder_name)
+            current = current.parent_folder
+        return ' / '.join(path_parts)
+    
+    def _get_folder_path_string(self, folder_data):
+        """Convert serialized folder data to readable path string"""
+        if not folder_data:
+            return "Root"
+        
+        # folder_data is an array from the serializer - reverse it to get root-to-file order
+        path_parts = [folder['folder_name'] for folder in reversed(folder_data)]
+        return ' / '.join(['Root'] + path_parts)
+    
+    def _get_folders_with_shared_documents(self, parent_folder=None, filter_type='all'):
+        """Get folders that are designated for shared documents with ownership filtering"""
+        user = self.request.user
+        
+        # Base folder filter
+        if parent_folder:
+            folder_filter = Q(parent_folder=parent_folder)
+        else:
+            folder_filter = Q(parent_folder__isnull=True)
+        
+        # Get folders marked as shared document folders
+        queryset = AnnotationFolder.objects.filter(
+            folder_filter,
+            is_shared_document_folder=True
+        )
+        
+        # Apply ownership filtering based on filter_type
+        if filter_type == 'personal':
+            queryset = queryset.filter(owner=user)
+        elif filter_type == 'shared':
+            # Folders shared with user but not owned by them
+            queryset = queryset.exclude(owner=user).filter(
+                Q(annotations__document_permissions__user=user) |
+                Q(annotations__document_permissions__lab_group__in=user.lab_groups.all())
+            ).distinct()
+        elif filter_type == 'all':
+            # All folders user can access (owned or shared with them)
+            queryset = queryset.filter(
+                Q(owner=user) |
+                Q(annotations__document_permissions__user=user) |
+                Q(annotations__document_permissions__lab_group__in=user.lab_groups.all())
+            ).distinct()
+        
+        return queryset
+    
+    def _folder_has_accessible_content(self, folder, user):
+        """Check if folder is marked for shared documents and has accessible content"""
+        # If folder is marked as shared document folder, check if it has accessible files
+        if folder.is_shared_document_folder:
+            has_direct_files = Annotation.objects.filter(
+                folder=folder,
+                file__isnull=False
+            ).filter(
+                Q(user=user) |
+                Q(document_permissions__user=user) |
+                Q(document_permissions__lab_group__in=user.lab_groups.all())
+            ).exists()
+            
+            if has_direct_files:
+                return True
+        
+        # Check subfolders recursively that are marked for shared documents
+        subfolders = self._get_folders_with_shared_documents(folder, 'all')
+        for subfolder in subfolders:
+            if self._folder_has_accessible_content(subfolder, user):
+                return True
+        
+        return False
+    
+    @action(detail=False, methods=["get"])
+    def shared_with_me(self, request):
+        """Get documents shared with the current user, including folder path information"""
+        user = request.user
+        
+        # Get documents shared directly with user
+        user_permissions = DocumentPermission.objects.filter(user=user).select_related("annotation")
+        
+        # Get documents shared with user's lab groups
+        user_groups = user.lab_groups.all()
+        group_permissions = DocumentPermission.objects.filter(lab_group__in=user_groups).select_related("annotation")
+        
+        # Combine and get unique annotations
+        all_permissions = list(user_permissions) + list(group_permissions)
+        annotation_ids = list(set(perm.annotation.id for perm in all_permissions if perm.annotation.file))
+        
+        annotations = Annotation.objects.filter(id__in=annotation_ids).select_related("user", "folder", "session")
+        
+        # Apply filtering and ordering
+        queryset = self.filter_queryset(annotations)
+        page = self.paginate_queryset(queryset)
+        
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            # Enhance response data with folder path information
+            response_data = serializer.data
+            for doc_data in response_data:
+                doc_data['folder_path'] = self._get_folder_path_string(doc_data.get('folder'))
+            return self.get_paginated_response(response_data)
+        
+        serializer = self.get_serializer(queryset, many=True)
+        # Enhance response data with folder path information
+        response_data = serializer.data
+        for doc_data in response_data:
+            doc_data['folder_path'] = self._get_folder_path_string(doc_data.get('folder'))
+        return Response(response_data)
+    
+    @action(detail=False, methods=["post"])
+    def bind_chunked_file(self, request):
+        """
+        Bind a file that was uploaded in chunks to create a shared document
+        """
+
+        upload_id = request.data.get('chunked_upload_id')
+        annotation_name = request.data.get('annotation_name', '')
+        annotation_text = request.data.get('annotation', '')
+        folder_id = request.data.get('folder_id')
+        
+        # Validation
+        if not upload_id:
+            return Response(
+                {'error': 'upload_id is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Get and validate chunked upload
+            chunked_upload = ChunkedUpload.objects.get(id=upload_id)
+            
+            # Permission check - user must own the upload
+            if chunked_upload.user != request.user and not request.user.is_staff:
+                return Response(
+                    {'error': 'You do not have permission to use this upload'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            # Verify upload is completed
+            if not chunked_upload.completed_at:
+                return Response(
+                    {'error': 'Upload is not completed yet'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Validate folder if provided
+            folder = None
+            if folder_id:
+                try:
+                    folder = AnnotationFolder.objects.get(id=folder_id, is_shared_document_folder=True)
+                    # Could add folder permission checks here if needed
+                except AnnotationFolder.DoesNotExist:
+                    return Response(
+                        {'error': 'Shared document folder not found'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+            
+            # Use chunked upload filename if no name provided
+            if not annotation_name:
+                annotation_name = chunked_upload.filename or 'Uploaded Document'
+            
+            # Create the annotation with file
+            with open(chunked_upload.file.path, 'rb') as file:
+                django_file = djangoFile(file)
+                annotation = Annotation(
+                    annotation=annotation_text or annotation_name,
+                    annotation_name=annotation_name,
+                    user=request.user,
+                    annotation_type="file"
+                )
+                
+                if folder:
+                    annotation.folder = folder
+
+                annotation.file.save(annotation_name, django_file, save=True)
+                annotation.save()
+            
+            # Clean up chunked upload
+            chunked_upload.delete()
+            
+            # Return the created document
+            serializer = self.get_serializer(annotation)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            
+        except ChunkedUpload.DoesNotExist:
+            return Response(
+                {'error': 'Upload not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to bind file: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=False, methods=["delete"])
+    def delete_folder(self, request):
+        """Delete a shared document folder that the user owns"""
+        folder_id = request.query_params.get('folder_id')
+        
+        if not folder_id:
+            return Response(
+                {'error': 'folder_id parameter is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            folder = AnnotationFolder.objects.get(id=folder_id)
+        except AnnotationFolder.DoesNotExist:
+            return Response(
+                {'error': 'Folder not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Check if folder is a shared document folder
+        if not folder.is_shared_document_folder:
+            return Response(
+                {'error': 'This folder is not a shared document folder'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Check ownership
+        if folder.owner != request.user:
+            return Response(
+                {'error': 'You can only delete folders you own'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Check if folder has any documents
+        document_count = Annotation.objects.filter(folder=folder).count()
+        if document_count > 0:
+            return Response(
+                {'error': f'Cannot delete folder with {document_count} document(s). Move or delete documents first.'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Check if folder has subfolders
+        subfolder_count = AnnotationFolder.objects.filter(parent_folder=folder).count()
+        if subfolder_count > 0:
+            return Response(
+                {'error': f'Cannot delete folder with {subfolder_count} subfolder(s). Delete subfolders first.'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Delete the folder
+        folder_name = folder.folder_name
+        folder.delete()
+        
+        return Response(
+            {'message': f'Folder "{folder_name}" deleted successfully'}, 
+            status=status.HTTP_200_OK
+        )
+    
+    @action(detail=False, methods=["post"])
+    def share_folder(self, request):
+        """Share a folder with users or groups with granular permissions"""
+        folder_id = request.data.get('folder_id')
+        
+        if not folder_id:
+            return Response(
+                {'error': 'folder_id is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            folder = AnnotationFolder.objects.get(id=folder_id)
+        except AnnotationFolder.DoesNotExist:
+            return Response(
+                {'error': 'Folder not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Check if folder is a shared document folder
+        if not folder.is_shared_document_folder:
+            return Response(
+                {'error': 'Can only share folders marked as shared document folders'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Check if user can share this folder
+        if folder.owner != request.user and not DocumentPermission.user_can_access_folder(folder, request.user, "share"):
+            return Response(
+                {'error': 'You do not have permission to share this folder'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        users = request.data.get('users', [])
+        lab_groups = request.data.get('lab_groups', [])
+        permissions = request.data.get('permissions', {})
+        
+        if not users and not lab_groups:
+            return Response(
+                {'error': 'At least one user or lab_group must be specified'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Create permissions
+        created_permissions = []
+        errors = []
+        
+        # Create user permissions
+        for user_id in users:
+            try:
+                user = User.objects.get(id=user_id)
+                # Check if permission already exists
+                existing = DocumentPermission.objects.filter(folder=folder, user=user).first()
+                if existing:
+                    errors.append(f"Permission already exists for user {user.username}")
+                    continue
+                
+                permission = DocumentPermission.objects.create(
+                    folder=folder,
+                    user=user,
+                    shared_by=request.user,
+                    can_view=permissions.get('can_view', True),
+                    can_download=permissions.get('can_download', True),
+                    can_comment=permissions.get('can_comment', False),
+                    can_edit=permissions.get('can_edit', False),
+                    can_share=permissions.get('can_share', False),
+                    can_delete=permissions.get('can_delete', False)
+                )
+                created_permissions.append(permission)
+            except User.DoesNotExist:
+                errors.append(f"User with id {user_id} not found")
+            except Exception as e:
+                errors.append(f"Error creating permission for user {user_id}: {str(e)}")
+        
+        # Create lab group permissions
+        for group_id in lab_groups:
+            try:
+                lab_group = LabGroup.objects.get(id=group_id)
+                # Check if permission already exists
+                existing = DocumentPermission.objects.filter(folder=folder, lab_group=lab_group).first()
+                if existing:
+                    errors.append(f"Permission already exists for lab group {lab_group.name}")
+                    continue
+                
+                permission = DocumentPermission.objects.create(
+                    folder=folder,
+                    lab_group=lab_group,
+                    shared_by=request.user,
+                    can_view=permissions.get('can_view', True),
+                    can_download=permissions.get('can_download', True),
+                    can_comment=permissions.get('can_comment', False),
+                    can_edit=permissions.get('can_edit', False),
+                    can_share=permissions.get('can_share', False),
+                    can_delete=permissions.get('can_delete', False)
+                )
+                created_permissions.append(permission)
+            except LabGroup.DoesNotExist:
+                errors.append(f"Lab group with id {group_id} not found")
+            except Exception as e:
+                errors.append(f"Error creating permission for lab group {group_id}: {str(e)}")
+        
+        if errors and not created_permissions:
+            return Response({'errors': errors}, status=status.HTTP_400_BAD_REQUEST)
+        
+        response_data = {
+            'message': f'Folder shared with {len(created_permissions)} recipients',
+            'permissions': DocumentPermissionSerializer(created_permissions, many=True).data
+        }
+        
+        if errors:
+            response_data['warnings'] = errors
+        
+        return Response(response_data, status=status.HTTP_201_CREATED)
+    
+    @action(detail=False, methods=["delete"])
+    def unshare_folder(self, request):
+        """Remove folder sharing permissions for specific users or groups"""
+        folder_id = request.query_params.get('folder_id')
+        
+        if not folder_id:
+            return Response(
+                {'error': 'folder_id parameter is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            folder = AnnotationFolder.objects.get(id=folder_id)
+        except AnnotationFolder.DoesNotExist:
+            return Response(
+                {'error': 'Folder not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Check if user can manage sharing for this folder
+        if folder.owner != request.user and not DocumentPermission.user_can_access_folder(folder, request.user, "share"):
+            return Response(
+                {'error': 'You do not have permission to manage sharing for this folder'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        user_id = request.data.get('user_id')
+        lab_group_id = request.data.get('lab_group_id')
+        
+        if not user_id and not lab_group_id:
+            return Response(
+                {'error': 'Either user_id or lab_group_id must be provided'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Remove the permission
+        filter_kwargs = {'folder': folder}
+        if user_id:
+            filter_kwargs['user_id'] = user_id
+        if lab_group_id:
+            filter_kwargs['lab_group_id'] = lab_group_id
+        
+        deleted_count, _ = DocumentPermission.objects.filter(**filter_kwargs).delete()
+        
+        return Response({
+            'message': f'Removed {deleted_count} folder permission(s)',
+            'deleted_count': deleted_count
+        }, status=status.HTTP_200_OK)
+    
+    @action(detail=False, methods=["get"])
+    def folder_permissions(self, request):
+        """Get all permissions for a specific folder"""
+        folder_id = request.query_params.get('folder_id')
+        
+        if not folder_id:
+            return Response(
+                {'error': 'folder_id parameter is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            folder = AnnotationFolder.objects.get(id=folder_id)
+        except AnnotationFolder.DoesNotExist:
+            return Response(
+                {'error': 'Folder not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Check if user can view this folder
+        if folder.owner != request.user and not DocumentPermission.user_can_access_folder(folder, request.user, "view"):
+            return Response(
+                {'error': 'You do not have permission to view this folder'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Get all permissions for this folder
+        permissions = DocumentPermission.objects.filter(folder=folder).select_related('user', 'lab_group', 'shared_by')
+        
+        return Response({
+            'folder': {
+                'id': folder.id,
+                'name': folder.folder_name,
+                'owner': {
+                    'id': folder.owner.id,
+                    'username': folder.owner.username,
+                    'first_name': folder.owner.first_name,
+                    'last_name': folder.owner.last_name
+                } if folder.owner else None
+            },
+            'permissions': DocumentPermissionSerializer(permissions, many=True).data,
+            'total_permissions': permissions.count()
+        })
+
+    @action(detail=False, methods=["post"])
+    def rename(self, request):
+        annotation_id = request.data.get('annotation_id', None)
+        folder_id = request.data.get('folder_id', None)
+        annotation_name = request.data.get('annotation_name', None)
+        folder_name = request.data.get('folder_name', None)
+        if annotation_id and folder_id:
+            return Response(
+                {"error": "You can only rename either an annotation or a folder, not both."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if not annotation_id and not folder_id:
+            return Response(
+                {"error": "You must provide either an annotation_id or a folder_id."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if not annotation_name and not folder_name:
+            return Response(
+                {"error": "You must provide either an annotation_name or a folder_name."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if annotation_id and annotation_name:
+            try:
+                annotation = Annotation.objects.get(id=annotation_id)
+                if not annotation.file:
+                    return Response(
+                        {"error": "Annotation does not have an associated file."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                if not annotation.user == request.user and not DocumentPermission.user_can_access_annotation_with_folder_inheritance(annotation, request.user, "edit"):
+                    return Response(
+                        {"error": "You do not have permission to rename this annotation."},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+                if Annotation.objects.filter(
+                    annotation_name=annotation_name,
+                    folder=annotation.folder
+                ).exists():
+                    return Response(
+                        {"error": "An annotation with this name already exists in the same folder."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                annotation.annotation_name = annotation_name
+                annotation.save()
+                return Response(
+                    {"message": "Annotation renamed successfully.", "annotation_name": annotation.annotation_name},
+                    status=status.HTTP_200_OK
+                )
+            except Annotation.DoesNotExist:
+                return Response(
+                    {"error": "Annotation not found."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+        elif folder_id and folder_name:
+            try:
+                folder = AnnotationFolder.objects.get(id=folder_id, owner=request.user)
+                if not folder.is_shared_document_folder:
+                    return Response(
+                        {"error": "Only shared document folders can be renamed."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                if not folder.owner == request.user and not DocumentPermission.user_can_access_folder(folder, request.user, "edit"):
+                    return Response(
+                        {"error": "You do not have permission to rename this folder."},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+                if AnnotationFolder.objects.filter(
+                    folder_name=folder_name,
+                    parent_folder=folder.parent_folder,
+                    is_shared_document_folder=True
+                ).exists():
+                    return Response(
+                        {"error": "A folder with this name already exists in the same location."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                folder.folder_name = folder_name
+                folder.save()
+                return Response(
+                    {"message": "Folder renamed successfully.", "folder_name": folder.folder_name},
+                    status=status.HTTP_200_OK
+                )
+            except AnnotationFolder.DoesNotExist:
+                return Response(
+                    {"error": "Folder not found."},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+        else:
+            return Response(
+                {"error": "Invalid request parameters."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+
+class DocumentPermissionViewSet(ModelViewSet, FilterMixin):
+    """ViewSet for managing document permissions"""
+    queryset = DocumentPermission.objects.all()
+    serializer_class = DocumentPermissionSerializer
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ["annotation", "user", "lab_group"]
+    ordering_fields = ["shared_at", "last_accessed"]
+    ordering = ["-shared_at"]
+    pagination_class = LimitOffsetPagination
+    
+    def get_queryset(self):
+        """Get permissions for documents user owns or can manage"""
+        user = self.request.user
+        
+        # Get annotations user owns
+        owned_annotations = Annotation.objects.filter(user=user, file__isnull=False)
+        
+        # Get annotations user can share
+        shareable_annotations = []
+        for annotation in Annotation.objects.filter(file__isnull=False):
+            if DocumentPermission.user_can_access_annotation_with_folder_inheritance(annotation, user, "share"):
+                shareable_annotations.append(annotation.id)
+        
+        all_annotation_ids = list(owned_annotations.values_list("id", flat=True)) + shareable_annotations
+        
+        return DocumentPermission.objects.filter(annotation_id__in=all_annotation_ids).select_related(
+            "annotation", "user", "lab_group", "shared_by"
+        )
+    
+    def perform_create(self, serializer):
+        """Set shared_by to current user"""
+        serializer.save(shared_by=self.request.user)
+    
+    @action(detail=False, methods=["get"])
+    def my_shares(self, request):
+        """Get all permissions created by the current user"""
+        permissions = DocumentPermission.objects.filter(shared_by=request.user).select_related(
+            "annotation", "user", "lab_group"
+        )
+        
+        queryset = self.filter_queryset(permissions)
+        page = self.paginate_queryset(queryset)
+        
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)

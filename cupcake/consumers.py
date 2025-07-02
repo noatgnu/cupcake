@@ -160,6 +160,10 @@ class UserConsumer(AsyncJsonWebsocketConsumer):
         content = event["message"]
         await self.send_json(content)
 
+    async def export_progress(self, event):
+        content = event["message"]
+        await self.send_json(content)
+
 class SummaryConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self):
         self.user_id = str(self.scope["user"].id)

@@ -1,0 +1,38 @@
+# Dockerfile for CUPCAKE performance testing
+# Includes Locust and other performance testing tools
+
+FROM python:3.10-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Install minimal system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install performance testing dependencies
+RUN pip install --no-cache-dir \
+    locust \
+    requests \
+    websockets \
+    numpy \
+    pandas \
+    matplotlib \
+    seaborn
+
+# Create performance test directories
+RUN mkdir -p /app/performance_tests /app/performance_results
+
+# Copy performance test files
+COPY tests/performance/ /app/performance_tests/
+
+# Expose Locust web interface port
+EXPOSE 8089
+
+# Default command starts Locust web interface
+CMD ["locust", "-f", "/app/performance_tests/locustfile.py", "--host=http://test-app:8000", "--web-host=0.0.0.0"]

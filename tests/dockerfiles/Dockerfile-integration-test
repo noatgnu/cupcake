@@ -1,0 +1,60 @@
+# Dockerfile for CUPCAKE integration tests
+# Includes tools for API testing, browser automation, and end-to-end testing
+
+FROM python:3.10-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /app
+
+# Install system dependencies for integration testing
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpq-dev \
+    curl \
+    wget \
+    git \
+    # Browser testing
+    chromium \
+    chromium-driver \
+    firefox-esr \
+    # Network tools
+    netcat-openbsd \
+    dnsutils \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements for the main app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install integration testing dependencies
+RUN pip install --no-cache-dir \
+    pytest \
+    pytest-django \
+    pytest-mock \
+    requests \
+    selenium \
+    playwright \
+    httpx \
+    websockets \
+    pillow \
+    # API testing
+    pytest-httpserver \
+    responses \
+    # Performance testing
+    locust
+
+# Install Playwright browsers
+RUN playwright install chromium firefox
+
+# Copy the application code
+COPY . .
+
+# Create test result directories
+RUN mkdir -p /app/test_results /app/test_fixtures
+
+# Default command for integration tests
+CMD ["python", "-m", "pytest", "tests/integration/", "-v", "--tb=short", "--junit-xml=/app/test_results/integration-results.xml"]

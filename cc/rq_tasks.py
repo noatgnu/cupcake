@@ -24,7 +24,11 @@ from django.utils import timezone
 from django_rq import job
 from docx.oxml import parse_xml
 from docx.oxml.ns import nsdecls
-from drf_chunked_upload.models import ChunkedUpload
+import re
+import logging
+from docx.shared import Inches, Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.style import WD_STYLE_TYPE
 from openpyxl.reader.excel import load_workbook
 from openpyxl.styles import PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
@@ -54,6 +58,8 @@ from docx.shared import Inches, RGBColor
 import re
 
 from cc.utils import user_metadata, staff_metadata, required_metadata_name, identify_barcode_format
+from cc.improved_docx_generator import EnhancedDocxGenerator, DocxGenerationError
+from cc.utils.user_data_export_revised import export_user_data_revised, export_protocol_data, export_session_data
 
 capture_language = re.compile(r"auto-detected language: (\w+)")
 
@@ -214,152 +220,662 @@ def transcribe_audio_from_video(video_path: str, model_path: str, step_annotatio
     )
     return annotation.transcription
 
-@job('export', timeout='1h')
+@job('export', timeout='2h')
 def create_docx(protocol_id: int, session_id: str = None, user_id: int = None, instance_id: str = None):
-    protocol = ProtocolModel.objects.get(id=protocol_id)
-    doc = docx.Document()
-    doc.add_heading(remove_html_tags(protocol.protocol_title), level=1)
-    html_to_docx(protocol.protocol_description, doc)
-    for section in protocol.get_section_in_order():
-        doc.add_heading(remove_html_tags(section.section_description), level=2)
-        for n, step in enumerate(section.get_step_in_order()):
-            # add divider between steps
-            doc.add_paragraph("----------------------------------------------------")
-            doc.add_paragraph(f"Step {n+1}")
-            description = step.step_description
-            for reagent in step.reagents.all():
-                for i in [f"{reagent.id}.name", f"{reagent.id}.quantity", f"{reagent.id}.unit", f"{reagent.id}.scaled_quantity"]:
-                    if i in description:
-                        if i == f"{reagent.id}.scaled_quantity":
-                            description = description.replace(i, str(reagent.quantity * reagent.scalable_factor))
-                        elif i == f"{reagent.id}.quantity":
-                            description = description.replace(i, str(reagent.quantity))
-                        elif i == f"{reagent.id}.unit":
-                            description = description.replace(i, reagent.reagent.unit)
-                        else:
-                            description = description.replace(i, reagent.reagent.name)
-
-            html_to_docx(step.step_description, doc)
-            doc.add_paragraph(f"(Duration:{convert_seconds_to_time(step.step_duration)})")
-            session = None
-            if session_id:
-                session = protocol.sessions.get(unique_id=session_id)
-            # else:
-            #
-            #     session = protocol.sessions.all()
-            #     if session:
-            #         session = session[0]
-            #     else:
-            #         session = None
-            annotations = None
-            if session:
-                annotations = step.annotations.filter(session=session)
-
-            if annotations:
-                for annotation in step.annotations.all():
-                    doc.add_paragraph(f"Annotation: {annotation.annotation_type}")
-                    if annotation.transcribed:
-                        doc.add_paragraph("Transcription:")
-                        if annotation.transcription.startswith("WEBVTT"):
-                            for i in webvtt.read_buffer(io.StringIO(annotation.transcription)):
-                                doc.add_paragraph(f"({i.start} - {i.end}) {i.text}")
-
-                    if annotation.translation:
-                        doc.add_paragraph("Translation:")
-                        if annotation.translation.startswith("WEBVTT"):
-                            for i in webvtt.read_buffer(io.StringIO(annotation.translation)):
-                                doc.add_paragraph(f"({i.start} - {i.end}) {i.text}")
-                    if annotation.summary:
-                        doc.add_paragraph("Summary:")
-                        doc.add_paragraph(annotation.summary)
-
-                    # if annotation has image add it to the document
-                    if annotation.annotation_type == "image":
-                        #get dimensions of the image and add it to the document with the correct dimensions respecting the original aspect ratio with max width of 4 inches and max height of 6 inches
-                        image_dimensions = ffmpeg.probe(annotation.file.path, show_entries="stream=width,height")
-                        width = int(image_dimensions["streams"][0]["width"])
-                        height = int(image_dimensions["streams"][0]["height"])
-                        if width > height:
-                            doc.add_picture(annotation.file.path, width=Inches(4))
-                        else:
-                            doc.add_picture(annotation.file.path, height=Inches(6))
-                    if annotation.annotation_type == "sketch":
-                        load_json = json.load(annotation.file)
-                        #convert base64 image to image file
-                        if "png" in load_json:
-                            data = load_json["png"].split('base64,')
-                            if len(data) > 1:
-                                pixel_width = load_json["width"]
-                                pixel_height = load_json["height"]
-                                image_bytes = base64.b64decode(data[1])
-                                image_file = io.BytesIO(image_bytes)
-                                doc.add_picture(image_file, width=Inches(pixel_width/pixel_height))
-                    if annotation.annotation_type == "table":
-                        data = json.loads(annotation.annotation)
-                        if data:
-                            doc.add_paragraph(data["name"])
-                            table = doc.add_table(rows=data["nRow"], cols=data["nCol"])
-                            table.style = 'Table Grid'
-
-                            for n, row in enumerate(data["content"]):
-                                row_cells = table.rows[n].cells
-                                for nc, c in enumerate(row):
-                                    row_cells[nc].add_paragraph(c)
-                                    if "trackingMap" in data:
-                                        # color the cell background blue if cell value is true in trackingMap
-                                        if f"{n},{nc}" in data["trackingMap"]:
-                                            if data["trackingMap"][f"{n},{nc}"]:
-                                                shading_elm = parse_xml(r'<w:shd {} w:fill="0000FF"/>'.format(nsdecls('w')))
-                                                row_cells[nc]._tc.get_or_add_tcPr().append(shading_elm)
-                    if annotation.annotation_type == "checklist":
-                        data = json.loads(annotation.annotation)
-                        if data:
-                            doc.add_paragraph(data["name"])
-                            for n, c in enumerate(data["checkList"]):
-                                doc.add_paragraph(f"{n+1}. {c['content'] if 'content' in c else ''} {c['checked'] if 'checked' in c else ''}")
-                    if annotation.annotation_type == "alignment":
-                        data = json.loads(annotation.annotation)
-                        if data:
-                            main = data["dataURL"].split('base64,')
-                            if len(main) > 1:
-                                image_bytes = base64.b64decode(main[1])
-                                image_file = io.BytesIO(image_bytes)
-                                doc.add_picture(image_file, width=Inches(4))
-                            for extracted in data["extractedSegments"]:
-                                if "dataURL" in extracted:
-                                    data = extracted["dataURL"].split('base64,')
-                                    doc.add_paragraph(f"{extracted['start']}-{extracted['end']}")
-                                    if len(data) > 1:
-                                        image_bytes = base64.b64decode(data[1])
-                                        image_file = io.BytesIO(image_bytes)
-                                        doc.add_picture(image_file, width=Inches(4))
+    """
+    Enhanced DOCX creation using the improved EnhancedDocxGenerator
+    
+    Args:
+        protocol_id: ID of the protocol to export
+        session_id: Optional session ID for session-specific annotations
+        user_id: User ID for notifications
+        instance_id: Instance ID for tracking
+        
+    Returns:
+        str: Path to generated DOCX file
+    """
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # Get protocol with error handling
+        try:
+            protocol = ProtocolModel.objects.get(id=protocol_id)
+        except ProtocolModel.DoesNotExist:
+            error_msg = f"Protocol {protocol_id} not found"
+            logger.error(error_msg)
+            if user_id:
+                _notify_user_error(user_id, instance_id, error_msg)
+            raise ValueError(error_msg)
+        
+        # Get session if provided
+        session = None
+        if session_id:
+            try:
+                session = Session.objects.get(unique_id=session_id)
+                logger.info(f"Using session: {session.unique_id}")
+            except Session.DoesNotExist:
+                logger.warning(f"Session {session_id} not found, proceeding without session")
+        
+        logger.info(f"Starting enhanced DOCX generation for protocol {protocol.id}: {protocol.protocol_title}")
+        
+        # Use the enhanced DOCX generator
+        try:
+            generator = EnhancedDocxGenerator(protocol, session, user_id, instance_id)
+            docx_filepath = generator.generate_document()
+            
+            logger.info(f"Successfully created enhanced DOCX file: {docx_filepath}")
+            
+            # Get generation statistics
+            stats = generator.get_statistics()
+            logger.info(f"Document generation stats: {stats}")
+            
+            # Notify user of completion with enhanced information
+            signer = TimestampSigner()
+            filename = os.path.basename(docx_filepath)
+            signed_value = signer.sign(filename)
+            
+            if user_id:
+                channel_layer = get_channel_layer()
+                async_to_sync(channel_layer.group_send)(
+                    f"user_{user_id}",
+                    {
+                        "type": "download_message",
+                        "message": {
+                            "signed_value": signed_value,
+                            "user_download": True,
+                            "instance_id": instance_id,
+                            "filename": filename,
+                            "stats": stats,
+                            "enhanced": True
+                        },
+                    },
+                )
+            
+            # Schedule cleanup (20 minutes)
+            threading.Timer(60*20, remove_file, args=[docx_filepath]).start()
+            
+            return docx_filepath
+            
+        except DocxGenerationError as e:
+            # Handle specific DOCX generation errors
+            error_msg = f"Enhanced DOCX generation failed: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            
+            if user_id:
+                _notify_user_error(user_id, instance_id, error_msg)
+            
+            # Fallback to basic generation if enhanced fails
+            logger.info("Attempting fallback to basic DOCX generation...")
+            return _create_docx_fallback(protocol, session, user_id, instance_id)
+            
+    except Exception as e:
+        error_msg = f"DOCX generation failed: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        
+        if user_id:
+            _notify_user_error(user_id, instance_id, error_msg)
+        
+        raise
 
 
+def _create_docx_fallback(protocol, session, user_id, instance_id):
+    """
+    Fallback DOCX generation using basic approach
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        logger.info(f"Using fallback DOCX generation for protocol {protocol.id}")
+        
+        # Basic document creation
+        doc = docx.Document()
+        
+        # Simple title
+        doc.add_heading(protocol.protocol_title, level=0)
+        
+        # Add basic protocol information
+        if hasattr(protocol, 'protocol_description') and protocol.protocol_description:
+            doc.add_heading('Description', level=1)
+            doc.add_paragraph(protocol.protocol_description)
+        
+        # Add steps in simple format
+        steps = protocol.get_step_in_order() if hasattr(protocol, 'get_step_in_order') else []
+        if steps:
+            doc.add_heading('Steps', level=1)
+            for i, step in enumerate(steps, 1):
+                doc.add_heading(f'Step {i}', level=2)
+                if hasattr(step, 'step_description'):
+                    doc.add_paragraph(step.step_description)
+        
+        # Generate filename and save
+        timestamp = timezone.now().strftime('%Y%m%d_%H%M%S')
+        protocol_name_clean = re.sub(r'[^\w\-_.]', '_', protocol.protocol_title)[:50]
+        filename = f"fallback_{protocol_name_clean}_{timestamp}.docx"
+        
+        # Ensure temp directory exists
+        temp_dir = os.path.join(settings.MEDIA_ROOT, "temp")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        docx_filepath = os.path.join(temp_dir, filename)
+        doc.save(docx_filepath)
+        
+        logger.info(f"Fallback DOCX created successfully: {docx_filepath}")
+        return docx_filepath
+        
+    except Exception as e:
+        logger.error(f"Fallback DOCX generation also failed: {str(e)}")
+        raise
 
-            # add page break after each section
+
+def _setup_document_styles(doc):
+    """Setup custom styles for better document formatting"""
+    try:
+        styles = doc.styles
+        
+        # Protocol title style
+        if 'Protocol Title' not in [s.name for s in styles]:
+            title_style = styles.add_style('Protocol Title', WD_STYLE_TYPE.PARAGRAPH)
+            title_style.font.name = 'Arial'
+            title_style.font.size = Pt(16)
+            title_style.font.bold = True
+            title_style.font.color.rgb = RGBColor(0, 51, 102)
+            title_style.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            title_style.paragraph_format.space_after = Pt(12)
+        
+        # Step header style
+        if 'Step Header' not in [s.name for s in styles]:
+            step_style = styles.add_style('Step Header', WD_STYLE_TYPE.PARAGRAPH)
+            step_style.font.name = 'Arial'
+            step_style.font.size = Pt(12)
+            step_style.font.bold = True
+            step_style.font.color.rgb = RGBColor(51, 51, 51)
+            step_style.paragraph_format.space_before = Pt(6)
+            step_style.paragraph_format.space_after = Pt(3)
+            
+    except Exception as e:
+        # If style creation fails, continue without custom styles
+        pass
+
+
+def _add_document_header(doc, protocol):
+    """Add improved document header"""
+    try:
+        # Protocol title
+        title_para = doc.add_paragraph()
+        title_para.style = 'Protocol Title' if 'Protocol Title' in [s.name for s in doc.styles] else 'Title'
+        title_para.add_run(remove_html_tags(getattr(protocol, 'protocol_name', 'Untitled Protocol')))
+        
+        # Protocol ID if available
+        if protocol.protocol_id:
+            subtitle_para = doc.add_paragraph()
+            subtitle_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            subtitle_run = subtitle_para.add_run(f"Protocol ID: {protocol.protocol_id}")
+            subtitle_run.font.size = Pt(11)
+            subtitle_run.italic = True
+        
+        # Generation timestamp
+        timestamp_para = doc.add_paragraph()
+        timestamp_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        timestamp_run = timestamp_para.add_run(
+            f"Generated: {timezone.now().strftime('%B %d, %Y at %I:%M %p')}"
+        )
+        timestamp_run.font.size = Pt(9)
+        timestamp_run.font.color.rgb = RGBColor(102, 102, 102)
+        
         doc.add_page_break()
-    filename = str(uuid.uuid4())
-    docx_filepath = os.path.join(settings.MEDIA_ROOT,"temp", f"{filename}.docx")
-    doc.save(docx_filepath)
+        
+    except Exception as e:
+        # Fallback to simple header
+        doc.add_heading(remove_html_tags(getattr(protocol, 'protocol_name', 'Protocol')), level=1)
 
-    signer = TimestampSigner()
-    value = signer.sign(f"{filename}.docx")
 
-    channel_layer = get_channel_layer()
-    async_to_sync(channel_layer.group_send)(
-        f"user_{user_id}",
-        {
-            "type": "download_message",
-            "message": {
-                "signed_value": value,
-                "user_download": True,
-                "instance_id": instance_id
+def _add_protocol_metadata(doc, protocol):
+    """Add protocol metadata section"""
+    try:
+        doc.add_heading('Protocol Information', level=1)
+        
+        # Create metadata table
+        table = doc.add_table(rows=0, cols=2)
+        table.style = 'Light Grid Accent 1'
+        
+        metadata_items = [
+            ('Authors', protocol.protocol_authors),
+            ('Created', protocol.protocol_created_on.strftime('%B %d, %Y') if protocol.protocol_created_on else None),
+            ('Last Modified', protocol.protocol_modified_on.strftime('%B %d, %Y') if protocol.protocol_modified_on else None),
+            ('Version', str(protocol.protocol_version) if protocol.protocol_version else None),
+            ('DOI', protocol.protocol_doi),
+            ('URL', protocol.protocol_url)
+        ]
+        
+        for label, value in metadata_items:
+            if value:
+                row_cells = table.add_row().cells
+                row_cells[0].text = label
+                row_cells[1].text = str(value)
+                row_cells[0].paragraphs[0].runs[0].bold = True
+        
+        doc.add_page_break()
+        
+    except Exception as e:
+        # If metadata table fails, just add a simple section
+        doc.add_paragraph("Protocol Information")
+
+
+def _add_protocol_step(doc, step, step_number, session, logger):
+    """Add a single protocol step with improved formatting"""
+    try:
+        # Step divider
+        divider_para = doc.add_paragraph('─' * 80)
+        divider_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        
+        # Step header
+        step_header_para = doc.add_paragraph()
+        step_header_para.style = 'Step Header' if 'Step Header' in [s.name for s in doc.styles] else 'Heading 2'
+        step_header_para.add_run(f"Step {step_number}: {remove_html_tags(step.step_title or 'Untitled Step')}")
+        
+        # Process step description with reagent substitutions
+        description = step.step_description or ""
+        
+        # Handle reagent substitutions
+        try:
+            from cc.models import StepReagent
+            step_reagents = StepReagent.objects.filter(step=step)
+            
+            for reagent in step_reagents:
+                replacements = {
+                    f"{reagent.id}.name": reagent.reagent.reagent_name,
+                    f"{reagent.id}.quantity": str(reagent.quantity_required or ''),
+                    f"{reagent.id}.unit": reagent.unit or '',
+                    f"{reagent.id}.scaled_quantity": str((reagent.quantity_required or 0) * (reagent.scalable_factor or 1))
+                }
+                
+                for placeholder, replacement in replacements.items():
+                    description = description.replace(placeholder, replacement)
+                    
+        except Exception as e:
+            logger.warning(f"Failed to process reagent substitutions for step {step.id}: {e}")
+        
+        # Add processed description
+        html_to_docx(description, doc)
+        
+        # Add step duration
+        if hasattr(step, 'step_duration') and step.step_duration:
+            duration_para = doc.add_paragraph(f"Duration: {convert_seconds_to_time(step.step_duration)}")
+            duration_para.runs[0].italic = True
+        
+        # Add step annotations
+        _add_step_annotations(doc, step, session, logger)
+        
+        # Add safety information if available
+        if hasattr(step, 'step_safety_information') and step.step_safety_information:
+            safety_para = doc.add_paragraph()
+            safety_run = safety_para.add_run('⚠️ Safety Information: ')
+            safety_run.bold = True
+            safety_run.font.color.rgb = RGBColor(255, 0, 0)
+            html_to_docx(step.step_safety_information, doc)
+        
+        doc.add_paragraph()  # Add spacing
+        
+    except Exception as e:
+        logger.error(f"Failed to add step {step.id}: {e}")
+        # Add basic step info as fallback
+        doc.add_paragraph(f"Step {step_number}: {step.step_title or 'Step'}")
+
+
+def _add_step_annotations(doc, step, session, logger):
+    """Add step annotations with improved error handling"""
+    try:
+        annotations = step.annotations.all()
+        if session:
+            annotations = annotations.filter(session=session)
+        
+        if not annotations.exists():
+            return
+        
+        # Annotations header
+        annotations_para = doc.add_paragraph()
+        annotations_para.add_run('Annotations:').bold = True
+        
+        for annotation in annotations:
+            try:
+                _add_single_annotation(doc, annotation, logger)
+            except Exception as e:
+                logger.error(f"Failed to add annotation {annotation.id}: {e}")
+                # Add basic annotation info as fallback
+                doc.add_paragraph(f"Annotation ({annotation.annotation_type}): {annotation.annotation or 'No content'}")
+                
+    except Exception as e:
+        logger.error(f"Failed to add annotations for step {step.id}: {e}")
+
+
+def _add_single_annotation(doc, annotation, logger):
+    """Add a single annotation with proper error handling"""
+    try:
+        # Annotation header
+        annotation_para = doc.add_paragraph()
+        type_run = annotation_para.add_run(f"[{annotation.annotation_type.upper()}] ")
+        type_run.bold = True
+        type_run.font.color.rgb = RGBColor(0, 102, 204)
+        
+        if annotation.annotation_name:
+            annotation_para.add_run(f"{annotation.annotation_name}: ")
+        
+        # Handle different annotation types with better error handling
+        if annotation.annotation_type == "image":
+            _add_image_annotation_safe(doc, annotation, logger)
+        elif annotation.annotation_type == "sketch":
+            _add_sketch_annotation_safe(doc, annotation, logger)
+        elif annotation.annotation_type == "table":
+            _add_table_annotation_safe(doc, annotation, logger)
+        elif annotation.annotation_type == "checklist":
+            _add_checklist_annotation_safe(doc, annotation, logger)
+        elif annotation.annotation_type == "alignment":
+            _add_alignment_annotation_safe(doc, annotation, logger)
+        else:
+            # Generic annotation
+            if annotation.annotation:
+                doc.add_paragraph(annotation.annotation)
+        
+        # Add transcription, translation, summary
+        if annotation.transcribed and annotation.transcription:
+            _add_transcription_safe(doc, annotation.transcription, logger)
+        
+        if annotation.translation:
+            _add_translation_safe(doc, annotation.translation, logger)
+        
+        if annotation.summary:
+            summary_para = doc.add_paragraph()
+            summary_para.add_run('Summary: ').bold = True
+            summary_para.add_run(annotation.summary)
+            
+    except Exception as e:
+        logger.error(f"Failed to process annotation {annotation.id}: {e}")
+
+
+def _add_image_annotation_safe(doc, annotation, logger):
+    """Safely add image annotation"""
+    try:
+        if not annotation.file or not annotation.file.path:
+            return
+        
+        if not os.path.exists(annotation.file.path):
+            logger.warning(f"Image file not found: {annotation.file.path}")
+            doc.add_paragraph("Image file not available")
+            return
+        
+        # Get image dimensions safely
+        try:
+            image_dimensions = ffmpeg.probe(annotation.file.path, show_entries="stream=width,height")
+            width = int(image_dimensions["streams"][0]["width"])
+            height = int(image_dimensions["streams"][0]["height"])
+            
+            # Add image with proper sizing
+            if width > height:
+                doc.add_picture(annotation.file.path, width=Inches(5))
+            else:
+                doc.add_picture(annotation.file.path, height=Inches(6))
+                
+        except Exception as e:
+            logger.warning(f"Failed to get image dimensions, using default size: {e}")
+            doc.add_picture(annotation.file.path, width=Inches(4))
+            
+    except Exception as e:
+        logger.error(f"Failed to add image: {e}")
+        doc.add_paragraph("Failed to load image")
+
+
+def _add_sketch_annotation_safe(doc, annotation, logger):
+    """Safely add sketch annotation"""
+    try:
+        if not annotation.file:
+            return
+        
+        with open(annotation.file.path, 'r') as f:
+            load_json = json.load(f)
+        
+        if "png" in load_json:
+            data = load_json["png"].split('base64,')
+            if len(data) > 1:
+                image_bytes = base64.b64decode(data[1])
+                image_file = io.BytesIO(image_bytes)
+                
+                # Calculate size
+                pixel_width = load_json.get("width", 400)
+                pixel_height = load_json.get("height", 300)
+                
+                if pixel_width > pixel_height:
+                    doc.add_picture(image_file, width=Inches(4))
+                else:
+                    doc.add_picture(image_file, height=Inches(5))
+                    
+    except Exception as e:
+        logger.error(f"Failed to add sketch: {e}")
+        doc.add_paragraph("Failed to load sketch")
+
+
+def _add_table_annotation_safe(doc, annotation, logger):
+    """Safely add table annotation"""
+    try:
+        data = json.loads(annotation.annotation)
+        if not data:
+            return
+        
+        # Add table name
+        if "name" in data:
+            doc.add_paragraph(data["name"]).runs[0].bold = True
+        
+        # Create table
+        rows = data.get("nRow", 0)
+        cols = data.get("nCol", 0)
+        
+        if rows > 0 and cols > 0:
+            table = doc.add_table(rows=rows, cols=cols)
+            table.style = 'Table Grid'
+            
+            content = data.get("content", [])
+            tracking_map = data.get("trackingMap", {})
+            
+            for n, row in enumerate(content):
+                if n >= rows:
+                    break
+                row_cells = table.rows[n].cells
+                for nc, c in enumerate(row):
+                    if nc >= cols:
+                        break
+                    row_cells[nc].text = str(c)
+                    
+                    # Apply highlighting
+                    if f"{n},{nc}" in tracking_map and tracking_map[f"{n},{nc}"]:
+                        try:
+                            shading_elm = parse_xml(r'<w:shd {} w:fill="B3D9FF"/>'.format(nsdecls('w')))
+                            row_cells[nc]._tc.get_or_add_tcPr().append(shading_elm)
+                        except:
+                            pass  # Skip highlighting if it fails
+                            
+    except Exception as e:
+        logger.error(f"Failed to add table: {e}")
+        doc.add_paragraph("Failed to load table")
+
+
+def _add_checklist_annotation_safe(doc, annotation, logger):
+    """Safely add checklist annotation"""
+    try:
+        data = json.loads(annotation.annotation)
+        if not data:
+            return
+        
+        # Add checklist name
+        if "name" in data:
+            doc.add_paragraph(data["name"]).runs[0].bold = True
+        
+        # Add checklist items
+        for n, c in enumerate(data.get("checkList", []), 1):
+            content = c.get('content', f'Item {n}') if isinstance(c, dict) else str(c)
+            checked = c.get('checked', False) if isinstance(c, dict) else False
+            
+            checkbox = "☑️" if checked else "☐"
+            doc.add_paragraph(f"{checkbox} {content}")
+            
+    except Exception as e:
+        logger.error(f"Failed to add checklist: {e}")
+        doc.add_paragraph("Failed to load checklist")
+
+
+def _add_alignment_annotation_safe(doc, annotation, logger):
+    """Safely add alignment annotation"""
+    try:
+        data = json.loads(annotation.annotation)
+        if not data:
+            return
+        
+        # Add main image
+        if "dataURL" in data:
+            main = data["dataURL"].split('base64,')
+            if len(main) > 1:
+                image_bytes = base64.b64decode(main[1])
+                image_file = io.BytesIO(image_bytes)
+                doc.add_picture(image_file, width=Inches(5))
+        
+        # Add extracted segments
+        for extracted in data.get("extractedSegments", []):
+            if "dataURL" in extracted:
+                doc.add_paragraph(f"Segment: {extracted.get('start', 'N/A')}-{extracted.get('end', 'N/A')}")
+                data_parts = extracted["dataURL"].split('base64,')
+                if len(data_parts) > 1:
+                    image_bytes = base64.b64decode(data_parts[1])
+                    image_file = io.BytesIO(image_bytes)
+                    doc.add_picture(image_file, width=Inches(4))
+                    
+    except Exception as e:
+        logger.error(f"Failed to add alignment: {e}")
+        doc.add_paragraph("Failed to load alignment")
+
+
+def _add_transcription_safe(doc, transcription, logger):
+    """Safely add transcription"""
+    try:
+        transcription_para = doc.add_paragraph()
+        transcription_para.add_run('🎙️ Transcription: ').bold = True
+        
+        if transcription.startswith("WEBVTT"):
+            try:
+                for i in webvtt.read_buffer(io.StringIO(transcription)):
+                    doc.add_paragraph(f"({i.start} - {i.end}) {i.text}")
+            except:
+                doc.add_paragraph(transcription)
+        else:
+            doc.add_paragraph(transcription)
+            
+    except Exception as e:
+        logger.error(f"Failed to add transcription: {e}")
+
+
+def _add_translation_safe(doc, translation, logger):
+    """Safely add translation"""
+    try:
+        translation_para = doc.add_paragraph()
+        translation_para.add_run('🌐 Translation: ').bold = True
+        
+        if translation.startswith("WEBVTT"):
+            try:
+                for i in webvtt.read_buffer(io.StringIO(translation)):
+                    doc.add_paragraph(f"({i.start} - {i.end}) {i.text}")
+            except:
+                doc.add_paragraph(translation)
+        else:
+            doc.add_paragraph(translation)
+            
+    except Exception as e:
+        logger.error(f"Failed to add translation: {e}")
+
+
+def _add_reagents_appendix(doc, protocol):
+    """Add reagents appendix"""
+    try:
+        from cc.models import ProtocolReagent, StepReagent
+        
+        protocol_reagents = ProtocolReagent.objects.filter(protocol=protocol)
+        step_reagents = StepReagent.objects.filter(step__protocol=protocol)
+        
+        if not protocol_reagents.exists() and not step_reagents.exists():
+            return
+        
+        doc.add_page_break()
+        doc.add_heading('Reagents and Materials', level=1)
+        
+        # Add protocol reagents table
+        if protocol_reagents.exists():
+            doc.add_heading('Protocol Reagents', level=2)
+            table = doc.add_table(rows=1, cols=4)
+            table.style = 'Light Grid Accent 1'
+            
+            # Headers
+            headers = ['Reagent', 'Quantity', 'Unit', 'Notes']
+            for i, header in enumerate(headers):
+                table.rows[0].cells[i].text = header
+                table.rows[0].cells[i].paragraphs[0].runs[0].bold = True
+            
+            # Data
+            for reagent in protocol_reagents:
+                row_cells = table.add_row().cells
+                row_cells[0].text = reagent.reagent.reagent_name
+                row_cells[1].text = str(reagent.quantity_required or '')
+                row_cells[2].text = reagent.unit or ''
+                row_cells[3].text = reagent.notes or ''
+                
+    except Exception as e:
+        # If appendix fails, just skip it
+        pass
+
+
+def _add_session_summary(doc, session):
+    """Add session summary if available"""
+    try:
+        if not session:
+            return
+        
+        doc.add_heading('Session Information', level=2)
+        
+        # Session info table
+        table = doc.add_table(rows=0, cols=2)
+        table.style = 'Light Grid Accent 1'
+        
+        session_info = [
+            ('Session ID', session.unique_id),
+            ('Session Name', session.name),
+            ('Started', session.started_at.strftime('%B %d, %Y at %I:%M %p') if session.started_at else 'Not started'),
+            ('Status', 'Enabled' if session.enabled else 'Disabled')
+        ]
+        
+        for label, value in session_info:
+            if value:
+                row_cells = table.add_row().cells
+                row_cells[0].text = label
+                row_cells[1].text = str(value)
+                row_cells[0].paragraphs[0].runs[0].bold = True
+                
+    except Exception as e:
+        pass
+
+
+def _notify_user_error(user_id, instance_id, error_message):
+    """Notify user of error via WebSocket"""
+    try:
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}",
+            {
+                "type": "error_message",
+                "message": {
+                    "error": error_message,
+                    "instance_id": instance_id
+                },
             },
-        },
-    )
-    print(f"Created docx file: {docx_filepath}")
-    threading.Timer(60*20, remove_file, args=[docx_filepath]).start()
-    return docx_filepath
+        )
+    except Exception as e:
+        # If notification fails, just log it
+        print(f"Failed to notify user of error: {e}")
 
 def remove_file(file_path):
     if os.path.exists(file_path):
@@ -579,22 +1095,179 @@ def export_sqlite(user_id:int, session_id: str = None, instance_id: str = None):
     )
 
 @job('export', timeout='3h')
-def export_data(user_id: int, protocol_ids: list[int] = None, instance_id: str = None):
-    filename = export_user_data(user_id, protocol_ids=protocol_ids)
-    signer = TimestampSigner()
-    value = signer.sign(f"{filename}.tar.gz")
+def export_data(user_id: int, protocol_ids: list[int] = None, session_ids: list[int] = None, instance_id: str = None, export_type: str = "complete", format_type: str = "zip"):
+    """
+    Export user data using the revised export system with options for complete, protocol-specific, or session-specific exports
+    
+    :param user_id: ID of the user to export data for
+    :param protocol_ids: Optional list of protocol IDs to limit export to specific protocols
+    :param session_ids: Optional list of session IDs to limit export to specific sessions  
+    :param instance_id: Optional instance ID for tracking the export job
+    :param export_type: Type of export - "complete", "protocol", or "session"
+    :param format_type: Archive format - "zip" or "tar.gz"
+    """
+    user = User.objects.get(id=user_id)
     channel_layer = get_channel_layer()
+    
+    # Send initial notification
     async_to_sync(channel_layer.group_send)(
         f"user_{user_id}",
         {
-            "type": "download_message",
+            "type": "export_progress",
             "message": {
-                "signed_value": value,
-                "user_download": True,
-                "instance_id": instance_id
+                "instance_id": instance_id,
+                "progress": 0,
+                "status": "starting",
+                "message": f"Starting {export_type} export in {format_type} format...",
+                "export_type": export_type
             },
         },
     )
+    
+    # Create export directory in Django media temp folder
+    media_temp_dir = os.path.join(settings.MEDIA_ROOT, "temp")
+    os.makedirs(media_temp_dir, exist_ok=True)
+    
+    # Clean up old export files (older than 7 days) to prevent storage buildup
+    async_to_sync(channel_layer.group_send)(
+        f"user_{user_id}",
+        {
+            "type": "export_progress",
+            "message": {
+                "instance_id": instance_id,
+                "progress": 5,
+                "status": "preparing",
+                "message": "Preparing export environment...",
+                "export_type": export_type
+            },
+        },
+    )
+    _cleanup_old_exports(media_temp_dir)
+    
+    try:
+        # Send progress notification for data collection
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}",
+            {
+                "type": "export_progress",
+                "message": {
+                    "instance_id": instance_id,
+                    "progress": 10,
+                    "status": "collecting",
+                    "message": "Collecting and exporting data...",
+                    "export_type": export_type
+                },
+            },
+        )
+        
+        # Create progress callback
+        def progress_callback(progress, message, status="processing"):
+            async_to_sync(channel_layer.group_send)(
+                f"user_{user_id}",
+                {
+                    "type": "export_progress",
+                    "message": {
+                        "instance_id": instance_id,
+                        "progress": progress,
+                        "status": status,
+                        "message": message,
+                        "export_type": export_type
+                    },
+                },
+            )
+        
+        if export_type == "protocol" and protocol_ids:
+            filename = export_protocol_data(user, protocol_ids, export_dir=media_temp_dir, format_type=format_type, progress_callback=progress_callback)
+        elif export_type == "session" and session_ids:
+            filename = export_session_data(user, session_ids, export_dir=media_temp_dir, format_type=format_type, progress_callback=progress_callback)
+        else:
+            filename = export_user_data_revised(user, export_dir=media_temp_dir, format_type=format_type, progress_callback=progress_callback)
+        
+        # Send progress notification for file creation
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}",
+            {
+                "type": "export_progress",
+                "message": {
+                    "instance_id": instance_id,
+                    "progress": 90,
+                    "status": "finalizing",
+                    "message": "Creating archive and generating hash...",
+                    "export_type": export_type
+                },
+            },
+        )
+
+        base_filename = os.path.basename(filename)
+        
+        # Create relative path for media URL
+        relative_path = os.path.relpath(filename, settings.MEDIA_ROOT)
+        
+        signer = TimestampSigner()
+        value = signer.sign(base_filename)
+        
+        # Send completion notification with download information
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}",
+            {
+                "type": "export_progress",
+                "message": {
+                    "instance_id": instance_id,
+                    "progress": 100,
+                    "status": "completed",
+                    "message": f"Export completed successfully! File ready for download.",
+                    "export_type": export_type,
+                    "file_size": _get_file_size_mb(filename)
+                },
+            },
+        )
+        
+        # Send download message
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}",
+            {
+                "type": "download_message",
+                "message": {
+                    "signed_value": value,
+                    "user_download": True,
+                    "instance_id": instance_id,
+                    "export_type": export_type,
+                    "export_path": filename,
+                    "download_url": f"/media/{relative_path}",
+                    "file_size_mb": _get_file_size_mb(filename)
+                },
+            },
+        )
+        
+    except Exception as e:
+        # Send error notification with progress information
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}",
+            {
+                "type": "export_progress",
+                "message": {
+                    "instance_id": instance_id,
+                    "progress": -1,  # Indicates error
+                    "status": "error",
+                    "message": f"Export failed: {str(e)}",
+                    "export_type": export_type,
+                    "error_details": str(e)
+                },
+            },
+        )
+        
+        # Also send the legacy error format for backward compatibility
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}",
+            {
+                "type": "export_error",
+                "message": {
+                    "error": str(e),
+                    "instance_id": instance_id,
+                    "export_type": export_type
+                },
+            },
+        )
 
 def export_user_data(user_id: int, filename: str = None, protocol_ids: list[int] = None):
     """
@@ -738,9 +1411,272 @@ def export_user_data(user_id: int, filename: str = None, protocol_ids: list[int]
     return filename
 
 @job('import-data', timeout='3h')
-def import_data(user_id: int, tar_file: str, instance_id: str = None):
-    import_user_data(user_id, tar_file, instance_id=instance_id)
+def import_data(user_id: int, archive_file: str, instance_id: str = None, import_options: dict = None):
+    """
+    Import user data with progress tracking and selective import options
+    
+    :param user_id: ID of the user to import data for
+    :param archive_file: Path to the archive file (zip or tar.gz)
+    :param instance_id: Optional instance ID for tracking the import job
+    :param import_options: Optional dict specifying what to import (protocols, sessions, etc.)
+    """
+    from cc.utils.user_data_import_revised import import_user_data_revised
+    from cc.models import SiteSettings
+    
+    user = User.objects.get(id=user_id)
+    channel_layer = get_channel_layer()
+    
+    # Check site settings to filter import options
+    try:
+        site_settings = SiteSettings.objects.filter(is_active=True).first()
+        if site_settings and import_options:
+            # Filter import options based on site settings (unless user is staff)
+            filtered_options = site_settings.filter_import_options(import_options, user)
+            if filtered_options != import_options:
+                # Send notification about restricted options
+                restricted_items = [k for k in import_options if k not in filtered_options or not filtered_options[k]]
+                if restricted_items:
+                    async_to_sync(channel_layer.group_send)(
+                        f"user_{user_id}",
+                        {
+                            "type": "import_progress",
+                            "message": {
+                                "instance_id": instance_id,
+                                "progress": 0,
+                                "status": "warning",
+                                "message": f"Some import options restricted by site settings: {', '.join(restricted_items)}",
+                                "import_type": "user_data"
+                            },
+                        },
+                    )
+            import_options = filtered_options
+    except Exception as e:
+        print(f"Warning: Could not check site settings for import restrictions: {e}")
+    
+    # Send initial notification
+    async_to_sync(channel_layer.group_send)(
+        f"user_{user_id}",
+        {
+            "type": "import_progress",
+            "message": {
+                "instance_id": instance_id,
+                "progress": 0,
+                "status": "starting",
+                "message": "Starting import process...",
+                "import_type": "user_data"
+            },
+        },
+    )
+    
+    try:
+        # Create progress callback
+        def progress_callback(progress, message, status="processing"):
+            async_to_sync(channel_layer.group_send)(
+                f"user_{user_id}",
+                {
+                    "type": "import_progress",
+                    "message": {
+                        "instance_id": instance_id,
+                        "progress": progress,
+                        "status": status,
+                        "message": message,
+                        "import_type": "user_data"
+                    },
+                },
+            )
+        
+        # Perform the import with progress tracking
+        result = import_user_data_revised(
+            user, 
+            archive_file, 
+            import_options=import_options,
+            progress_callback=progress_callback
+        )
+        
+        if result['success']:
+            # Send completion notification
+            async_to_sync(channel_layer.group_send)(
+                f"user_{user_id}",
+                {
+                    "type": "import_progress",
+                    "message": {
+                        "instance_id": instance_id,
+                        "progress": 100,
+                        "status": "completed",
+                        "message": f"Import completed successfully! {result['stats']['models_imported']} models imported.",
+                        "import_type": "user_data",
+                        "stats": result['stats']
+                    },
+                },
+            )
+        else:
+            # Send error notification
+            async_to_sync(channel_layer.group_send)(
+                f"user_{user_id}",
+                {
+                    "type": "import_progress",
+                    "message": {
+                        "instance_id": instance_id,
+                        "progress": -1,
+                        "status": "error",
+                        "message": f"Import failed: {result.get('error', 'Unknown error')}",
+                        "import_type": "user_data",
+                        "error_details": result.get('error', 'Unknown error')
+                    },
+                },
+            )
+        
+    except Exception as e:
+        # Send error notification
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}",
+            {
+                "type": "import_progress",
+                "message": {
+                    "instance_id": instance_id,
+                    "progress": -1,
+                    "status": "error",
+                    "message": f"Import failed: {str(e)}",
+                    "import_type": "user_data",
+                    "error_details": str(e)
+                },
+            },
+        )
 
+
+@job('import-data', timeout='1h')
+def dry_run_import_data(user_id: int, archive_file: str, instance_id: str = None, import_options: dict = None):
+    """
+    Perform a dry run analysis of user data import without making any changes
+    
+    :param user_id: ID of the user to analyze import for
+    :param archive_file: Path to the archive file (zip or tar.gz)
+    :param instance_id: Optional instance ID for tracking the analysis job
+    :param import_options: Optional dict specifying what to analyze for import
+    """
+    from cc.utils.user_data_import_revised import dry_run_import_user_data
+    from cc.models import SiteSettings
+    
+    user = User.objects.get(id=user_id)
+    channel_layer = get_channel_layer()
+    
+    # Check site settings to filter import options (same as actual import)
+    try:
+        site_settings = SiteSettings.objects.filter(is_active=True).first()
+        if site_settings and import_options:
+            filtered_options = site_settings.filter_import_options(import_options, user)
+            if filtered_options != import_options:
+                restricted_items = [k for k in import_options if k not in filtered_options or not filtered_options[k]]
+                if restricted_items:
+                    async_to_sync(channel_layer.group_send)(
+                        f"user_{user_id}",
+                        {
+                            "type": "import_progress",
+                            "message": {
+                                "instance_id": instance_id,
+                                "progress": 0,
+                                "status": "warning",
+                                "message": f"Some import options will be restricted: {', '.join(restricted_items)}",
+                                "import_type": "dry_run_analysis"
+                            },
+                        },
+                    )
+            import_options = filtered_options
+    except Exception as e:
+        print(f"Warning: Could not check site settings for dry run: {e}")
+    
+    # Send initial notification
+    async_to_sync(channel_layer.group_send)(
+        f"user_{user_id}",
+        {
+            "type": "import_progress",
+            "message": {
+                "instance_id": instance_id,
+                "progress": 0,
+                "status": "analyzing",
+                "message": "Starting import analysis...",
+                "import_type": "dry_run_analysis"
+            },
+        },
+    )
+    
+    try:
+        # Create progress callback
+        def progress_callback(progress, message, status="analyzing"):
+            async_to_sync(channel_layer.group_send)(
+                f"user_{user_id}",
+                {
+                    "type": "import_progress",
+                    "message": {
+                        "instance_id": instance_id,
+                        "progress": progress,
+                        "status": status,
+                        "message": message,
+                        "import_type": "dry_run_analysis"
+                    },
+                },
+            )
+        
+        # Perform the dry run analysis
+        result = dry_run_import_user_data(
+            user, 
+            archive_file, 
+            import_options=import_options,
+            progress_callback=progress_callback
+        )
+        
+        if result['success']:
+            # Send completion notification with analysis report
+            async_to_sync(channel_layer.group_send)(
+                f"user_{user_id}",
+                {
+                    "type": "import_progress", 
+                    "message": {
+                        "instance_id": instance_id,
+                        "progress": 100,
+                        "status": "completed",
+                        "message": "Import analysis completed successfully!",
+                        "import_type": "dry_run_analysis",
+                        "analysis_report": result['analysis_report'],
+                        "metadata": result.get('metadata', {}),
+                        "archive_format": result.get('archive_format', 'unknown')
+                    },
+                },
+            )
+        else:
+            # Send error notification
+            async_to_sync(channel_layer.group_send)(
+                f"user_{user_id}",
+                {
+                    "type": "import_progress",
+                    "message": {
+                        "instance_id": instance_id,
+                        "progress": -1,
+                        "status": "error",
+                        "message": f"Import analysis failed: {result.get('error', 'Unknown error')}",
+                        "import_type": "dry_run_analysis",
+                        "error_details": result.get('error', 'Unknown error'),
+                        "analysis_report": result.get('analysis_report', {})
+                    },
+                },
+            )
+        
+    except Exception as e:
+        # Send error notification
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}",
+            {
+                "type": "import_progress",
+                "message": {
+                    "instance_id": instance_id,
+                    "progress": -1,
+                    "status": "error",
+                    "message": f"Import analysis failed: {str(e)}",
+                    "import_type": "dry_run_analysis",
+                    "error_details": str(e)
+                },
+            },
+        )
 
 
 def import_user_data(user_id: int, tar_file: str, instance_id: str = None):
@@ -2919,3 +3855,60 @@ def check_instrument_warranty_maintenance(instrument_ids: list[int], days_before
             },
         }
     )
+
+
+def _get_file_size_mb(file_path: str) -> float:
+    """
+    Get file size in megabytes.
+    
+    Args:
+        file_path: Path to the file
+        
+    Returns:
+        File size in MB, rounded to 2 decimal places
+    """
+    try:
+        size_bytes = os.path.getsize(file_path)
+        size_mb = size_bytes / (1024 * 1024)
+        return round(size_mb, 2)
+    except Exception:
+        return 0.0
+
+
+def _cleanup_old_exports(temp_dir: str, max_age_days: int = 7):
+    """
+    Clean up old export files from the temp directory to prevent storage buildup.
+    
+    Args:
+        temp_dir: Path to the temp directory containing export files
+        max_age_days: Maximum age in days before files are deleted (default: 7)
+    """
+    import time
+    from pathlib import Path
+    
+    try:
+        current_time = time.time()
+        max_age_seconds = max_age_days * 24 * 60 * 60
+        
+        for item in Path(temp_dir).iterdir():
+            if item.is_file() and (item.name.startswith('cupcake_export_') or 
+                                 item.name.endswith(('.zip', '.tar.gz', '.sha256'))):
+                file_age = current_time - item.stat().st_mtime
+                if file_age > max_age_seconds:
+                    try:
+                        item.unlink()
+                        print(f"Cleaned up old export file: {item.name}")
+                    except Exception as e:
+                        print(f"Failed to delete old export file {item.name}: {e}")
+            elif item.is_dir() and item.name.startswith('cupcake_export_'):
+                dir_age = current_time - item.stat().st_mtime
+                if dir_age > max_age_seconds:
+                    try:
+                        shutil.rmtree(item)
+                        print(f"Cleaned up old export directory: {item.name}")
+                    except Exception as e:
+                        print(f"Failed to delete old export directory {item.name}: {e}")
+                        
+    except Exception as e:
+        print(f"Error during export cleanup: {e}")
+        # Don't raise the exception to avoid breaking the export process

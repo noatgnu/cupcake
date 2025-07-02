@@ -1,6 +1,8 @@
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
+from django.db import connection
+from django.conf import settings
 from drf_chunked_upload.exceptions import ChunkedUploadError
 from drf_chunked_upload.views import ChunkedUploadView
 from rest_framework.authentication import TokenAuthentication
@@ -15,6 +17,8 @@ from rest_framework import status
 from rest_framework.views import APIView
 import requests
 from bs4 import BeautifulSoup
+import redis
+import time
 
 from cc.serializers import ProtocolModelSerializer
 from cc.models import ProtocolModel
@@ -126,3 +130,103 @@ class DataChunkedUploadView(ChunkedUploadView):
 @ensure_csrf_cookie
 def set_csrf(request):
     return JsonResponse(data={"data": "CSRF cookie set"}, status=status.HTTP_200_OK)
+
+
+def health_check(request):
+    """
+    Basic health check endpoint
+    Returns system status and basic connectivity information
+    """
+    start_time = time.time()
+    
+    health_status = {
+        "status": "healthy",
+        "timestamp": time.time(),
+        "version": getattr(settings, 'VERSION', '1.0.0'),
+        "environment": getattr(settings, 'ENVIRONMENT', 'development'),
+        "checks": {}
+    }
+    
+    # Database connectivity check
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+        health_status["checks"]["database"] = {"status": "healthy", "message": "Database connection successful"}
+    except Exception as e:
+        health_status["status"] = "unhealthy"
+        health_status["checks"]["database"] = {"status": "unhealthy", "message": str(e)}
+    
+    # Redis connectivity check (if configured)
+    try:
+        redis_host = getattr(settings, 'REDIS_HOST', 'localhost')
+        redis_port = getattr(settings, 'REDIS_PORT', 6379)
+        redis_password = getattr(settings, 'REDIS_PASSWORD', None)
+        
+        r = redis.Redis(host=redis_host, port=redis_port, password=redis_password, socket_timeout=2)
+        r.ping()
+        health_status["checks"]["redis"] = {"status": "healthy", "message": "Redis connection successful"}
+    except Exception as e:
+        # Redis failure is not critical for basic health
+        health_status["checks"]["redis"] = {"status": "warning", "message": f"Redis unavailable: {str(e)}"}
+    
+    # Response time
+    response_time = (time.time() - start_time) * 1000
+    health_status["response_time_ms"] = round(response_time, 2)
+    
+    # Set HTTP status code based on health
+    status_code = 200 if health_status["status"] == "healthy" else 503
+    
+    return JsonResponse(health_status, status=status_code)
+
+
+def ready_check(request):
+    """
+    Readiness check endpoint
+    More comprehensive check for container orchestration
+    """
+    ready_status = {
+        "ready": True,
+        "timestamp": time.time(),
+        "checks": {}
+    }
+    
+    # Database readiness
+    try:
+        with connection.cursor() as cursor:
+            # Check if we can perform basic operations
+            cursor.execute("SELECT COUNT(*) FROM django_migrations")
+            migration_count = cursor.fetchone()[0]
+        
+        ready_status["checks"]["database"] = {
+            "ready": True, 
+            "migrations": migration_count,
+            "message": "Database ready with migrations applied"
+        }
+    except Exception as e:
+        ready_status["ready"] = False
+        ready_status["checks"]["database"] = {"ready": False, "message": str(e)}
+    
+    # Check if critical tables exist
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) FROM auth_user")
+        ready_status["checks"]["auth"] = {"ready": True, "message": "Authentication system ready"}
+    except Exception as e:
+        ready_status["ready"] = False
+        ready_status["checks"]["auth"] = {"ready": False, "message": str(e)}
+    
+    status_code = 200 if ready_status["ready"] else 503
+    return JsonResponse(ready_status, status=status_code)
+
+
+def liveness_check(request):
+    """
+    Liveness check endpoint
+    Simple check to verify the application is running
+    """
+    return JsonResponse({
+        "alive": True,
+        "timestamp": time.time(),
+        "message": "CUPCAKE LIMS is running"
+    })

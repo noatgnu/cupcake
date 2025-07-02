@@ -1,0 +1,267 @@
+# Docker Compose configuration for CUPCAKE LIMS testing environment
+# This setup mirrors the production environment but optimized for testing
+
+version: '3.8'
+
+services:
+  # Test Database - PostgreSQL 14
+  test-db:
+    image: postgres:14
+    container_name: cupcake-test-db
+    environment:
+      POSTGRES_DB: cupcake_test
+      POSTGRES_USER: test_user
+      POSTGRES_PASSWORD: test_password
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5434:5432"
+    volumes:
+      - test_db_data:/var/lib/postgresql/data
+      - ./fixtures/sql:/docker-entrypoint-initdb.d/
+    networks:
+      - test-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test_user -d cupcake_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Test Redis - For background tasks and caching
+  test-redis:
+    image: redis:7-alpine
+    container_name: cupcake-test-redis
+    command: redis-server --requirepass test_redis_password
+    ports:
+      - "6381:6379"
+    networks:
+      - test-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "test_redis_password", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Main Django Application for Testing
+  test-app:
+    build:
+      context: ..
+      dockerfile: ./tests/dockerfiles/Dockerfile-test-app
+    container_name: cupcake-test-app
+    depends_on:
+      test-db:
+        condition: service_healthy
+      test-redis:
+        condition: service_healthy
+    environment:
+      # Django Test Configuration
+      - DJANGO_SETTINGS_MODULE=cupcake.settings_test
+      - DEBUG=True
+      - TESTING=True
+      
+      # Database Configuration
+      - POSTGRES_NAME=cupcake_test
+      - POSTGRES_DB=cupcake_test
+      - POSTGRES_USER=test_user
+      - POSTGRES_PASSWORD=test_password
+      - POSTGRES_HOST=test-db
+      - POSTGRES_PORT=5432
+      
+      # Redis Configuration
+      - REDIS_HOST=test-redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=test_redis_password
+      
+      # Security
+      - SECRET_KEY=test-secret-key-for-testing-only-not-secure
+      
+      # External Services (disabled for testing)
+      - USE_COTURN=False
+      - USE_LLM=False
+      - USE_WHISPER=False
+      - USE_OCR=False
+      - SLACK_WEBHOOK_URL=
+      
+      # Allowed hosts and CORS
+      - ALLOWED_HOSTS=localhost,test-app,127.0.0.1
+      - CORS_ORIGIN_WHITELIST=http://localhost,http://test-app
+      
+      # Media and Static files
+      - MEDIA_ROOT=/app/test_media
+      - STATIC_ROOT=/app/test_static
+      
+    volumes:
+      - ../:/app
+      - test_media:/app/test_media
+      - test_static:/app/test_static
+      - ./fixtures:/app/test_fixtures
+    ports:
+      - "8002:8000"
+    networks:
+      - test-net
+    command: >
+      sh -c "
+        echo 'Waiting for database...' &&
+        python manage.py wait_for_db &&
+        echo 'Running migrations...' &&
+        python manage.py migrate &&
+        echo 'Loading test fixtures...' &&
+        python manage.py loaddata test_fixtures/initial_data.json ||
+        echo 'Creating test superuser...' &&
+        python manage.py shell -c \"
+        from django.contrib.auth.models import User;
+        User.objects.filter(username='testadmin').exists() or
+        User.objects.create_superuser('testadmin', 'admin@test.com', 'testpassword123')
+        \" &&
+        echo 'Starting test server...' &&
+        python manage.py runserver 0.0.0.0:8000
+      "
+
+  # Background Task Workers for Testing
+  test-worker:
+    build:
+      context: ..
+      dockerfile: ./tests/dockerfiles/Dockerfile-test-worker
+    container_name: cupcake-test-worker
+    depends_on:
+      test-db:
+        condition: service_healthy
+      test-redis:
+        condition: service_healthy
+    environment:
+      - DJANGO_SETTINGS_MODULE=cupcake.settings_test
+      - POSTGRES_NAME=cupcake_test
+      - POSTGRES_DB=cupcake_test
+      - POSTGRES_USER=test_user
+      - POSTGRES_PASSWORD=test_password
+      - POSTGRES_HOST=test-db
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=test-redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=test_redis_password
+      - SECRET_KEY=test-secret-key-for-testing-only-not-secure
+    volumes:
+      - ../:/app
+      - test_media:/app/test_media
+    networks:
+      - test-net
+    command: python manage.py rqworker default
+
+  # Test Runner Service
+  test-runner:
+    build:
+      context: ..
+      dockerfile: ./tests/dockerfiles/Dockerfile-test-runner
+    container_name: cupcake-test-runner
+    depends_on:
+      test-db:
+        condition: service_healthy
+      test-redis:
+        condition: service_healthy
+    environment:
+      - DJANGO_SETTINGS_MODULE=cupcake.settings_test
+      - POSTGRES_NAME=cupcake_test
+      - POSTGRES_DB=cupcake_test
+      - POSTGRES_USER=test_user
+      - POSTGRES_PASSWORD=test_password
+      - POSTGRES_HOST=test-db
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=test-redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=test_redis_password
+      - SECRET_KEY=test-secret-key-for-testing-only-not-secure
+      - COVERAGE_RCFILE=/app/tests/.coveragerc
+    volumes:
+      - ../:/app
+      - test_media:/app/test_media
+      - test_coverage:/app/test_coverage
+      - ./fixtures:/app/test_fixtures
+    networks:
+      - test-net
+    profiles:
+      - test
+    command: >
+      sh -c "
+        echo 'Waiting for test environment...' &&
+        python manage.py wait_for_db &&
+        python manage.py migrate &&
+        echo 'Running comprehensive test suite...' &&
+        python manage.py test --keepdb --parallel auto --verbosity=2
+      "
+
+  # Integration Test Service
+  integration-test:
+    build:
+      context: ..
+      dockerfile: ./tests/dockerfiles/Dockerfile-integration-test
+    container_name: cupcake-integration-test
+    depends_on:
+      test-app:
+        condition: service_started
+      test-worker:
+        condition: service_started
+    environment:
+      - DJANGO_SETTINGS_MODULE=cupcake.settings_test
+      - TEST_BASE_URL=http://test-app:8000
+      - REDIS_HOST=test-redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=test_redis_password
+    volumes:
+      - ../:/app
+      - test_integration_results:/app/test_results
+      - ./fixtures:/app/test_fixtures
+    networks:
+      - test-net
+    profiles:
+      - integration
+    command: >
+      sh -c "
+        echo 'Waiting for services to be ready...' &&
+        sleep 10 &&
+        echo 'Running integration tests...' &&
+        python -m pytest tests/integration/ -v --tb=short
+      "
+
+  # Performance Test Service
+  performance-test:
+    build:
+      context: ..
+      dockerfile: ./tests/dockerfiles/Dockerfile-performance-test
+    container_name: cupcake-performance-test
+    depends_on:
+      test-app:
+        condition: service_started
+    environment:
+      - TEST_BASE_URL=http://test-app:8000
+      - LOCUST_HOST=http://test-app:8000
+    volumes:
+      - ./performance:/app/performance_tests
+      - test_performance_results:/app/performance_results
+    networks:
+      - test-net
+    profiles:
+      - performance
+    ports:
+      - "8089:8089"
+    command: >
+      sh -c "
+        echo 'Starting performance tests...' &&
+        locust -f /app/performance_tests/locustfile.py --host=http://test-app:8000
+      "
+
+volumes:
+  test_db_data:
+    driver: local
+  test_media:
+    driver: local
+  test_static:
+    driver: local
+  test_coverage:
+    driver: local
+  test_integration_results:
+    driver: local
+  test_performance_results:
+    driver: local
+
+networks:
+  test-net:
+    driver: bridge

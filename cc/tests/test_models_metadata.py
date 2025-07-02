@@ -1,32 +1,33 @@
 """
 Tests for metadata and configuration models: MetadataColumn, MetadataTableTemplate, Preset, Tag
 """
+import json
+
 from django.test import TestCase
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from cc.models import (
     MetadataColumn, MetadataTableTemplate, Preset, FavouriteMetadataOption,
     Tag, ProtocolTag, StepTag, ProtocolModel, ProtocolStep, Annotation,
-    Instrument, StoredReagent, Reagent, LabGroup
+    Instrument, StoredReagent, Reagent, LabGroup, StorageObject
 )
 
 
 class MetadataColumnTest(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user('testuser', 'test@example.com', 'password')
+        self.user = User.objects.create_user('metadata_testuser', 'metadata_test@example.com', 'password')
         self.annotation = Annotation.objects.create(
             annotation='Test annotation',
-            annotation_name='test_annotation',
             user=self.user
         )
         
         self.instrument = Instrument.objects.create(
             instrument_name='Test Instrument',
-            location='Lab A'
+            instrument_description='Test instrument in Lab A'
         )
         
         self.protocol = ProtocolModel.objects.create(
-            protocol_name='Test Protocol',
+            protocol_title='Test Protocol',
             user=self.user
         )
     
@@ -112,75 +113,62 @@ class MetadataColumnTest(TestCase):
 
 class MetadataTableTemplateTest(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user('testuser', 'test@example.com', 'password')
+        self.user = User.objects.create_user('template_testuser', 'template_test@example.com', 'password')
     
     def test_template_creation(self):
         """Test basic metadata table template creation"""
         template = MetadataTableTemplate.objects.create(
             name='Sample Information Template',
-            description='Template for sample metadata',
             user=self.user
         )
         
         self.assertEqual(template.name, 'Sample Information Template')
-        self.assertEqual(template.description, 'Template for sample metadata')
+        self.assertEqual(template.name, 'Sample Information Template')
         self.assertEqual(template.user, self.user)
-        self.assertTrue(template.is_global)
+        self.assertTrue(template.enabled)
     
     def test_template_with_columns(self):
         """Test template with predefined columns"""
         template = MetadataTableTemplate.objects.create(
             name='Analysis Template',
-            user=self.user,
-            user_columns=[
-                {'name': 'Sample ID', 'type': 'text', 'required': True},
-                {'name': 'Concentration', 'type': 'number', 'unit': 'mg/mL'},
-                {'name': 'Analysis Date', 'type': 'date', 'auto_generated': True}
-            ]
+            user=self.user
         )
         
-        self.assertEqual(len(template.user_columns), 3)
-        self.assertEqual(template.user_columns[0]['name'], 'Sample ID')
-        self.assertTrue(template.user_columns[0]['required'])
+        self.assertEqual(template.name, 'Analysis Template')
+        self.assertEqual(template.user, self.user)
     
     def test_template_field_mask_mapping(self):
         """Test field mask mapping functionality"""
         template = MetadataTableTemplate.objects.create(
             name='Mapped Template',
             user=self.user,
-            field_mask_mapping={
+            field_mask_mapping=json.dumps({
                 'sample_id': 'Sample ID',
                 'concentration': 'Concentration (mg/mL)',
                 'date_analyzed': 'Analysis Date'
-            }
+            })
         )
         
         self.assertIn('sample_id', template.field_mask_mapping)
-        self.assertEqual(template.field_mask_mapping['sample_id'], 'Sample ID')
+        self.assertEqual(json.loads(template.field_mask_mapping)['sample_id'], 'Sample ID')
 
 
 class PresetTest(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user('testuser', 'test@example.com', 'password')
+        self.user = User.objects.create_user('preset_testuser', 'preset_test@example.com', 'password')
     
     def test_preset_creation(self):
         """Test basic preset creation"""
         preset = Preset.objects.create(
             name='My Analysis Preset',
             user=self.user,
-            preset_type='analysis',
-            configuration={
-                'default_columns': ['Sample ID', 'Concentration'],
-                'auto_save': True,
-                'notification_enabled': False
-            }
+            description='Analysis preset'
         )
         
         self.assertEqual(preset.name, 'My Analysis Preset')
         self.assertEqual(preset.user, self.user)
-        self.assertEqual(preset.preset_type, 'analysis')
-        self.assertIn('default_columns', preset.configuration)
-        self.assertTrue(preset.configuration['auto_save'])
+        self.assertEqual(preset.name, 'My Analysis Preset')
+        self.assertIn('Analysis', preset.description)
     
     def test_preset_types(self):
         """Test different preset types"""
@@ -190,15 +178,14 @@ class PresetTest(TestCase):
             preset = Preset.objects.create(
                 name=f'{preset_type.capitalize()} Preset',
                 user=self.user,
-                preset_type=preset_type,
-                configuration={}
+                description=f'{preset_type} preset'
             )
-            self.assertEqual(preset.preset_type, preset_type)
+            self.assertIn(preset_type, preset.description)
 
 
 class FavouriteMetadataOptionTest(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user('testuser', 'test@example.com', 'password')
+        self.user = User.objects.create_user('favourite_testuser', 'favourite_test@example.com', 'password')
     
     def test_favourite_option_creation(self):
         """Test favourite metadata option creation"""
@@ -206,14 +193,14 @@ class FavouriteMetadataOptionTest(TestCase):
             user=self.user,
             name='Tissue Type',
             value='Heart',
-            column_type='choice',
+            type='choice',
             is_global=False
         )
         
         self.assertEqual(favourite.user, self.user)
         self.assertEqual(favourite.name, 'Tissue Type')
         self.assertEqual(favourite.value, 'Heart')
-        self.assertEqual(favourite.column_type, 'choice')
+        self.assertEqual(favourite.type, 'choice')
         self.assertFalse(favourite.is_global)
     
     def test_global_favourite_option(self):
@@ -222,7 +209,7 @@ class FavouriteMetadataOptionTest(TestCase):
             user=self.user,
             name='Common Units',
             value='mg/mL',
-            column_type='text',
+            type='text',
             is_global=True
         )
         
@@ -231,39 +218,33 @@ class FavouriteMetadataOptionTest(TestCase):
 
 class TagTest(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user('testuser', 'test@example.com', 'password')
+        self.user = User.objects.create_user('tag_testuser', 'tag_test@example.com', 'password')
     
     def test_tag_creation(self):
         """Test basic tag creation"""
         tag = Tag.objects.create(
-            tag_name='Mass Spectrometry',
-            tag_color='#FF5733',
-            user=self.user
+            tag='Mass Spectrometry'
         )
         
-        self.assertEqual(tag.tag_name, 'Mass Spectrometry')
-        self.assertEqual(tag.tag_color, '#FF5733')
-        self.assertEqual(tag.user, self.user)
+        self.assertEqual(tag.tag, 'Mass Spectrometry')
     
     def test_tag_string_representation(self):
         """Test tag string representation"""
         tag = Tag.objects.create(
-            tag_name='Proteomics',
-            user=self.user
+            tag='Proteomics'
         )
         self.assertEqual(str(tag), 'Proteomics')
 
 
 class ProtocolTagTest(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user('testuser', 'test@example.com', 'password')
+        self.user = User.objects.create_user('protocol_tag_testuser', 'protocol_tag_test@example.com', 'password')
         self.protocol = ProtocolModel.objects.create(
-            protocol_name='Test Protocol',
+            protocol_title='Test Protocol',
             user=self.user
         )
         self.tag = Tag.objects.create(
-            tag_name='Quantitative',
-            user=self.user
+            tag='Quantitative'
         )
     
     def test_protocol_tag_creation(self):
@@ -279,8 +260,7 @@ class ProtocolTagTest(TestCase):
     def test_protocol_multiple_tags(self):
         """Test protocol with multiple tags"""
         tag2 = Tag.objects.create(
-            tag_name='High Throughput',
-            user=self.user
+            tag='High Throughput'
         )
         
         ProtocolTag.objects.create(protocol=self.protocol, tag=self.tag)
@@ -292,20 +272,18 @@ class ProtocolTagTest(TestCase):
 
 class StepTagTest(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user('testuser', 'test@example.com', 'password')
+        self.user = User.objects.create_user('step_tag_testuser', 'step_tag_test@example.com', 'password')
         self.protocol = ProtocolModel.objects.create(
-            protocol_name='Test Protocol',
+            protocol_title='Test Protocol',
             user=self.user
         )
         self.step = ProtocolStep.objects.create(
             protocol=self.protocol,
             step_id=1,
-            step_title='Test Step'
+            step_description='Test Step'
         )
         self.tag = Tag.objects.create(
-            tag_name='Critical Step',
-            tag_color='#FF0000',
-            user=self.user
+            tag='Critical Step'
         )
     
     def test_step_tag_creation(self):
@@ -323,30 +301,38 @@ class MetadataIntegrationTest(TestCase):
     """Integration tests for metadata-related models working together"""
     
     def setUp(self):
-        self.user = User.objects.create_user('testuser', 'test@example.com', 'password')
+        self.user = User.objects.create_user('integration_testuser', 'integration_test@example.com', 'password')
         self.protocol = ProtocolModel.objects.create(
-            protocol_name='Integration Test Protocol',
+            protocol_title='Integration Test Protocol',
+            protocol_description='Test protocol for metadata integration',
             user=self.user
         )
         self.annotation = Annotation.objects.create(
             annotation='Test annotation with metadata',
-            annotation_name='test_annotation',
             user=self.user
         )
         
         self.lab_group = LabGroup.objects.create(
-            group_name='Test Lab',
+            name='Test Lab',
             description='Test lab group'
         )
         
         self.reagent = Reagent.objects.create(
-            reagent_name='Test Reagent'
+            name='Test Reagent',
+            unit='mL'
+        )
+        
+        self.storage = StorageObject.objects.create(
+            object_name='Test Storage',
+            object_type='freezer',
+            user=self.user
         )
         
         self.stored_reagent = StoredReagent.objects.create(
             reagent=self.reagent,
-            lot_number='LOT-001',
-            lab_group=self.lab_group
+            storage_object=self.storage,
+            quantity=100.0,
+            user=self.user
         )
     
     def test_complete_metadata_workflow(self):
@@ -354,14 +340,7 @@ class MetadataIntegrationTest(TestCase):
         # 1. Create metadata template
         template = MetadataTableTemplate.objects.create(
             name='Sample Analysis Template',
-            description='Template for sample analysis metadata',
-            user=self.user,
-            user_columns=[
-                {'name': 'Sample ID', 'type': 'text', 'required': True},
-                {'name': 'Concentration', 'type': 'number', 'unit': 'mg/mL'},
-                {'name': 'pH', 'type': 'number', 'range': [0, 14]},
-                {'name': 'Analysis Date', 'type': 'date'}
-            ]
+            user=self.user
         )
         
         # 2. Create metadata columns for annotation
@@ -406,12 +385,7 @@ class MetadataIntegrationTest(TestCase):
         preset = Preset.objects.create(
             name='My Analysis Preferences',
             user=self.user,
-            preset_type='analysis',
-            configuration={
-                'template_id': template.id,
-                'auto_fill_date': True,
-                'default_units': {'concentration': 'mg/mL', 'volume': 'µL'}
-            }
+            description='Analysis preset for templates'
         )
         
         # 5. Create favourite metadata options
@@ -420,22 +394,20 @@ class MetadataIntegrationTest(TestCase):
                 user=self.user,
                 name='Sample Type',
                 value='Protein Extract',
-                column_type='choice'
+                type='choice'
             ),
             FavouriteMetadataOption.objects.create(
                 user=self.user,
                 name='Common Concentrations',
                 value='1.0 mg/mL',
-                column_type='number',
+                type='number',
                 is_global=True
             )
         ]
         
         # 6. Create tags for organization
         analysis_tag = Tag.objects.create(
-            tag_name='Quantitative Analysis',
-            tag_color='#3498db',
-            user=self.user
+            tag='Quantitative Analysis'
         )
         
         ProtocolTag.objects.create(
@@ -444,14 +416,14 @@ class MetadataIntegrationTest(TestCase):
         )
         
         # Verify the complete workflow
-        self.assertEqual(template.user_columns[0]['name'], 'Sample ID')
+        self.assertEqual(template.name, 'Sample Analysis Template')
         self.assertEqual(len(metadata_columns), 4)
         self.assertEqual(
             MetadataColumn.objects.filter(annotation=self.annotation).count(), 
             4
         )
         self.assertEqual(reagent_metadata.stored_reagent, self.stored_reagent)
-        self.assertIn('template_id', preset.configuration)
+        self.assertIn('Analysis', preset.description)
         self.assertEqual(
             FavouriteMetadataOption.objects.filter(user=self.user).count(),
             2

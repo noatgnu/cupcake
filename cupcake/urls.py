@@ -16,7 +16,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
-from cc.views import GetProtocolIO, DataChunkedUploadView, set_csrf
+from cc.views import GetProtocolIO, DataChunkedUploadView, set_csrf, health_check, ready_check, liveness_check
 from rest_framework.authtoken.views import obtain_auth_token
 from rest_framework import routers
 
@@ -84,4 +84,8 @@ urlpatterns = [
     path('api/chunked_upload/', DataChunkedUploadView.as_view(), name='chunked_upload'),
     path('api/chunked_upload/<uuid:pk>/', DataChunkedUploadView.as_view(), name='chunkedupload-detail'),
     path("api/set-csrf/", set_csrf, name="set_csrf"),
+    # Health check endpoints
+    path('health/', health_check, name='health'),
+    path('ready/', ready_check, name='ready'),
+    path('alive/', liveness_check, name='alive'),
 ]

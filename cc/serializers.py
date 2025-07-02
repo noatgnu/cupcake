@@ -1204,6 +1204,10 @@ class SiteSettingsSerializer(ModelSerializer):
             'id', 'is_active', 'site_name', 'site_tagline', 'logo', 'favicon',
             'banner_enabled', 'banner_text', 'banner_color', 'banner_text_color', 
             'banner_dismissible', 'primary_color', 'secondary_color', 'footer_text',
+            'allow_import_protocols', 'allow_import_sessions', 'allow_import_annotations',
+            'allow_import_projects', 'allow_import_reagents', 'allow_import_instruments',
+            'allow_import_lab_groups', 'allow_import_messaging', 'allow_import_support_models',
+            'staff_only_import_override', 'import_archive_size_limit_mb',
             'created_at', 'updated_at', 'updated_by'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'updated_by']

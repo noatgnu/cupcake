@@ -46,7 +46,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
     ReagentSubscription, SiteSettings, BackupLog, DocumentPermission
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission, IsParticipantOrAdmin
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
-    ocr_b64_image, export_data, import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
+    ocr_b64_image, export_data, import_data, dry_run_import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
     import_sdrf_file, validate_sdrf_file, export_excel_template, export_instrument_usage, import_excel, sdrf_validate, export_reagent_actions, import_reagents_from_file, check_instrument_warranty_maintenance
 from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, AnnotationSerializer, \
     SessionSerializer, StepVariationSerializer, TimeKeeperSerializer, ProtocolSectionSerializer, UserSerializer, \
@@ -176,13 +176,16 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
                         if "docx" == self.request.data["format"]:
                             create_docx.delay(protocol.id, session_id, self.request.user.id, custom_id)
                             return Response(status=status.HTTP_200_OK)
+                        elif "tar.gz" == self.request.data["format"]:
+                            export_data.delay(self.request.user.id, session_ids=[session_id], instance_id=custom_id, export_type="session", format_type="tar.gz")
+                            return Response(status=status.HTTP_200_OK)
             elif "protocol" == self.request.data["export_type"]:
                 if "format" in self.request.data:
                     if "docx" == self.request.data["format"]:
                         create_docx.delay(protocol.id, None, self.request.user.id, custom_id)
                         return Response(status=status.HTTP_200_OK)
                     elif "tar.gz" == self.request.data["format"]:
-                        export_data.delay(self.request.user.id, [protocol.id], custom_id)
+                        export_data.delay(self.request.user.id, protocol_ids=[protocol.id], instance_id=custom_id, export_type="protocol", format_type="tar.gz")
                         return Response(status=status.HTTP_200_OK)
             elif "session-sqlite" == self.request.data["export_type"]:
                 if "session" in self.request.data:
@@ -1768,21 +1771,87 @@ class UserViewSet(ModelViewSet, FilterMixin):
     @action(detail=False, methods=['post'])
     def export_data(self, request):
         custom_id = self.request.META.get('HTTP_X_CUPCAKE_INSTANCE_ID', None)
-        export_data.delay(request.user.id, custom_id)
+        
+        # Check if specific protocols or sessions are requested
+        protocol_ids = request.data.get('protocol_ids', None)
+        session_ids = request.data.get('session_ids', None)
+        format_type = request.data.get('format', 'zip')  # Default to zip
+        
+        if protocol_ids:
+            # Protocol-specific export
+            export_data.delay(
+                request.user.id, 
+                protocol_ids=protocol_ids, 
+                instance_id=custom_id, 
+                export_type="protocol",
+                format_type=format_type
+            )
+        elif session_ids:
+            # Session-specific export
+            export_data.delay(
+                request.user.id, 
+                session_ids=session_ids, 
+                instance_id=custom_id, 
+                export_type="session",
+                format_type=format_type
+            )
+        else:
+            # Complete user data export (default)
+            export_data.delay(
+                request.user.id, 
+                instance_id=custom_id, 
+                export_type="complete",
+                format_type=format_type
+            )
+        
         return Response(status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['post'])
     def import_user_data(self, request):
         user = self.request.user
         chunked_upload_id = request.data['upload_id']
+        import_options = request.data.get('import_options', None)
         custom_id = self.request.META.get('HTTP_X_CUPCAKE_INSTANCE_ID', None)
         chunked_upload = ChunkedUpload.objects.get(id=chunked_upload_id, user=user)
         if chunked_upload.completed_at:
             # get completed file path
             file_path = chunked_upload.file.path
-            import_data.delay(user.id, file_path, custom_id)
+            import_data.delay(user.id, file_path, custom_id, import_options)
             return Response(status=status.HTTP_200_OK)
         return Response(status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['post'])
+    def dry_run_import_user_data(self, request):
+        """
+        Perform a dry run analysis of user data import without making any changes.
+        Returns a detailed report of what would be imported.
+        """
+        user = self.request.user
+        chunked_upload_id = request.data['upload_id']
+        import_options = request.data.get('import_options', None)
+        custom_id = self.request.META.get('HTTP_X_CUPCAKE_INSTANCE_ID', None)
+        
+        try:
+            chunked_upload = ChunkedUpload.objects.get(id=chunked_upload_id, user=user)
+        except ChunkedUpload.DoesNotExist:
+            return Response(
+                {"error": "Upload not found"}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        if chunked_upload.completed_at:
+            # get completed file path
+            file_path = chunked_upload.file.path
+            dry_run_import_data.delay(user.id, file_path, custom_id, import_options)
+            return Response({
+                "message": "Dry run analysis started",
+                "instance_id": custom_id
+            }, status=status.HTTP_200_OK)
+        
+        return Response(
+            {"error": "Upload not completed yet"}, 
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
     @action(detail=False, methods=['get'])
     def get_server_settings(self, request):
@@ -5151,11 +5220,33 @@ class MaintenanceLogViewSet(ModelViewSet, FilterMixin):
             maintenance_log.create_default_folders()
             maintenance_log.refresh_from_db()
 
-        annotation_data = request.data.copy()
-        if "annotation" not in annotation_data:
-            annotation_data['annotation'] = f'annotation file from maintenance log {maintenance_log.id}'
-        a = Annotation(**annotation_data)
-        a.folder = maintenance_log.annotation_folder
+        a = Annotation(
+            user=request.user,
+            folder=maintenance_log.annotation_folder
+        )
+
+        if "annotation" in request.data:
+            a.annotation = request.data["annotation"]
+        else:
+            a.annotation = f'annotation file from maintenance log {maintenance_log.id}'
+
+        if 'file' in request.FILES:
+            uploaded_file = request.FILES['file']
+            a.annotation_name = uploaded_file.name
+            a.annotation_type = "file"
+            a.file.save(uploaded_file.name, uploaded_file, save=False)
+
+        if "annotation_type" in request.data:
+            a.annotation_type = request.data["annotation_type"]
+        if "annotation_name" in request.data:
+            a.annotation_name = request.data["annotation_name"]
+        if "language" in request.data:
+            a.language = request.data["language"]
+        if "transcribed" in request.data:
+            a.transcribed = request.data["transcribed"]
+        if "summary" in request.data:
+            a.summary = request.data["summary"]
+        
         a.save()
         serialized = AnnotationSerializer(a, many=False)
         return Response(serialized.data, status=status.HTTP_201_CREATED)
@@ -5977,6 +6068,7 @@ class SiteSettingsViewSet(ModelViewSet):
             'primary_color': current_settings.primary_color,
             'secondary_color': current_settings.secondary_color,
             'footer_text': current_settings.footer_text,
+
         }
         return Response(public_data)
     
@@ -6071,6 +6163,33 @@ class SiteSettingsViewSet(ModelViewSet):
             return response
         except (BadSignature, SignatureExpired) as e:
             return Response({"error": "Invalid or expired token"}, status=status.HTTP_400_BAD_REQUEST)
+    
+    @action(detail=False, methods=['get'])
+    def available_import_options(self, request):
+        """Get available import options based on site settings and user permissions"""
+        current_settings = SiteSettings.get_or_create_default()
+        
+        # Default import options
+        default_options = {
+            'protocols': True,
+            'sessions': True,
+            'annotations': True,
+            'projects': True,
+            'reagents': True,
+            'instruments': True,
+            'lab_groups': True,
+            'messaging': False,  # Default to false for privacy
+            'support_models': True
+        }
+        
+        # Filter based on site settings and user permissions
+        available_options = current_settings.filter_import_options(default_options, request.user)
+        
+        return Response({
+            'available_options': available_options,
+            'is_staff_override': request.user.is_staff,
+            'max_archive_size_mb': current_settings.max_import_archive_size_mb if hasattr(current_settings, 'max_import_archive_size_mb') else None
+        })
 
 
 

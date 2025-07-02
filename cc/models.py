@@ -160,14 +160,20 @@ class ProtocolModel(models.Model):
         """
 
         hash_object = hashlib.sha256()
-        hash_object.update(self.protocol_title.encode())
-        hash_object.update(self.protocol_description.encode())
+        if self.protocol_title:
+            hash_object.update(self.protocol_title.encode())
+        if self.protocol_description:
+            hash_object.update(self.protocol_description.encode())
         for step in self.steps.all():
-            hash_object.update(step.step_description.encode())
-            hash_object.update(str(step.step_duration).encode())
+            if step.step_description:
+                hash_object.update(step.step_description.encode())
+            if step.step_duration:
+                hash_object.update(str(step.step_duration).encode())
             if step.step_section:
-                hash_object.update(step.step_section.section_description.encode())
-                hash_object.update(str(step.step_section.section_duration).encode())
+                if step.step_section.section_description:
+                    hash_object.update(step.step_section.section_description.encode())
+                if step.step_section.section_duration:
+                    hash_object.update(str(step.step_section.section_duration).encode())
         return hash_object.hexdigest()
 
     def save(self, *args, **kwargs):
@@ -961,6 +967,7 @@ class Annotation(models.Model):
 
     def check_for_right(self, user, right: str) -> bool:
         # Check shared document permissions first
+
         if self.folder and self.folder.is_shared_document_folder:
             permission_map = {
                 'view': 'can_view',
@@ -969,13 +976,14 @@ class Annotation(models.Model):
             }
             required_permission = permission_map.get(right)
             if required_permission:
-                return DocumentPermission.user_can_access_annotation_with_folder_inheritance(user, self, required_permission)
+                return DocumentPermission.user_can_access_annotation_with_folder_inheritance(self, user, required_permission)
         
         if self.session:
             if self.session.enabled:
                 if not self.scratched:
                     if right == "view":
                         return True
+
 
         if user.is_authenticated:
             if self.session:
@@ -1000,6 +1008,16 @@ class Annotation(models.Model):
                             if i_permission.can_manage:
                                 return True
             else:
+                if not self.instrument_jobs.exists():
+                    permission_map = {
+                        'view': 'can_view',
+                        'edit': 'can_edit',
+                        'delete': 'can_delete'
+                    }
+                    required_permission = permission_map.get(right)
+                    if required_permission:
+                        return DocumentPermission.user_can_access_annotation_with_folder_inheritance(self, user,
+                                                                                                     required_permission)
                 instrument_jobs = self.instrument_jobs.all()
                 for instrument_job in instrument_jobs:
                     if right == "view":
@@ -2062,6 +2080,21 @@ class SiteSettings(models.Model):
     # Footer settings
     footer_text = models.TextField(blank=True, null=True, help_text="Custom footer text")
     
+    # Import restrictions - Control what users can import
+    allow_import_protocols = models.BooleanField(default=True, help_text="Allow users to import protocol data")
+    allow_import_sessions = models.BooleanField(default=True, help_text="Allow users to import session data")
+    allow_import_annotations = models.BooleanField(default=True, help_text="Allow users to import annotation data")
+    allow_import_projects = models.BooleanField(default=True, help_text="Allow users to import project data")
+    allow_import_reagents = models.BooleanField(default=True, help_text="Allow users to import reagent and storage data")
+    allow_import_instruments = models.BooleanField(default=True, help_text="Allow users to import instrument data")
+    allow_import_lab_groups = models.BooleanField(default=True, help_text="Allow users to import lab group data")
+    allow_import_messaging = models.BooleanField(default=False, help_text="Allow users to import messaging data")
+    allow_import_support_models = models.BooleanField(default=True, help_text="Allow users to import metadata and support models")
+    
+    # Advanced import settings
+    staff_only_import_override = models.BooleanField(default=False, help_text="Only staff users can override import restrictions")
+    import_archive_size_limit_mb = models.PositiveIntegerField(default=500, help_text="Maximum size of import archive in MB (0 = no limit)")
+    
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -2094,6 +2127,73 @@ class SiteSettings(models.Model):
         if not settings_obj:
             settings_obj = cls.objects.create(is_active=True)
         return settings_obj
+    
+    def get_allowed_import_options(self, user=None):
+        """
+        Get the import options allowed by site settings, optionally considering user permissions
+        
+        Args:
+            user: Optional User instance to check for staff override permissions
+            
+        Returns:
+            dict: Dictionary of allowed import options
+        """
+        # Check if staff can override restrictions
+        if user and user.is_staff and self.staff_only_import_override:
+            # Staff users can import everything if override is enabled
+            return {
+                'protocols': True,
+                'sessions': True,
+                'annotations': True,
+                'projects': True,
+                'reagents': True,
+                'instruments': True,
+                'lab_groups': True,
+                'messaging': True,
+                'support_models': True
+            }
+        
+        # Return settings based on site configuration
+        return {
+            'protocols': self.allow_import_protocols,
+            'sessions': self.allow_import_sessions,
+            'annotations': self.allow_import_annotations,
+            'projects': self.allow_import_projects,
+            'reagents': self.allow_import_reagents,
+            'instruments': self.allow_import_instruments,
+            'lab_groups': self.allow_import_lab_groups,
+            'messaging': self.allow_import_messaging,
+            'support_models': self.allow_import_support_models
+        }
+    
+    def filter_import_options(self, requested_options, user=None):
+        """
+        Filter requested import options against site settings
+        
+        Args:
+            requested_options: Dict of requested import options
+            user: Optional User instance to check for staff override permissions
+            
+        Returns:
+            dict: Filtered import options that comply with site settings
+        """
+        allowed_options = self.get_allowed_import_options(user)
+        
+        # If no specific options requested, return all allowed options
+        if not requested_options:
+            return allowed_options
+        
+        # Filter requested options against allowed options
+        filtered_options = {}
+        for key, value in requested_options.items():
+            if key in allowed_options:
+                # Only allow if both requested and site setting allow it
+                filtered_options[key] = value and allowed_options[key]
+            else:
+                # Unknown option, default to False
+                filtered_options[key] = False
+        
+        return filtered_options
 
 
 class DocumentPermission(models.Model):

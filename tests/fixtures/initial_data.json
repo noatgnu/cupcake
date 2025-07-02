@@ -1,0 +1,116 @@
+[
+  {
+    "model": "auth.user",
+    "pk": 1,
+    "fields": {
+      "username": "testadmin",
+      "email": "admin@test.com",
+      "first_name": "Test",
+      "last_name": "Admin",
+      "is_staff": true,
+      "is_superuser": true,
+      "is_active": true,
+      "date_joined": "2024-01-01T00:00:00Z",
+      "password": "pbkdf2_sha256$600000$test$test_password_hash"
+    }
+  },
+  {
+    "model": "auth.user",
+    "pk": 2,
+    "fields": {
+      "username": "testuser1",
+      "email": "user1@test.com",
+      "first_name": "Test",
+      "last_name": "User1",
+      "is_staff": false,
+      "is_superuser": false,
+      "is_active": true,
+      "date_joined": "2024-01-01T00:00:00Z",
+      "password": "pbkdf2_sha256$600000$test$test_password_hash"
+    }
+  },
+  {
+    "model": "auth.user",
+    "pk": 3,
+    "fields": {
+      "username": "testuser2",
+      "email": "user2@test.com",
+      "first_name": "Test",
+      "last_name": "User2",
+      "is_staff": false,
+      "is_superuser": false,
+      "is_active": true,
+      "date_joined": "2024-01-01T00:00:00Z",
+      "password": "pbkdf2_sha256$600000$test$test_password_hash"
+    }
+  },
+  {
+    "model": "cc.project",
+    "pk": 1,
+    "fields": {
+      "project_name": "Test Project Alpha",
+      "project_description": "A test project for unit testing",
+      "created_at": "2024-01-01T00:00:00Z",
+      "updated_at": "2024-01-01T00:00:00Z"
+    }
+  },
+  {
+    "model": "cc.project",
+    "pk": 2,
+    "fields": {
+      "project_name": "Test Project Beta",
+      "project_description": "Another test project for integration testing",
+      "created_at": "2024-01-01T00:00:00Z",
+      "updated_at": "2024-01-01T00:00:00Z"
+    }
+  },
+  {
+    "model": "cc.labgroup",
+    "pk": 1,
+    "fields": {
+      "name": "Test Lab Alpha",
+      "description": "Primary test laboratory group",
+      "created_at": "2024-01-01T00:00:00Z",
+      "updated_at": "2024-01-01T00:00:00Z"
+    }
+  },
+  {
+    "model": "cc.labgroup",
+    "pk": 2,
+    "fields": {
+      "name": "Test Lab Beta",
+      "description": "Secondary test laboratory group",
+      "created_at": "2024-01-01T00:00:00Z",
+      "updated_at": "2024-01-01T00:00:00Z"
+    }
+  },
+  {
+    "model": "cc.sitesettings",
+    "pk": 1,
+    "fields": {
+      "site_name": "CUPCAKE LIMS Test Instance",
+      "site_tagline": "Laboratory Information Management System - Testing",
+      "banner_enabled": false,
+      "banner_text": "",
+      "banner_color": "#007bff",
+      "banner_text_color": "#ffffff",
+      "banner_dismissible": true,
+      "primary_color": "#007bff",
+      "secondary_color": "#6c757d",
+      "footer_text": "CUPCAKE LIMS Test Environment",
+      "allow_import_protocols": true,
+      "allow_import_sessions": true,
+      "allow_import_annotations": true,
+      "allow_import_projects": true,
+      "allow_import_reagents": true,
+      "allow_import_instruments": true,
+      "allow_import_lab_groups": true,
+      "allow_import_messaging": false,
+      "allow_import_support_models": true,
+      "staff_only_import_override": false,
+      "import_archive_size_limit_mb": 1000,
+      "created_at": "2024-01-01T00:00:00Z",
+      "updated_at": "2024-01-01T00:00:00Z"
+    }
+  }
+]

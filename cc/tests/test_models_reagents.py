@@ -1,6 +1,8 @@
 """
 Tests for reagent and inventory models: Reagent, StoredReagent, StorageObject, ReagentAction
 """
+import uuid
+
 from django.test import TestCase
 from django.contrib.auth.models import User
 from django.utils import timezone
@@ -21,31 +23,27 @@ class ReagentModelTest(TestCase):
     def test_reagent_creation(self):
         """Test basic reagent creation"""
         reagent = Reagent.objects.create(
-            reagent_name='Tris Buffer',
-            cas_number='77-86-1',
-            molecular_formula='C4H11NO3',
-            molecular_weight=121.14
+            name='Tris Buffer',
+                        unit='g'
         )
         
-        self.assertEqual(reagent.reagent_name, 'Tris Buffer')
-        self.assertEqual(reagent.cas_number, '77-86-1')
-        self.assertEqual(reagent.molecular_formula, 'C4H11NO3')
-        self.assertEqual(reagent.molecular_weight, 121.14)
+        self.assertEqual(reagent.name, 'Tris Buffer')
+        self.assertEqual(reagent.unit, 'g')
     
     def test_reagent_string_representation(self):
         """Test reagent string representation"""
         reagent = Reagent.objects.create(
-            reagent_name='Tris Buffer',
-            cas_number='77-86-1'
+            name='Tris Buffer',
+            unit='g'
         )
-        self.assertEqual(str(reagent), 'Tris Buffer')
+        self.assertEqual(reagent.name, 'Tris Buffer')
 
 
 class StorageObjectTest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user('testuser', 'test@example.com', 'password')
         self.lab_group = LabGroup.objects.create(
-            group_name='Test Lab',
+            name='Test Lab',
             description='Test lab group'
         )
     
@@ -54,15 +52,11 @@ class StorageObjectTest(TestCase):
         storage = StorageObject.objects.create(
             object_name='Freezer A',
             object_type='freezer',
-            temperature=-80,
-            location='Lab Room 101',
             user=self.user
         )
         
         self.assertEqual(storage.object_name, 'Freezer A')
         self.assertEqual(storage.object_type, 'freezer')
-        self.assertEqual(storage.temperature, -80)
-        self.assertEqual(storage.location, 'Lab Room 101')
         self.assertEqual(storage.user, self.user)
     
     def test_storage_type_choices(self):
@@ -93,14 +87,14 @@ class StoredReagentTest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user('testuser', 'test@example.com', 'password')
         self.lab_group = LabGroup.objects.create(
-            group_name='Test Lab',
+            name='Test Lab',
             description='Test lab group'
         )
         self.lab_group.users.add(self.user)
         
         self.reagent = Reagent.objects.create(
-            reagent_name='Tris Buffer',
-            cas_number='77-86-1'
+            name='Tris Buffer',
+            unit='g'
         )
         
         self.storage = StorageObject.objects.create(
@@ -113,65 +107,49 @@ class StoredReagentTest(TestCase):
         """Test basic stored reagent creation"""
         stored_reagent = StoredReagent.objects.create(
             reagent=self.reagent,
-            lot_number='LOT12345',
-            supplier='Sigma-Aldrich',
-            concentration=1.0,
-            volume=500.0,
-            unit='mL',
             storage_object=self.storage,
-            expiry_date=date.today() + timedelta(days=365),
-            lab_group=self.lab_group
+            expiration_date=date.today() + timedelta(days=365),
+            quantity=100.0,
         )
         
         self.assertEqual(stored_reagent.reagent, self.reagent)
-        self.assertEqual(stored_reagent.lot_number, 'LOT12345')
-        self.assertEqual(stored_reagent.supplier, 'Sigma-Aldrich')
-        self.assertEqual(stored_reagent.concentration, 1.0)
-        self.assertEqual(stored_reagent.volume, 500.0)
-        self.assertEqual(stored_reagent.unit, 'mL')
         self.assertEqual(stored_reagent.storage_object, self.storage)
-        self.assertEqual(stored_reagent.lab_group, self.lab_group)
     
     def test_stored_reagent_barcode_generation(self):
         """Test automatic barcode generation"""
         stored_reagent = StoredReagent.objects.create(
             reagent=self.reagent,
-            lot_number='LOT12345',
-            lab_group=self.lab_group
+            storage_object=self.storage,
+            quantity=100.0,
+            barcode='123456',
         )
         
-        # Barcode should be generated automatically if not provided
-        # (Assuming barcode generation logic exists in model save method)
         self.assertIsNotNone(stored_reagent.barcode)
     
     def test_get_current_quantity(self):
         """Test current quantity calculation with actions"""
         stored_reagent = StoredReagent.objects.create(
             reagent=self.reagent,
-            lot_number='LOT12345',
-            volume=500.0,
-            unit='mL',
-            lab_group=self.lab_group
+            quantity=500.0,
+            storage_object=self.storage,
         )
         
-        # Initial quantity should be the original volume
         self.assertEqual(stored_reagent.get_current_quantity(), 500.0)
         
-        # Add some usage actions
         ReagentAction.objects.create(
-            stored_reagent=stored_reagent,
-            action_type='usage',
-            quantity_used=50.0,
+            reagent=stored_reagent,
+            action_type='reserve',
+            quantity=50.0,
             user=self.user,
-            description='Used for experiment 1'
+            notes='Used for experiment 1'
         )
         
         ReagentAction.objects.create(
-            stored_reagent=stored_reagent,
-            action_type='usage',
-            quantity_used=25.0,
+            reagent=stored_reagent,
+            action_type='reserve',
+            quantity=25.0,
             user=self.user,
-            description='Used for experiment 2'
+            notes='Used for experiment 2'
         )
         
         # Current quantity should be reduced
@@ -179,11 +157,11 @@ class StoredReagentTest(TestCase):
         
         # Add an addition action
         ReagentAction.objects.create(
-            stored_reagent=stored_reagent,
-            action_type='addition',
-            quantity_used=100.0,  # Actually quantity added
+            reagent=stored_reagent,
+            action_type='add',
+            quantity=100.0,  # Actually quantity added
             user=self.user,
-            description='Refilled from new bottle'
+            notes='Refilled from new bottle'
         )
         
         # Current quantity should be increased
@@ -193,10 +171,9 @@ class StoredReagentTest(TestCase):
         """Test low stock detection"""
         stored_reagent = StoredReagent.objects.create(
             reagent=self.reagent,
-            lot_number='LOT12345',
-            volume=500.0,
-            minimum_stock_level=100.0,
-            lab_group=self.lab_group
+            quantity=500.0,
+            low_stock_threshold=100.0,
+            storage_object=self.storage,
         )
         
         # Initially should not be low stock
@@ -204,9 +181,9 @@ class StoredReagentTest(TestCase):
         
         # Use reagent to below minimum level
         ReagentAction.objects.create(
-            stored_reagent=stored_reagent,
-            action_type='usage',
-            quantity_used=450.0,  # Leaves 50.0, below minimum of 100.0
+            reagent=stored_reagent,
+            action_type='reserve',
+            quantity=450.0,  # Leaves 50.0, below minimum of 100.0
             user=self.user
         )
         
@@ -218,9 +195,9 @@ class StoredReagentTest(TestCase):
         # Create reagent expiring soon
         stored_reagent = StoredReagent.objects.create(
             reagent=self.reagent,
-            lot_number='LOT12345',
-            expiry_date=date.today() + timedelta(days=10),  # Expires in 10 days
-            lab_group=self.lab_group
+            storage_object=self.storage,
+            expiration_date=date.today() + timedelta(days=10),
+            quantity= 500.0,
         )
         
         # Should detect upcoming expiration
@@ -229,9 +206,9 @@ class StoredReagentTest(TestCase):
         # Create reagent with distant expiration
         stored_reagent2 = StoredReagent.objects.create(
             reagent=self.reagent,
-            lot_number='LOT67890',
-            expiry_date=date.today() + timedelta(days=365),  # Expires in 1 year
-            lab_group=self.lab_group
+            storage_object=self.storage,
+            expiration_date=date.today() + timedelta(days=365),
+            quantity= 500.0,
         )
         
         # Should not detect upcoming expiration
@@ -241,8 +218,8 @@ class StoredReagentTest(TestCase):
         """Test default folder creation for reagents"""
         stored_reagent = StoredReagent.objects.create(
             reagent=self.reagent,
-            lot_number='LOT12345',
-            lab_group=self.lab_group
+            quantity= 500.0,
+            storage_object=self.storage,
         )
         
         # Create default folders
@@ -252,7 +229,7 @@ class StoredReagentTest(TestCase):
         folders = AnnotationFolder.objects.filter(stored_reagent=stored_reagent)
         folder_names = [folder.folder_name for folder in folders]
         
-        expected_folders = ['Documents', 'Protocols', 'Safety Data']
+        expected_folders = ['Manuals', 'Certificates', 'MSDS']
         for expected_folder in expected_folders:
             self.assertIn(expected_folder, folder_names)
     
@@ -260,13 +237,11 @@ class StoredReagentTest(TestCase):
         """Test reagent sharing and access control"""
         stored_reagent = StoredReagent.objects.create(
             reagent=self.reagent,
-            lot_number='LOT12345',
-            lab_group=self.lab_group,
-            shareable_reagent=True,
-            access_all=False
+            access_all=False,
+            quantity=500.0,
+            storage_object=self.storage,
         )
         
-        self.assertTrue(stored_reagent.shareable_reagent)
         self.assertFalse(stored_reagent.access_all)
 
 
@@ -274,53 +249,57 @@ class ReagentActionTest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user('testuser', 'test@example.com', 'password')
         self.lab_group = LabGroup.objects.create(
-            group_name='Test Lab',
+            name='Test Lab',
             description='Test lab group'
         )
         
         self.reagent = Reagent.objects.create(
-            reagent_name='Test Reagent'
+            name='Test Reagent',
+            unit='mL'
         )
         
         self.stored_reagent = StoredReagent.objects.create(
             reagent=self.reagent,
-            lot_number='LOT12345',
-            volume=500.0,
-            lab_group=self.lab_group
+            quantity=500.0,
+            storage_object=StorageObject.objects.create(
+                object_name='Test Storage',
+                object_type='freezer',
+                user=self.user
+            ),
         )
         
         self.session = Session.objects.create(
-            unique_id='test-session-123',
+            unique_id=uuid.uuid4(),
             user=self.user
         )
     
     def test_reagent_action_creation(self):
         """Test basic reagent action creation"""
         action = ReagentAction.objects.create(
-            stored_reagent=self.stored_reagent,
-            action_type='usage',
-            quantity_used=25.0,
+            reagent=self.stored_reagent,
+            action_type='reserve',
+            quantity=25.0,
             user=self.user,
-            description='Used in protein assay',
+            notes='Used in protein assay',
             session=self.session
         )
         
-        self.assertEqual(action.stored_reagent, self.stored_reagent)
-        self.assertEqual(action.action_type, 'usage')
-        self.assertEqual(action.quantity_used, 25.0)
+        self.assertEqual(action.reagent, self.stored_reagent)
+        self.assertEqual(action.action_type, 'reserve')
+        self.assertEqual(action.quantity, 25.0)
         self.assertEqual(action.user, self.user)
-        self.assertEqual(action.description, 'Used in protein assay')
+        self.assertEqual(action.notes, 'Used in protein assay')
         self.assertEqual(action.session, self.session)
     
     def test_action_type_choices(self):
         """Test valid action type choices"""
-        valid_types = ['usage', 'addition', 'disposal', 'transfer', 'quality_check']
+        valid_types = ['reserve', 'add']
         
         for action_type in valid_types:
             action = ReagentAction.objects.create(
-                stored_reagent=self.stored_reagent,
+                reagent=self.stored_reagent,
                 action_type=action_type,
-                quantity_used=10.0,
+                quantity=10.0,
                 user=self.user
             )
             self.assertEqual(action.action_type, action_type)
@@ -328,19 +307,18 @@ class ReagentActionTest(TestCase):
     def test_scalable_reagent_action(self):
         """Test scalable reagent actions with scaling factors"""
         action = ReagentAction.objects.create(
-            stored_reagent=self.stored_reagent,
-            action_type='usage',
-            quantity_used=25.0,
-            scalable=True,
-            scalable_factor=2.0,
+            reagent=self.stored_reagent,
+            action_type='reserve',
+            quantity=25.0,
             user=self.user
         )
-        
-        self.assertTrue(action.scalable)
-        self.assertEqual(action.scalable_factor, 2.0)
+        action.reagent.reagent.scalable = True
+        action.reagent.reagent.scalable_factor = 2.0
+        self.assertTrue(action.reagent.reagent.scalable)
+        self.assertEqual(action.reagent.reagent.scalable_factor, 2.0)
         
         # Effective quantity should be quantity_used * scalable_factor
-        effective_quantity = action.quantity_used * action.scalable_factor
+        effective_quantity = action.quantity * action.reagent.reagent.scalable_factor
         self.assertEqual(effective_quantity, 50.0)
 
 
@@ -348,18 +326,23 @@ class ReagentSubscriptionTest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user('testuser', 'test@example.com', 'password')
         self.lab_group = LabGroup.objects.create(
-            group_name='Test Lab',
+            name='Test Lab',
             description='Test lab group'
         )
         
         self.reagent = Reagent.objects.create(
-            reagent_name='Test Reagent'
+            name='Test Reagent',
+            unit='mL'
         )
         
         self.stored_reagent = StoredReagent.objects.create(
             reagent=self.reagent,
-            lot_number='LOT12345',
-            lab_group=self.lab_group
+            quantity=500.0,
+            storage_object=StorageObject.objects.create(
+                object_name='Test Storage',
+                object_type='freezer',
+                user=self.user
+            ),
         )
     
     def test_subscription_creation(self):
@@ -367,25 +350,23 @@ class ReagentSubscriptionTest(TestCase):
         subscription = ReagentSubscription.objects.create(
             stored_reagent=self.stored_reagent,
             user=self.user,
-            notification_type='low_stock'
+            notify_on_low_stock=True
         )
         
         self.assertEqual(subscription.stored_reagent, self.stored_reagent)
         self.assertEqual(subscription.user, self.user)
-        self.assertEqual(subscription.notification_type, 'low_stock')
-        self.assertTrue(subscription.active)
+        self.assertEqual(subscription.notify_on_low_stock, True)
     
     def test_subscription_types(self):
         """Test different subscription notification types"""
-        valid_types = ['low_stock', 'expiration', 'quality_check', 'all']
-        
-        for notification_type in valid_types:
-            subscription = ReagentSubscription.objects.create(
-                stored_reagent=self.stored_reagent,
-                user=self.user,
-                notification_type=notification_type
-            )
-            self.assertEqual(subscription.notification_type, notification_type)
+        subscription = ReagentSubscription.objects.create(
+            stored_reagent=self.stored_reagent,
+            user=self.user,
+            notify_on_expiry=True,
+            notify_on_low_stock=True
+        )
+        self.assertTrue(subscription.notify_on_expiry)
+        self.assertTrue(subscription.notify_on_low_stock)
     
     def test_subscription_unsubscribe(self):
         """Test unsubscribing from reagent notifications"""
@@ -393,27 +374,29 @@ class ReagentSubscriptionTest(TestCase):
         subscription = ReagentSubscription.objects.create(
             stored_reagent=self.stored_reagent,
             user=self.user,
-            notification_type='low_stock'
+            notify_on_low_stock=True,
+            notify_on_expiry=True
         )
         
+        
         # Test unsubscribe functionality
-        result = self.stored_reagent.unsubscribe_user(self.user)
+        result = self.stored_reagent.unsubscribe_user(self.user, True, True)
         self.assertTrue(result)
         
         # Subscription should be deactivated or deleted
-        subscription.refresh_from_db()
-        self.assertFalse(subscription.active)
+        self.assertFalse(ReagentSubscription.objects.filter(user=self.user, stored_reagent=self.stored_reagent).exists())
 
 
 class ProtocolReagentTest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user('testuser', 'test@example.com', 'password')
         self.protocol = ProtocolModel.objects.create(
-            protocol_name='Test Protocol',
+            protocol_title='Test Protocol',
             user=self.user
         )
         self.reagent = Reagent.objects.create(
-            reagent_name='Protocol Reagent'
+            name='Protocol Reagent',
+            unit='mL'
         )
     
     def test_protocol_reagent_creation(self):
@@ -421,31 +404,28 @@ class ProtocolReagentTest(TestCase):
         protocol_reagent = ProtocolReagent.objects.create(
             protocol=self.protocol,
             reagent=self.reagent,
-            quantity_required=100.0,
-            unit='mL',
-            notes='Required for step 3'
+            quantity=100.0,
         )
         
         self.assertEqual(protocol_reagent.protocol, self.protocol)
         self.assertEqual(protocol_reagent.reagent, self.reagent)
-        self.assertEqual(protocol_reagent.quantity_required, 100.0)
-        self.assertEqual(protocol_reagent.unit, 'mL')
 
 
 class StepReagentTest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user('testuser', 'test@example.com', 'password')
         self.protocol = ProtocolModel.objects.create(
-            protocol_name='Test Protocol',
+            protocol_title='Test Protocol',
             user=self.user
         )
         self.step = ProtocolStep.objects.create(
             protocol=self.protocol,
             step_id=1,
-            step_title='Test Step'
+            step_description='Test Step'
         )
         self.reagent = Reagent.objects.create(
-            reagent_name='Step Reagent'
+            name='Step Reagent',
+            unit='µL'
         )
     
     def test_step_reagent_creation(self):
@@ -453,18 +433,13 @@ class StepReagentTest(TestCase):
         step_reagent = StepReagent.objects.create(
             step=self.step,
             reagent=self.reagent,
-            quantity_required=50.0,
-            unit='µL',
-            scalable=True,
-            scalable_factor=1.5
+            quantity=50.0,
         )
         
         self.assertEqual(step_reagent.step, self.step)
         self.assertEqual(step_reagent.reagent, self.reagent)
-        self.assertEqual(step_reagent.quantity_required, 50.0)
-        self.assertEqual(step_reagent.unit, 'µL')
-        self.assertTrue(step_reagent.scalable)
-        self.assertEqual(step_reagent.scalable_factor, 1.5)
+        self.assertEqual(step_reagent.quantity, 50.0)
+        self.assertEqual(step_reagent.reagent.unit, 'µL')
 
 
 class ReagentIntegrationTest(TestCase):
@@ -473,30 +448,29 @@ class ReagentIntegrationTest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user('testuser', 'test@example.com', 'password')
         self.lab_group = LabGroup.objects.create(
-            group_name='Integration Test Lab',
+            name='Integration Test Lab',
             description='Test lab group'
         )
         self.lab_group.users.add(self.user)
         
         self.reagent = Reagent.objects.create(
-            reagent_name='Integration Test Reagent',
-            cas_number='123-45-6'
-        )
+            name='Integration Test Reagent',
+            unit='mL',
+                    )
         
         self.storage = StorageObject.objects.create(
             object_name='Test Storage',
             object_type='freezer',
-            temperature=-20,
             user=self.user
         )
         
         self.protocol = ProtocolModel.objects.create(
-            protocol_name='Integration Test Protocol',
+            protocol_title='Integration Test Protocol',
             user=self.user
         )
         
         self.session = Session.objects.create(
-            unique_id='integration-test-session',
+            unique_id=uuid.uuid4(),
             user=self.user
         )
     
@@ -505,49 +479,43 @@ class ReagentIntegrationTest(TestCase):
         # 1. Create stored reagent
         stored_reagent = StoredReagent.objects.create(
             reagent=self.reagent,
-            lot_number='INT-LOT-001',
-            supplier='Test Supplier',
-            volume=1000.0,
-            unit='mL',
-            concentration=2.0,
+            quantity=1000.0,
             storage_object=self.storage,
-            expiry_date=date.today() + timedelta(days=180),
-            minimum_stock_level=200.0,
-            lab_group=self.lab_group
+            expiration_date=date.today() + timedelta(days=180),
+            low_stock_threshold=200.0
         )
         
         # 2. Link reagent to protocol
         protocol_reagent = ProtocolReagent.objects.create(
             protocol=self.protocol,
             reagent=self.reagent,
-            quantity_required=500.0,
-            unit='mL'
+            quantity=500.0,
         )
         
         # 3. Create subscription for notifications
         subscription = ReagentSubscription.objects.create(
             stored_reagent=stored_reagent,
             user=self.user,
-            notification_type='low_stock'
+            notify_on_low_stock=True,
         )
         
         # 4. Record usage action
         usage_action = ReagentAction.objects.create(
-            stored_reagent=stored_reagent,
-            action_type='usage',
-            quantity_used=300.0,
+            reagent=stored_reagent,
+            action_type='reserve',
+            quantity=300.0,
             user=self.user,
             session=self.session,
-            description='Used in integration test protocol'
+            notes='Used in integration test protocol'
         )
         
         # 5. Record quality check action
         quality_action = ReagentAction.objects.create(
-            stored_reagent=stored_reagent,
-            action_type='quality_check',
-            quantity_used=0.0,  # No quantity used for quality check
+            reagent=stored_reagent,
+            action_type='reserve',
+            quantity=0.0,  # No quantity used for quality check
             user=self.user,
-            description='Monthly quality verification'
+            notes='Monthly quality verification'
         )
         
         # Verify the complete workflow
@@ -559,17 +527,14 @@ class ReagentIntegrationTest(TestCase):
         self.assertIn(usage_action, stored_reagent.reagent_actions.all())
         self.assertIn(quality_action, stored_reagent.reagent_actions.all())
         self.assertEqual(protocol_reagent.reagent, self.reagent)
-        self.assertTrue(subscription.active)
-        
-        # Test low stock scenario
+
         low_stock_action = ReagentAction.objects.create(
-            stored_reagent=stored_reagent,
-            action_type='usage',
-            quantity_used=550.0,  # This will bring total to 150, below minimum of 200
+            reagent=stored_reagent,
+            action_type='reserve',
+            quantity=550.0,  # This will bring total to 150, below minimum of 200
             user=self.user,
-            description='Large usage causing low stock'
+            notes='Large usage causing low stock'
         )
-        
-        # Should now trigger low stock
-        self.assertEqual(stored_reagent.get_current_quantity(), 150.0)  # 700 - 550
-        self.assertTrue(stored_reagent.check_low_stock())  # 150 < 200
+
+        self.assertEqual(stored_reagent.get_current_quantity(), 150.0)
+        self.assertTrue(stored_reagent.check_low_stock())

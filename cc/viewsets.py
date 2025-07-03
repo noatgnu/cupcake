@@ -256,7 +256,6 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
         """
         protocol = self.get_object()
         custom_id = self.request.META.get('HTTP_X_CUPCAKE_INSTANCE_ID', None)
-        print(request.data)
         if "export_type" in request.data:
             if "session" == self.request.data["export_type"]:
                 if "session" in self.request.data:
@@ -2010,7 +2009,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
         Request Data:
             protocol_ids (list): Protocol IDs to export (optional)
             session_ids (list): Session IDs to export (optional)
-            format (str): Export format - 'zip' (default), 'json', 'excel'
+            format (str): Export format - 'zip' (default), 'tar.gz'
             
         Returns:
             Response: 200 OK when export task is queued
@@ -2019,7 +2018,12 @@ class UserViewSet(ModelViewSet, FilterMixin):
         
         protocol_ids = request.data.get('protocol_ids', None)
         session_ids = request.data.get('session_ids', None)
-        format_type = request.data.get('format', 'zip')
+        export_options = request.data.get('export_options', None)
+        format_type = "zip"
+        if export_options:
+            if "format" in export_options:
+                format_type = export_options.get('format', 'zip')
+
         
         if protocol_ids:
             export_data.delay(

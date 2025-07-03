@@ -41,7 +41,7 @@ from sdrf_pipelines.sdrf.sdrf import SdrfDataFrame
 from cc.models import Annotation, ProtocolModel, ProtocolStep, StepVariation, ProtocolSection, Session, \
     AnnotationFolder, Reagent, ProtocolReagent, StepReagent, ProtocolTag, StepTag, Tag, Project, MetadataColumn, \
     InstrumentJob, SubcellularLocation, Species, MSUniqueVocabularies, Unimod, FavouriteMetadataOption, InstrumentUsage, \
-    LabGroup, Tissue, StorageObject, ReagentAction, StoredReagent, Instrument
+    LabGroup, Tissue, StorageObject, ReagentAction, StoredReagent, Instrument, SiteSettings
 from django.conf import settings
 import numpy as np
 import subprocess
@@ -60,6 +60,7 @@ import re
 from cc.utils import user_metadata, staff_metadata, required_metadata_name, identify_barcode_format
 from cc.improved_docx_generator import EnhancedDocxGenerator, DocxGenerationError
 from cc.utils.user_data_export_revised import export_user_data_revised, export_protocol_data, export_session_data
+from cc.utils.user_data_import_revised import dry_run_import_user_data
 
 capture_language = re.compile(r"auto-detected language: (\w+)")
 
@@ -1554,8 +1555,6 @@ def dry_run_import_data(user_id: int, archive_file: str, instance_id: str = None
     :param instance_id: Optional instance ID for tracking the analysis job
     :param import_options: Optional dict specifying what to analyze for import
     """
-    from cc.utils.user_data_import_revised import dry_run_import_user_data
-    from cc.models import SiteSettings
     
     user = User.objects.get(id=user_id)
     channel_layer = get_channel_layer()

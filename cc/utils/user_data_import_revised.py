@@ -225,9 +225,12 @@ class UserDataImporter:
                     self._send_progress(88, "Importing metadata and support models...")
                     self._import_metadata_and_support()
                 
-                # Import media files
-                self._send_progress(92, "Importing media files...")
-                self._import_media_files()
+                # Import media files only if annotations were imported
+                if self.import_options.get('annotations', True):
+                    self._send_progress(92, "Importing media files...")
+                    self._import_media_files()
+                else:
+                    print("Skipping media files import (annotations not imported)")
                 
                 # Import remaining relationships
                 self._send_progress(95, "Finalizing relationships...")
@@ -678,14 +681,15 @@ class UserDataImporter:
         self.stats['models_imported'] += 1
     
     def _import_media_files(self):
-        """Import media files"""
+        """Import media files and link them to annotations"""
         if not os.path.exists(self.media_dir):
             print("No media directory found, skipping file import")
             return
         
         print("Importing media files...")
         
-        # Copy media files to Django media root
+        # First, copy all media files to Django media root
+        copied_files = {}
         for root, dirs, files in os.walk(self.media_dir):
             for file in files:
                 src_path = os.path.join(root, file)
@@ -697,9 +701,38 @@ class UserDataImporter:
                 
                 # Copy file
                 shutil.copy2(src_path, dst_path)
+                
+                # Track copied files for linking
+                copied_files[file] = rel_path
                 self.stats['files_imported'] += 1
         
+        # Now link files to annotation records
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, file FROM export_annotations WHERE file IS NOT NULL AND file != ''")
+        
+        files_linked = 0
+        for row in cursor.fetchall():
+            original_id = row['id']
+            original_file_path = row['file']
+            
+            if original_id in self.id_mappings['annotations']:
+                # Extract filename from original path
+                filename = os.path.basename(original_file_path)
+                
+                if filename in copied_files:
+                    # Update annotation with correct file path
+                    try:
+                        annotation = Annotation.objects.get(id=self.id_mappings['annotations'][original_id])
+                        annotation.file = copied_files[filename]  # Use relative path from media root
+                        annotation.save()
+                        files_linked += 1
+                    except Annotation.DoesNotExist:
+                        print(f"Warning: Annotation not found for file {filename}")
+                else:
+                    print(f"Warning: File not found - annotation exists but file is missing: {filename}")
+        
         print(f"Imported {self.stats['files_imported']} media files")
+        print(f"Linked {files_linked} files to annotation records")
     
     def _import_remaining_relationships(self):
         """Import any remaining relationships"""

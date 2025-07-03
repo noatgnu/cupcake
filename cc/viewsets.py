@@ -12,7 +12,7 @@ from channels.layers import get_channel_layer
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.signing import TimestampSigner, loads, dumps, BadSignature, SignatureExpired
-from django.db.models import Q, Max
+from django.db.models import Q, Max, Count
 from django.db.models.expressions import result
 from django.http import HttpResponse
 from django.utils import timezone
@@ -59,7 +59,8 @@ from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, Anno
     MetadataTableTemplateSerializer, MaintenanceLogSerializer, SupportInformationSerializer, ExternalContactSerializer, \
     ExternalContactDetailsSerializer, MessageSerializer, MessageRecipientSerializer, MessageAttachmentSerializer, \
     MessageRecipientSerializer, MessageThreadSerializer, MessageThreadDetailSerializer, ReagentSubscriptionSerializer, \
-    SiteSettingsSerializer, BackupLogSerializer, DocumentPermissionSerializer, SharedDocumentSerializer
+    SiteSettingsSerializer, BackupLogSerializer, DocumentPermissionSerializer, SharedDocumentSerializer, \
+    UserBasicSerializer
 from cc.utils import user_metadata, staff_metadata, send_slack_notification
 
 class ProtocolViewSet(ModelViewSet, FilterMixin):
@@ -73,6 +74,24 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
     serializer_class = ProtocolModelSerializer
 
     def create(self, request, *args, **kwargs):
+        """
+        Create a new protocol from URL or manual data.
+        
+        Supports two creation methods:
+        - From URL: Automatically imports protocol data from protocols.io URL
+        - Manual: Creates protocol with provided title and description
+        
+        For manual creation, also creates a default section and step.
+        Associates protocol with authenticated user if available.
+        
+        Request Data:
+            url (str): protocols.io URL for automatic import (optional)
+            protocol_title (str): Title for manual creation (required if no URL)
+            protocol_description (str): Description for manual creation (required if no URL)
+            
+        Returns:
+            Response: Created protocol data with 201 status
+        """
         if "url" in request.data:
             protocol = ProtocolModel.create_protocol_from_url(request.data['url'])
         else:
@@ -99,6 +118,14 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
 
     @action(detail=True, methods=['get'])
     def get_associated_sessions(self, request, pk=None):
+        """
+        Get all sessions associated with this protocol.
+        
+        Returns sessions linked to the protocol, filtered by user permissions.
+        
+        Returns:
+            Response: List of session data for the protocol
+        """
         protocol = self.get_object()
         sessions = protocol.sessions.all()
         user = self.request.user
@@ -110,6 +137,15 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
         return Response(data, status=status.HTTP_200_OK)
 
     def get_queryset(self):
+        """
+        Filter protocols based on user permissions.
+        
+        Returns protocols that the user owns, are public, or the user has
+        been granted viewer/editor access to.
+        
+        Returns:
+            QuerySet: Filtered protocol queryset
+        """
         user = self.request.user
         if user.is_authenticated:
             return ProtocolModel.objects.filter(Q(user=user)|Q(enabled=True)|Q(viewers=user)|Q(editors=user))
@@ -117,6 +153,18 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
             return ProtocolModel.objects.filter(enabled=True)
 
     def get_object(self):
+        """
+        Get protocol object with permission checks.
+        
+        Enforces permission-based access control for protocol retrieval.
+        Raises PermissionDenied if user lacks access.
+        
+        Returns:
+            ProtocolModel: Protocol instance if user has access
+            
+        Raises:
+            PermissionDenied: If user lacks permission to access protocol
+        """
         obj = super().get_object()
         user = self.request.user
         if obj.user == user or obj.enabled:
@@ -132,6 +180,20 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
             raise PermissionDenied
 
     def update(self, request, *args, **kwargs):
+        """
+        Update protocol with permission checks.
+        
+        Allows protocol owners and editors to update protocol details.
+        Staff users can update any protocol.
+        
+        Request Data:
+            protocol_title (str): New protocol title
+            protocol_description (str): New protocol description
+            enabled (bool): Protocol visibility status (optional)
+            
+        Returns:
+            Response: Updated protocol data
+        """
         instance = self.get_object()
         if not request.user.is_staff:
             if not instance.user == request.user and not instance.viewers.filter(id=request.user.id).exists():
@@ -146,6 +208,19 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
 
     @action(detail=False, methods=['get'], pagination_class=LimitOffsetPagination)
     def get_user_protocols(self, request):
+        """
+        Get protocols owned by the authenticated user.
+        
+        Supports search filtering by title and description.
+        Returns paginated results with customizable limit.
+        
+        Query Parameters:
+            search (str): Search term for protocol title/description
+            limit (int): Number of protocols per page (default: 5)
+            
+        Returns:
+            Response: Paginated list of user's protocols
+        """
         if self.request.user.is_anonymous:
             return Response(status=status.HTTP_401_UNAUTHORIZED)
         user = request.user
@@ -165,6 +240,20 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
 
     @action(detail=True, methods=['post'])
     def create_export(self, request, pk=None):
+        """
+        Create export jobs for protocol or session data.
+        
+        Supports multiple export formats (docx, tar.gz, sqlite) and types
+        (protocol, session, session-sqlite). Exports are processed asynchronously.
+        
+        Request Data:
+            export_type (str): Type of export (protocol, session, session-sqlite)
+            format (str): Export format (docx, tar.gz)
+            session (int): Session ID for session-based exports
+            
+        Returns:
+            Response: 200 if export job queued successfully
+        """
         protocol = self.get_object()
         custom_id = self.request.META.get('HTTP_X_CUPCAKE_INSTANCE_ID', None)
         print(request.data)
@@ -196,6 +285,18 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
 
     @action(detail=False, methods=['get'])
     def download_temp_file(self, request):
+        """
+        Download temporary file using signed token.
+        
+        Uses Django's TimestampSigner for secure temporary file access.
+        Token expires after 30 minutes.
+        
+        Query Parameters:
+            token (str): Signed token for file access
+            
+        Returns:
+            Response: File download response with X-Accel-Redirect header
+        """
         token = request.query_params.get('token', None)
         if not token:
             return Response(status=status.HTTP_400_BAD_REQUEST)
@@ -211,6 +312,19 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
 
     @action(detail=True, methods=['post'])
     def clone(self, request, pk=None):
+        """
+        Clone an existing protocol with all its sections, steps, and reagents.
+        
+        Creates a deep copy of the protocol including all related objects.
+        The cloned protocol is owned by the requesting user.
+        
+        Request Data:
+            protocol_title (str): Title for cloned protocol (optional)
+            protocol_description (str): Description for cloned protocol (optional)
+            
+        Returns:
+            Response: Created protocol data
+        """
         protocol = self.get_object()
         new_protocol = ProtocolModel(user=self.request.user)
         new_protocol.protocol_title = protocol.protocol_title
@@ -293,6 +407,17 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
 
     @action(detail=False, methods=['post'])
     def check_if_title_exists(self, request):
+        """
+        Check if a protocol title already exists in the system.
+        
+        Used for validation before creating new protocols.
+        
+        Request Data:
+            protocol_title (str): Title to check for uniqueness
+            
+        Returns:
+            Response: 409 if title exists, 200 if available
+        """
         title = request.data['protocol_title']
         protocol = ProtocolModel.objects.filter(protocol_title=title)
         if protocol.exists():
@@ -301,6 +426,18 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
 
     @action(detail=True, methods=['post'])
     def add_user_role(self, request, pk=None):
+        """
+        Add user permission role to protocol.
+        
+        Allows protocol owners to grant viewer or editor access to other users.
+        
+        Request Data:
+            user (str): Username to grant access to
+            role (str): Role to grant (viewer or editor)
+            
+        Returns:
+            Response: 200 if role added, 409 if user already has role
+        """
         protocol = self.get_object()
         if self.request.user != protocol.user:
             raise PermissionDenied
@@ -322,18 +459,42 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
 
     @action(detail=True, methods=['get'])
     def get_editors(self, request, pk=None):
+        """
+        Get list of users with editor access to this protocol.
+        
+        Returns:
+            Response: List of users with editor permissions
+        """
         protocol = self.get_object()
         data = UserSerializer(protocol.editors.all(), many=True).data
         return Response(data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['get'])
     def get_viewers(self, request, pk=None):
+        """
+        Get list of users with viewer access to this protocol.
+        
+        Returns:
+            Response: List of users with viewer permissions
+        """
         protocol = self.get_object()
         data = UserSerializer(protocol.viewers.all(), many=True).data
         return Response(data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'])
     def remove_user_role(self, request, pk=None):
+        """
+        Remove user permission role from protocol.
+        
+        Allows protocol owners to revoke viewer or editor access.
+        
+        Request Data:
+            user (str): Username to revoke access from
+            role (str): Role to revoke (viewer or editor)
+            
+        Returns:
+            Response: 200 if role removed successfully
+        """
         protocol = self.get_object()
         if self.request.user != protocol.user:
             raise PermissionDenied
@@ -349,12 +510,29 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
 
     @action(detail=True, methods=['get'])
     def get_reagents(self, request, pk=None):
+        """
+        Get all reagents used in this protocol.
+        
+        Returns:
+            Response: List of protocol reagents with quantities
+        """
         protocol = self.get_object()
         data = ProtocolReagentSerializer(protocol.reagents.all(), many=True).data
         return Response(data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'])
     def add_tag(self, request, pk=None):
+        """
+        Add tag to protocol.
+        
+        Creates new tag if it doesn't exist, then associates it with the protocol.
+        
+        Request Data:
+            tag (str): Tag name to add
+            
+        Returns:
+            Response: Tag data if added, 409 if tag already exists on protocol
+        """
         protocol = self.get_object()
         tag_name = request.data['tag']
         tags = Tag.objects.filter(tag=tag_name)
@@ -393,6 +571,17 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
         return Response(ProtocolModelSerializer(protocol, many=False).data, status=status.HTTP_200_OK)
 
 class StepViewSet(ModelViewSet, FilterMixin):
+    """
+    ViewSet for managing protocol steps.
+    
+    Provides CRUD operations for protocol steps with proper permission checks.
+    Only protocol owners and users with access can view/modify steps.
+    
+    Supports:
+    - Creating new steps within protocol sections
+    - Searching and filtering steps
+    - Managing step ordering and dependencies
+    """
     permission_classes = [OwnerOrReadOnly]
     queryset = ProtocolStep.objects.all()
     authentication_classes = [TokenAuthentication, SessionAuthentication]
@@ -403,10 +592,29 @@ class StepViewSet(ModelViewSet, FilterMixin):
     serializer_class = ProtocolStepSerializer
 
     def get_queryset(self):
+        """
+        Filter steps based on protocol permissions.
+        
+        Returns steps from protocols that the user owns or are public.
+        
+        Returns:
+            QuerySet: Filtered protocol steps
+        """
         user = self.request.user
         return ProtocolStep.objects.filter(Q(protocol__user=user)|Q(protocol__enabled=True))
 
     def get_object(self):
+        """
+        Get step object with permission checks.
+        
+        Ensures user has access to the step's parent protocol.
+        
+        Returns:
+            ProtocolStep: Step instance if user has access
+            
+        Raises:
+            PermissionDenied: If user lacks permission to access step
+        """
         obj = super().get_object()
         user = self.request.user
         if obj.protocol.user == user or obj.protocol.enabled:
@@ -416,6 +624,22 @@ class StepViewSet(ModelViewSet, FilterMixin):
 
 
     def create(self, request, *args, **kwargs):
+        """
+        Create a new protocol step within a section.
+        
+        Handles step ordering and insertion into the protocol section.
+        Automatically links steps in proper sequence.
+        
+        Request Data:
+            protocol (int): Protocol ID
+            step_section (int): Section ID where step belongs
+            step_description (str): Step description
+            step_duration (int): Step duration in seconds
+            step_id (str): Optional step identifier
+            
+        Returns:
+            Response: Created step data
+        """
         protocol = ProtocolModel.objects.get(id=request.data['protocol'])
         # get all steps in the section
         steps = ProtocolStep.objects.filter(step_section=request.data['step_section'], protocol=protocol)
@@ -625,6 +849,20 @@ class StepViewSet(ModelViewSet, FilterMixin):
         return Response(data=result, status=status.HTTP_200_OK)
 
 class AnnotationViewSet(ModelViewSet, FilterMixin):
+    """
+    ViewSet for managing annotations.
+    
+    Handles various annotation types including text, audio, video, and instrument bookings.
+    Supports file uploads and integrates with external services for transcription and AI processing.
+    
+    Annotation types:
+    - text: Basic text annotations
+    - audio: Audio recordings with transcription
+    - video: Video recordings with transcription
+    - instrument: Instrument booking annotations
+    - image: Image annotations with OCR
+    - maintenance: Maintenance-related annotations
+    """
     permission_classes = [IsAuthenticatedOrReadOnly]
     queryset = Annotation.objects.all()
     parser_classes = [MultiPartParser, JSONParser]
@@ -637,6 +875,24 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
     pagination_class = LimitOffsetPagination
 
     def create(self, request, *args, **kwargs):
+        """
+        Create a new annotation with file upload support.
+        
+        Handles various annotation types and triggers background processing
+        for audio/video transcription and AI analysis.
+        
+        Request Data:
+            annotation (str): Annotation text content
+            annotation_type (str): Type of annotation (text, audio, video, instrument, image, maintenance)
+            step (int): Associated protocol step ID (optional)
+            session (str): Session unique ID (optional)
+            stored_reagent (int): Associated stored reagent ID (optional)
+            instrument (int): Instrument ID for booking annotations
+            file uploads: Audio/video/image files
+            
+        Returns:
+            Response: Created annotation data
+        """
         step = None
         custom_id = self.request.META.get('HTTP_X_CUPCAKE_INSTANCE_ID', None)
         annotation = Annotation()
@@ -920,11 +1176,19 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
 
     @action(detail=True, methods=['post'])
     def get_signed_url(self, request, pk=None):
+        """
+        Generate a signed URL token for secure file access.
+        
+        Creates a time-limited signed token for accessing annotation files.
+        Validates user permissions including shared document access rights.
+        
+        Returns:
+            Response: Signed token for file access or 401 if unauthorized
+        """
         signer = TimestampSigner()
         annotation = Annotation.objects.get(id=pk)
         user = self.request.user
         
-        # Check if this is a shared document and validate permissions
         if annotation.folder and annotation.folder.is_shared_document_folder:
             from .models import DocumentPermission
             if not DocumentPermission.user_can_access_annotation_with_folder_inheritance(user, annotation, 'can_view'):
@@ -934,41 +1198,6 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
         signed_token = signer.sign_object(file)
         if annotation.check_for_right(user, "view"):
             return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
-        # if annotation.session:
-        #     if annotation.session.enabled:
-        #         if not annotation.scratched:
-        #             return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
-        #
-        # if user.is_authenticated:
-        #     if annotation.session:
-        #         if user in annotation.session.viewers.all() or user in annotation.session.editors.all() or user == annotation.session.user or user == annotation.user:
-        #             if annotation.scratched:
-        #                 if user not in annotation.session.editors.all() and user != annotation.user and user != annotation.session.user:
-        #                     return Response(status=status.HTTP_401_UNAUTHORIZED)
-        #             else:
-        #                 return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
-        #             return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
-        #     if annotation.folder:
-        #         if annotation.folder.instrument:
-        #             i_permission = InstrumentPermission.objects.filter(instrument=annotation.folder.instrument, user=user)
-        #             if i_permission.exists():
-        #                 i_permission = i_permission.first()
-        #                 if i_permission.can_book or i_permission.can_manage or i_permission.can_view:
-        #                     return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
-        #     else:
-        #         instrument_jobs = annotation.instrument_jobs.all()
-        #         for instrument_job in instrument_jobs:
-        #             if user == instrument_job.user:
-        #                 return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
-        #             else:
-        #                 lab_group = instrument_job.service_lab_group
-        #                 staff =  instrument_job.staff.all()
-        #                 if staff.count() > 0:
-        #                     if user in staff:
-        #                         return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
-        #                 else:
-        #                     if user in lab_group.users.all():
-        #                         return Response({"signed_token": signed_token}, status=status.HTTP_200_OK)
         return Response(status=status.HTTP_401_UNAUTHORIZED)
 
 
@@ -1770,15 +1999,29 @@ class UserViewSet(ModelViewSet, FilterMixin):
 
     @action(detail=False, methods=['post'])
     def export_data(self, request):
+        """
+        Export user data in various formats and scopes.
+        
+        Supports three export types:
+        - Protocol-specific: Export data for specified protocols only
+        - Session-specific: Export data for specified sessions only  
+        - Complete: Export all user data (default)
+        
+        Request Data:
+            protocol_ids (list): Protocol IDs to export (optional)
+            session_ids (list): Session IDs to export (optional)
+            format (str): Export format - 'zip' (default), 'json', 'excel'
+            
+        Returns:
+            Response: 200 OK when export task is queued
+        """
         custom_id = self.request.META.get('HTTP_X_CUPCAKE_INSTANCE_ID', None)
         
-        # Check if specific protocols or sessions are requested
         protocol_ids = request.data.get('protocol_ids', None)
         session_ids = request.data.get('session_ids', None)
-        format_type = request.data.get('format', 'zip')  # Default to zip
+        format_type = request.data.get('format', 'zip')
         
         if protocol_ids:
-            # Protocol-specific export
             export_data.delay(
                 request.user.id, 
                 protocol_ids=protocol_ids, 
@@ -1787,7 +2030,6 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 format_type=format_type
             )
         elif session_ids:
-            # Session-specific export
             export_data.delay(
                 request.user.id, 
                 session_ids=session_ids, 
@@ -1796,7 +2038,6 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 format_type=format_type
             )
         else:
-            # Complete user data export (default)
             export_data.delay(
                 request.user.id, 
                 instance_id=custom_id, 
@@ -1808,13 +2049,25 @@ class UserViewSet(ModelViewSet, FilterMixin):
 
     @action(detail=False, methods=['post'])
     def import_user_data(self, request):
+        """
+        Import user data from uploaded archive file.
+        
+        Processes a previously uploaded chunked file and imports data
+        based on provided import options and file contents.
+        
+        Request Data:
+            upload_id (str): ID of completed chunked upload
+            import_options (dict): Import configuration options (optional)
+            
+        Returns:
+            Response: 200 OK when import task is queued
+        """
         user = self.request.user
         chunked_upload_id = request.data['upload_id']
         import_options = request.data.get('import_options', None)
         custom_id = self.request.META.get('HTTP_X_CUPCAKE_INSTANCE_ID', None)
         chunked_upload = ChunkedUpload.objects.get(id=chunked_upload_id, user=user)
         if chunked_upload.completed_at:
-            # get completed file path
             file_path = chunked_upload.file.path
             import_data.delay(user.id, file_path, custom_id, import_options)
             return Response(status=status.HTTP_200_OK)
@@ -1910,6 +2163,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
 
             user = User.objects.create_user(email=payload['email'], username=request.data['username'])
             user.set_password(request.data['password'])
+            user.is_active = True
             user.save()
             if payload['lab_group']:
                 lab_group = LabGroup.objects.get(id=payload['lab_group'])
@@ -1923,14 +2177,15 @@ class UserViewSet(ModelViewSet, FilterMixin):
         if not request.user.is_staff:
             return Response(status=status.HTTP_401_UNAUTHORIZED)
         email = request.data.get('email')
-        lab_group = request.data.get('lab_group')
+        lab_group = request.data.get('lab_group', None)
         if User.objects.filter(email=email).exists():
             return Response({'error': 'Email already exists'}, status=status.HTTP_400_BAD_REQUEST)
         signer = TimestampSigner()
         payload = {
             'email': email,
-            'lab_group': lab_group
         }
+        if lab_group:
+            payload['lab_group'] = lab_group
 
         token = signer.sign(dumps(payload))
         return Response({'token': token}, status=status.HTTP_200_OK)
@@ -1940,14 +2195,15 @@ class UserViewSet(ModelViewSet, FilterMixin):
         if not request.user.is_staff:
             return Response(status=status.HTTP_401_UNAUTHORIZED)
         email = request.data.get('email')
-        lab_group = request.data.get('lab_group')
+        lab_group = request.data.get('lab_group', None)
         if User.objects.filter(email=email).exists():
             return Response({'error': 'Email already exists'}, status=status.HTTP_400_BAD_REQUEST)
         signer = TimestampSigner()
         payload = {
-            'email': email,
-            'lab_group': lab_group
+            'email': email
         }
+        if lab_group:
+            payload['lab_group'] = lab_group
 
         token = signer.sign(dumps(payload))
         signup_url = f"{settings.FRONTEND_URL}/#/accounts/signup/{token}"
@@ -1964,9 +2220,652 @@ class UserViewSet(ModelViewSet, FilterMixin):
 
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
     def current(self, request):
+        """
+        Get current authenticated user's profile information.
+        
+        Returns:
+            Response: User profile data including username, email, and staff status
+        """
         user = request.user
         data = UserSerializer(user).data
         return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
+    def user_activity_summary(self, request):
+        """
+        Get comprehensive summary of user's activity across the platform.
+        
+        Returns activity counts across all major platform features including
+        total resource counts and recent activity over the last 30 days.
+        
+        Returns:
+            Response: Activity summary containing:
+                - total_counts: Overall resource counts (protocols, sessions, annotations, projects, stored_reagents)
+                - recent_activity: Activity counts for last 30 days
+                - lab_groups: Lab group membership statistics
+        """
+        user = request.user
+        
+        protocols_count = ProtocolModel.objects.filter(user=user).count()
+        sessions_count = Session.objects.filter(user=user).count()
+        annotations_count = Annotation.objects.filter(user=user).count()
+        projects_count = Project.objects.filter(owner=user).count()
+        
+        thirty_days_ago = datetime.now() - timedelta(days=30)
+        
+        recent_protocols = ProtocolModel.objects.filter(
+            user=user, 
+            protocol_created_on__gte=thirty_days_ago
+        ).count()
+        recent_sessions = Session.objects.filter(
+            user=user, 
+            created_at__gte=thirty_days_ago
+        ).count()
+        recent_annotations = Annotation.objects.filter(
+            user=user, 
+            created_at__gte=thirty_days_ago
+        ).count()
+        
+        stored_reagents_count = StoredReagent.objects.filter(
+            user=user
+        ).count()
+        
+        activity_summary = {
+            'total_counts': {
+                'protocols': protocols_count,
+                'sessions': sessions_count,
+                'annotations': annotations_count,
+                'projects': projects_count,
+                'stored_reagents': stored_reagents_count,
+            },
+            'recent_activity': {
+                'protocols_last_30_days': recent_protocols,
+                'sessions_last_30_days': recent_sessions,
+                'annotations_last_30_days': recent_annotations,
+            },
+            'lab_groups': {
+                'member_of': user.lab_groups.count(),
+                'managing': user.managed_lab_groups.count(),
+            }
+        }
+        
+        return Response(activity_summary, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
+    def search_users(self, request):
+        """
+        Enhanced user search with multiple filtering criteria.
+        
+        Supports text search across username, first name, last name, and email,
+        plus filtering by lab group membership, user role, and activity status.
+        
+        Query Parameters:
+            q (str): Text search query across user fields
+            lab_group (int): Filter by lab group ID membership
+            role (str): Filter by role - 'staff' or 'regular'
+            active (bool): Filter for active users only (default: true)
+        
+        Returns:
+            Response: Paginated list of users matching search criteria
+        """
+        query = request.query_params.get('q', '')
+        lab_group_id = request.query_params.get('lab_group', None)
+        role = request.query_params.get('role', None)
+        active_only = request.query_params.get('active', 'true').lower() == 'true'
+        
+        queryset = User.objects.all()
+        
+        if query:
+            queryset = queryset.filter(
+                Q(username__icontains=query) |
+                Q(first_name__icontains=query) |
+                Q(last_name__icontains=query) |
+                Q(email__icontains=query)
+            )
+        
+        if lab_group_id:
+            try:
+                lab_group = LabGroup.objects.get(id=lab_group_id)
+                queryset = queryset.filter(lab_groups=lab_group)
+            except LabGroup.DoesNotExist:
+                return Response(
+                    {'error': 'Lab group not found'}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
+        
+        if role == 'staff':
+            queryset = queryset.filter(is_staff=True)
+        elif role == 'regular':
+            queryset = queryset.filter(is_staff=False)
+        
+        if active_only:
+            thirty_days_ago = datetime.now() - timedelta(days=30)
+            active_user_ids = set()
+            
+            active_user_ids.update(
+                Session.objects.filter(created_at__gte=thirty_days_ago)
+                .values_list('user_id', flat=True)
+            )
+            active_user_ids.update(
+                ProtocolModel.objects.filter(protocol_created_on__gte=thirty_days_ago)
+                .values_list('user_id', flat=True)
+            )
+            active_user_ids.update(
+                Annotation.objects.filter(created_at__gte=thirty_days_ago)
+                .values_list('user_id', flat=True)
+            )
+            
+            queryset = queryset.filter(id__in=active_user_ids)
+        
+        paginator = LimitOffsetPagination()
+        paginator.default_limit = 20
+        paginated_users = paginator.paginate_queryset(queryset, request)
+        if request.user.is_staff:
+            return paginator.get_paginated_response(
+                UserSerializer(paginated_users, many=True).data
+            )
+        return paginator.get_paginated_response(
+            UserBasicSerializer(paginated_users, many=True).data
+        )
+
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
+    def user_statistics(self, request, pk=None):
+        """
+        Get detailed statistics for a specific user (staff only or own profile)
+        """
+        try:
+            target_user = User.objects.get(pk=pk)
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'User not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Permission check: staff can view any user, users can only view themselves
+        if not request.user.is_staff and request.user != target_user:
+            return Response(
+                {'error': 'Permission denied'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Time ranges for statistics
+        now = datetime.now()
+        last_week = now - timedelta(days=7)
+        last_month = now - timedelta(days=30)
+        last_year = now - timedelta(days=365)
+        
+        # Protocol statistics
+        protocol_stats = {
+            'total': ProtocolModel.objects.filter(user=target_user).count(),
+            'enabled': ProtocolModel.objects.filter(user=target_user, enabled=True).count(),
+            'last_week': ProtocolModel.objects.filter(
+                user=target_user, protocol_created_on__gte=last_week
+            ).count(),
+            'last_month': ProtocolModel.objects.filter(
+                user=target_user, protocol_created_on__gte=last_month
+            ).count(),
+        }
+        
+        # Session statistics
+        session_stats = {
+            'total': Session.objects.filter(user=target_user).count(),
+            'enabled': Session.objects.filter(user=target_user, enabled=True).count(),
+            'last_week': Session.objects.filter(
+                user=target_user, created_at__gte=last_week
+            ).count(),
+            'last_month': Session.objects.filter(
+                user=target_user, created_at__gte=last_month
+            ).count(),
+        }
+        
+        # Annotation statistics
+        annotation_stats = {
+            'total': Annotation.objects.filter(user=target_user).count(),
+            'with_files': Annotation.objects.filter(
+                user=target_user, file__isnull=False
+            ).exclude(file='').count(),
+            'last_week': Annotation.objects.filter(
+                user=target_user, created_at__gte=last_week
+            ).count(),
+            'last_month': Annotation.objects.filter(
+                user=target_user, created_at__gte=last_month
+            ).count(),
+        }
+        
+        # Project statistics
+        project_stats = {
+            'owned': Project.objects.filter(owner=target_user).count(),
+            'last_month': Project.objects.filter(
+                owner=target_user, created_at__gte=last_month
+            ).count(),
+        }
+        
+        # Lab group participation
+        lab_group_stats = {
+            'member_of': target_user.lab_groups.count(),
+            'managing': target_user.managed_lab_groups.count(),
+        }
+        
+        # Storage statistics
+        storage_stats = {
+            'stored_reagents': StoredReagent.objects.filter(user=target_user).count(),
+            'storage_objects': StorageObject.objects.filter(user=target_user).count(),
+        }
+        
+        statistics = {
+            'user_info': {
+                'id': target_user.id,
+                'username': target_user.username,
+                'full_name': f"{target_user.first_name} {target_user.last_name}".strip(),
+                'email': target_user.email,
+                'is_staff': target_user.is_staff,
+                'date_joined': target_user.date_joined,
+                'last_login': target_user.last_login,
+            },
+            'protocols': protocol_stats,
+            'sessions': session_stats,
+            'annotations': annotation_stats,
+            'projects': project_stats,
+            'lab_groups': lab_group_stats,
+            'storage': storage_stats,
+        }
+        
+        return Response(statistics, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
+    def user_dashboard_data(self, request):
+        """
+        Get comprehensive dashboard data for current user
+        """
+        user = request.user
+        
+        # Recent activity
+        last_week = datetime.now() - timedelta(days=7)
+        
+        # Get recent items
+        recent_protocols = ProtocolModel.objects.filter(
+            user=user, protocol_created_on__gte=last_week
+        ).order_by('-protocol_created_on')[:5]
+        
+        recent_sessions = Session.objects.filter(
+            user=user, created_at__gte=last_week
+        ).order_by('-created_at')[:5]
+        
+        recent_annotations = Annotation.objects.filter(
+            user=user, created_at__gte=last_week
+        ).order_by('-created_at')[:5]
+        
+        # Lab groups with member counts
+        lab_groups_data = []
+        for lab_group in user.lab_groups.all():
+            lab_groups_data.append({
+                'id': lab_group.id,
+                'name': lab_group.name,
+                'member_count': lab_group.users.count(),
+                'is_professional': getattr(lab_group, 'is_professional', False),
+            })
+        
+        dashboard_data = {
+            'user_info': {
+                'username': user.username,
+                'full_name': f"{user.first_name} {user.last_name}".strip(),
+                'email': user.email,
+                'is_staff': user.is_staff,
+            },
+            'quick_stats': {
+                'total_protocols': ProtocolModel.objects.filter(user=user).count(),
+                'total_sessions': Session.objects.filter(user=user).count(),
+                'total_annotations': Annotation.objects.filter(user=user).count(),
+                'lab_groups_count': user.lab_groups.count(),
+            },
+            'recent_activity': {
+                'protocols': [{
+                    'id': p.id,
+                    'title': p.protocol_title,
+                    'created': p.protocol_created_on,
+                } for p in recent_protocols],
+                'sessions': [{
+                    'id': s.id,
+                    'name': s.name,
+                    'created': s.created_at,
+                } for s in recent_sessions],
+                'annotations': [{
+                    'id': a.id,
+                    'annotation': a.annotation[:50] + '...' if len(a.annotation) > 50 else a.annotation,
+                    'created': a.created_at,
+                } for a in recent_annotations],
+            },
+            'lab_groups': lab_groups_data,
+        }
+        
+        return Response(dashboard_data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
+    def bulk_user_permissions_check(self, request):
+        """
+        Check permissions for multiple users and resources at once
+        """
+        user_ids = request.data.get('user_ids', [])
+        resource_type = request.data.get('resource_type')  # 'protocol', 'session', 'annotation'
+        resource_ids = request.data.get('resource_ids', [])
+        
+        if not user_ids or not resource_type or not resource_ids:
+            return Response(
+                {'error': 'user_ids, resource_type, and resource_ids are required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Only staff can check other users' permissions
+        if not request.user.is_staff:
+            user_ids = [request.user.id]
+        
+        users = User.objects.filter(id__in=user_ids)
+        permission_matrix = []
+        
+        for user in users:
+            user_permissions = {
+                'user_id': user.id,
+                'username': user.username,
+                'permissions': []
+            }
+            
+            if resource_type == 'protocol':
+                protocols = ProtocolModel.objects.filter(id__in=resource_ids)
+                for protocol in protocols:
+                    permission = {
+                        'resource_id': protocol.id,
+                        'edit': False,
+                        'view': False,
+                        'delete': False
+                    }
+                    
+                    if protocol.user == user:
+                        permission.update({'edit': True, 'view': True, 'delete': True})
+                    elif user in protocol.editors.all():
+                        permission.update({'edit': True, 'view': True})
+                    elif user in protocol.viewers.all():
+                        permission['view'] = True
+                    
+                    if protocol.enabled:
+                        permission['view'] = True
+                    
+                    user_permissions['permissions'].append(permission)
+            
+            elif resource_type == 'session':
+                sessions = Session.objects.filter(id__in=resource_ids)
+                for session in sessions:
+                    permission = {
+                        'resource_id': session.id,
+                        'edit': False,
+                        'view': False,
+                        'delete': False
+                    }
+                    
+                    if session.user == user:
+                        permission.update({'edit': True, 'view': True, 'delete': True})
+                    elif user in session.editors.all():
+                        permission.update({'edit': True, 'view': True})
+                    elif user in session.viewers.all():
+                        permission['view'] = True
+                    
+                    if session.enabled:
+                        permission['view'] = True
+                    
+                    user_permissions['permissions'].append(permission)
+            
+            permission_matrix.append(user_permissions)
+        
+        return Response(permission_matrix, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
+    def user_preferences(self, request):
+        """
+        Get user preferences (can be extended to include custom settings)
+        """
+        user = request.user
+        
+        # For now, return basic user settings that could be considered preferences
+        preferences = {
+            'profile': {
+                'username': user.username,
+                'first_name': user.first_name,
+                'last_name': user.last_name,
+                'email': user.email,
+            },
+            'lab_settings': {
+                'default_lab_groups': [group.id for group in user.lab_groups.all()],
+                'managed_lab_groups': [group.id for group in user.managed_lab_groups.all()],
+            },
+            'permissions': {
+                'is_staff': user.is_staff,
+                'is_superuser': user.is_superuser,
+            }
+        }
+        
+        return Response(preferences, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
+    def deactivate_user(self, request):
+        """
+        Deactivate a user account (staff only)
+        """
+        if not request.user.is_staff:
+            return Response(
+                {'error': 'Only staff can deactivate users'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        user_id = request.data.get('user_id')
+        reason = request.data.get('reason', '')
+        
+        if not user_id:
+            return Response(
+                {'error': 'user_id is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            target_user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'User not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Prevent deactivating superusers or self
+        if target_user.is_superuser:
+            return Response(
+                {'error': 'Cannot deactivate superuser accounts'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if target_user == request.user:
+            return Response(
+                {'error': 'Cannot deactivate your own account'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        target_user.is_active = False
+        target_user.save()
+
+        return Response(
+            {'message': f'User {target_user.username} has been deactivated'}, 
+            status=status.HTTP_200_OK
+        )
+
+    @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
+    def reactivate_user(self, request):
+        """
+        Reactivate a user account (staff only)
+        """
+        if not request.user.is_staff:
+            return Response(
+                {'error': 'Only staff can reactivate users'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        user_id = request.data.get('user_id')
+        
+        if not user_id:
+            return Response(
+                {'error': 'user_id is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            target_user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'User not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        target_user.is_active = True
+        target_user.save()
+        
+        # Log the reactivation
+        print(f"User {target_user.username} reactivated by {request.user.username}")
+        
+        return Response(
+            {'message': f'User {target_user.username} has been reactivated'}, 
+            status=status.HTTP_200_OK
+        )
+
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
+    def user_lab_group_management(self, request):
+        """
+        Get lab groups where user has management permissions
+        """
+        user = request.user
+        
+        # Lab groups user manages
+        managed_groups = user.managed_lab_groups.all()
+        
+        # Lab groups user is member of
+        member_groups = user.lab_groups.all()
+        
+        # For each managed group, get member details
+        managed_groups_data = []
+        for group in managed_groups:
+            group_data = {
+                'id': group.id,
+                'name': group.name,
+                'description': getattr(group, 'description', ''),
+                'is_professional': getattr(group, 'is_professional', False),
+                'member_count': group.users.count(),
+                'members': [{
+                    'id': member.id,
+                    'username': member.username,
+                    'full_name': f"{member.first_name} {member.last_name}".strip(),
+                    'email': member.email,
+                    'is_staff': member.is_staff,
+                } for member in group.users.all()]
+            }
+            managed_groups_data.append(group_data)
+        
+        # Basic info for member groups
+        member_groups_data = [{
+            'id': group.id,
+            'name': group.name,
+            'description': getattr(group, 'description', ''),
+            'is_professional': getattr(group, 'is_professional', False),
+            'member_count': group.users.count(),
+        } for group in member_groups]
+        
+        lab_group_info = {
+            'managed_groups': managed_groups_data,
+            'member_groups': member_groups_data,
+            'summary': {
+                'managing_count': len(managed_groups_data),
+                'member_count': len(member_groups_data),
+                'total_managed_members': sum(group['member_count'] for group in managed_groups_data),
+            }
+        }
+        
+        return Response(lab_group_info, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
+    def platform_analytics(self, request):
+        """
+        Get platform-wide analytics (staff only)
+        """
+        if not request.user.is_staff:
+            return Response(
+                {'error': 'Only staff can access platform analytics'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # User statistics
+        total_users = User.objects.count()
+        active_users = User.objects.filter(is_active=True).count()
+        staff_users = User.objects.filter(is_staff=True).count()
+        
+        # Activity in last 30 days
+        thirty_days_ago = datetime.now() - timedelta(days=30)
+        
+        recent_users = User.objects.filter(date_joined__gte=thirty_days_ago).count()
+        
+        # Resource counts
+        total_protocols = ProtocolModel.objects.count()
+        total_sessions = Session.objects.count()
+        total_annotations = Annotation.objects.count()
+        total_projects = Project.objects.count()
+        total_lab_groups = LabGroup.objects.count()
+        
+        # Recent activity
+        recent_protocols = ProtocolModel.objects.filter(
+            protocol_created_on__gte=thirty_days_ago
+        ).count()
+        recent_sessions = Session.objects.filter(
+            created_at__gte=thirty_days_ago
+        ).count()
+        recent_annotations = Annotation.objects.filter(
+            created_at__gte=thirty_days_ago
+        ).count()
+        
+        # Top active users (by recent activity)
+        active_user_data = []
+        for user in User.objects.filter(is_active=True)[:10]:
+            user_activity = {
+                'id': user.id,
+                'username': user.username,
+                'protocols': ProtocolModel.objects.filter(user=user).count(),
+                'sessions': Session.objects.filter(user=user).count(),
+                'annotations': Annotation.objects.filter(user=user).count(),
+            }
+            user_activity['total_activity'] = (
+                user_activity['protocols'] + 
+                user_activity['sessions'] + 
+                user_activity['annotations']
+            )
+            active_user_data.append(user_activity)
+        
+        # Sort by total activity
+        active_user_data.sort(key=lambda x: x['total_activity'], reverse=True)
+        
+        analytics = {
+            'users': {
+                'total': total_users,
+                'active': active_users,
+                'staff': staff_users,
+                'new_last_30_days': recent_users,
+            },
+            'resources': {
+                'protocols': total_protocols,
+                'sessions': total_sessions,
+                'annotations': total_annotations,
+                'projects': total_projects,
+                'lab_groups': total_lab_groups,
+            },
+            'recent_activity': {
+                'protocols_last_30_days': recent_protocols,
+                'sessions_last_30_days': recent_sessions,
+                'annotations_last_30_days': recent_annotations,
+            },
+            'top_active_users': active_user_data[:5],
+        }
+        
+        return Response(analytics, status=status.HTTP_200_OK)
 
 
 class ProtocolRatingViewSet(ModelViewSet, FilterMixin):
@@ -3662,6 +4561,12 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
+        
+        # Check if user has permission to update this lab group
+        if not self.request.user.is_staff:
+            if not instance.managers.filter(id=self.request.user.id).exists():
+                return Response(status=status.HTTP_401_UNAUTHORIZED)
+        
         if "name" in request.data:
             instance.name = request.data['name']
         if "description" in request.data:
@@ -3685,7 +4590,7 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
     def remove_user(self, request, pk=None):
         group = self.get_object()
         if not self.request.user.is_staff:
-            if not group.managers.filter(id=request.data['user']).exists():
+            if not group.managers.filter(id=self.request.user.id).exists():
                 return Response(status=status.HTTP_401_UNAUTHORIZED)
         user = User.objects.get(id=request.data['user'])
         group.users.remove(user)
@@ -3696,7 +4601,7 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
     def add_user(self, request, pk=None):
         group: LabGroup = self.get_object()
         if not self.request.user.is_staff:
-            if not group.managers.filter(id=request.data['user']).exists():
+            if not group.managers.filter(id=self.request.user.id).exists():
                 return Response(status=status.HTTP_401_UNAUTHORIZED)
 
         user = User.objects.get(id=request.data['user'])
@@ -4377,8 +5282,8 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
             else:
                 if self.request.user not in staff:
                     return Response(status=status.HTTP_403_FORBIDDEN)
-        status = request.data['status']
-        instrument_job.status = status
+        request_status = request.data['status']
+        instrument_job.status = request_status
         if status == 'completed':
             instrument_job.completed_at = timezone.now()
         instrument_job.save()

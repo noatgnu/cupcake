@@ -21,9 +21,14 @@ from django.conf import settings
 from django.db import transaction, models
 from django.apps import apps
 from django.utils import timezone
+from django.core.serializers import serialize
+from django.forms.models import model_to_dict
 
 # Import all relevant models with exact names
 from cc.models import (
+    # Import tracking models
+    ImportTracker, ImportedObject, ImportedFile, ImportedRelationship,
+    
     # Core Protocol Models
     ProtocolModel, ProtocolStep, ProtocolSection, ProtocolRating,
     
@@ -113,11 +118,115 @@ class UserDataImporter:
         
         # Track what has been imported to avoid duplicates
         self.imported_objects = set()
+        
+        # Initialize import tracking
+        self.import_tracker = None
+        self.import_id = uuid.uuid4()
     
     def _send_progress(self, progress: int, message: str, status: str = "processing"):
         """Send progress update via callback if available"""
         if self.progress_callback:
             self.progress_callback(progress, message, status)
+    
+    def _initialize_import_tracker(self, metadata: dict = None):
+        """Initialize the import tracker to monitor all changes"""
+        # Archive must exist - this should fail if missing
+        archive_size_mb = round(os.path.getsize(self.import_path) / (1024 * 1024), 2)
+        
+        self.import_tracker = ImportTracker.objects.create(
+            import_id=self.import_id,
+            user=self.target_user,
+            archive_path=self.import_path,
+            archive_size_mb=archive_size_mb,
+            import_options=self.import_options,
+            metadata=metadata or {},
+            import_status='in_progress'
+        )
+        print(f"Created import tracker with ID: {self.import_id}")
+    
+    def _track_created_object(self, obj, original_id=None):
+        """Track a created object for rollback purposes"""
+        if not self.import_tracker:
+            return
+        
+        try:
+            # Serialize object data for rollback
+            object_data = model_to_dict(obj)
+            
+            # Handle non-serializable fields
+            for field_name, field_value in object_data.items():
+                if hasattr(field_value, 'isoformat'):
+                    object_data[field_name] = field_value.isoformat()
+                elif isinstance(field_value, uuid.UUID):
+                    object_data[field_name] = str(field_value)
+            
+            ImportedObject.objects.create(
+                import_tracker=self.import_tracker,
+                model_name=obj.__class__.__name__,
+                object_id=obj.pk,
+                original_id=original_id,
+                object_data=object_data
+            )
+            
+            self.import_tracker.total_objects_created += 1
+            self.import_tracker.save()
+            
+        except Exception as e:
+            self.stats['errors'].append(f"Failed to track object {obj.__class__.__name__}({obj.pk}): {e}")
+    
+    def _track_created_file(self, file_path: str, original_name: str):
+        """Track a created file for rollback purposes"""
+        if not self.import_tracker:
+            return
+        
+        # File must exist - this should fail if missing (no graceful fallback)
+        full_path = os.path.join(settings.MEDIA_ROOT, file_path)
+        file_size = os.path.getsize(full_path)
+        
+        ImportedFile.objects.create(
+            import_tracker=self.import_tracker,
+            file_path=file_path,
+            original_name=original_name,
+            file_size_bytes=file_size
+        )
+        
+        self.import_tracker.total_files_imported += 1
+        self.import_tracker.save()
+    
+    def _track_created_relationship(self, from_obj, to_obj, field_name):
+        """Track a many-to-many relationship for rollback purposes"""
+        if not self.import_tracker:
+            return
+        
+        try:
+            ImportedRelationship.objects.create(
+                import_tracker=self.import_tracker,
+                from_model=from_obj.__class__.__name__,
+                from_object_id=from_obj.pk,
+                to_model=to_obj.__class__.__name__,
+                to_object_id=to_obj.pk,
+                relationship_field=field_name
+            )
+            
+            self.import_tracker.total_relationships_created += 1
+            self.import_tracker.save()
+            
+        except Exception as e:
+            self.stats['errors'].append(f"Failed to track relationship {from_obj.__class__.__name__} -> {to_obj.__class__.__name__}: {e}")
+    
+    def _finalize_import_tracker(self, success: bool):
+        """Finalize the import tracker with completion status"""
+        if not self.import_tracker:
+            return
+        
+        self.import_tracker.import_completed_at = timezone.now()
+        self.import_tracker.import_status = 'completed' if success else 'failed'
+        self.import_tracker.save()
+        
+        print(f"Import tracker finalized. Status: {self.import_tracker.import_status}")
+        print(f"Objects created: {self.import_tracker.total_objects_created}")
+        print(f"Files imported: {self.import_tracker.total_files_imported}")
+        print(f"Relationships created: {self.import_tracker.total_relationships_created}")
     
     def _detect_archive_format(self, file_path: str) -> str:
         """Detect archive format based on file extension and magic bytes"""
@@ -182,6 +291,10 @@ class UserDataImporter:
             self._send_progress(10, "Loading and validating metadata...")
             metadata = self._load_and_validate_metadata()
             
+            # Initialize import tracking
+            self._send_progress(12, "Initializing import tracking...")
+            self._initialize_import_tracker(metadata)
+            
             # Connect to SQLite database
             self._send_progress(15, "Connecting to import database...")
             self._connect_to_import_database()
@@ -239,20 +352,29 @@ class UserDataImporter:
             print(f"REVISED COMPREHENSIVE import completed successfully")
             print(f"Import stats: {self.stats}")
             
+            # Finalize import tracking
+            self._finalize_import_tracker(True)
+            
             return {
                 'success': True,
                 'stats': self.stats,
                 'metadata': metadata,
-                'id_mappings': self.id_mappings
+                'id_mappings': self.id_mappings,
+                'import_id': str(self.import_id)
             }
             
         except Exception as e:
             print(f"Import failed: {e}")
             self.stats['errors'].append(f"Import failed: {e}")
+            
+            # Finalize import tracking as failed
+            self._finalize_import_tracker(False)
+            
             return {
                 'success': False,
                 'error': str(e),
-                'stats': self.stats
+                'stats': self.stats,
+                'import_id': str(self.import_id) if hasattr(self, 'import_id') else None
             }
         finally:
             self._cleanup()
@@ -421,6 +543,9 @@ class UserDataImporter:
                 # remote_host will be set later if needed
             )
             
+            # Track created object
+            self._track_created_object(protocol, row['id'])
+            
             self.id_mappings['protocols'][row['id']] = protocol.id
         
         # Import protocol sections
@@ -494,6 +619,7 @@ class UserDataImporter:
             if row['protocolmodel_id'] in self.id_mappings['protocols']:
                 protocol = ProtocolModel.objects.get(id=self.id_mappings['protocols'][row['protocolmodel_id']])
                 protocol.editors.add(self.target_user)
+                self._track_created_relationship(protocol, self.target_user, 'editors')
         
         # Import protocol viewers
         cursor.execute("SELECT * FROM export_protocol_viewers")
@@ -501,6 +627,7 @@ class UserDataImporter:
             if row['protocolmodel_id'] in self.id_mappings['protocols']:
                 protocol = ProtocolModel.objects.get(id=self.id_mappings['protocols'][row['protocolmodel_id']])
                 protocol.viewers.add(self.target_user)
+                self._track_created_relationship(protocol, self.target_user, 'viewers')
         
         self.stats['relationships_imported'] += 2
     
@@ -705,6 +832,9 @@ class UserDataImporter:
                 # Track copied files for linking
                 copied_files[file] = rel_path
                 self.stats['files_imported'] += 1
+                
+                # Track file for rollback
+                self._track_created_file(rel_path, file)
         
         # Now link files to annotation records
         cursor = self.conn.cursor()
@@ -1180,6 +1310,261 @@ def dry_run_import_user_data(target_user: User, import_path: str, import_options
     """
     analyzer = UserDataImportDryRun(target_user, import_path, import_options, progress_callback)
     return analyzer.analyze_import()
+
+
+class ImportReverter:
+    """Handles reverting user data imports"""
+    
+    def __init__(self, import_tracker: ImportTracker, reverting_user: User):
+        self.import_tracker = import_tracker
+        self.reverting_user = reverting_user
+        
+        self.stats = {
+            'objects_deleted': 0,
+            'files_deleted': 0,
+            'relationships_removed': 0,
+            'errors': []
+        }
+    
+    def revert_import(self) -> Dict[str, Any]:
+        """
+        Revert all changes made by an import.
+        
+        Returns:
+            Dict: Revert results and statistics
+        """
+        if self.import_tracker.import_status == 'reverted':
+            return {
+                'success': False,
+                'error': 'Import has already been reverted',
+                'stats': self.stats
+            }
+        
+        if not self.import_tracker.can_revert:
+            return {
+                'success': False,
+                'error': f'Import cannot be reverted: {self.import_tracker.revert_reason}',
+                'stats': self.stats
+            }
+        
+        try:
+            with transaction.atomic():
+                print(f"Starting revert of import {self.import_tracker.import_id}")
+                
+                # Remove many-to-many relationships first
+                self._revert_relationships()
+                
+                # Delete files
+                self._revert_files()
+                
+                # Delete objects in reverse order of creation
+                self._revert_objects()
+                
+                # Update tracker status
+                self.import_tracker.import_status = 'reverted'
+                self.import_tracker.reverted_at = timezone.now()
+                self.import_tracker.reverted_by = self.reverting_user
+                self.import_tracker.save()
+                
+                print(f"Successfully reverted import {self.import_tracker.import_id}")
+                print(f"Revert stats: {self.stats}")
+                
+                return {
+                    'success': True,
+                    'stats': self.stats,
+                    'import_id': str(self.import_tracker.import_id)
+                }
+                
+        except Exception as e:
+            self.stats['errors'].append(f"Revert failed: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'stats': self.stats
+            }
+    
+    def _revert_relationships(self):
+        """Remove many-to-many relationships created during import"""
+        relationships = self.import_tracker.imported_relationships.all().order_by('-created_at')
+        
+        for rel in relationships:
+            try:
+                # Get the model classes - handle special cases
+                if rel.from_model == 'User':
+                    from_model = apps.get_model('auth', 'User')
+                else:
+                    from_model = apps.get_model('cc', rel.from_model)
+                
+                if rel.to_model == 'User':
+                    to_model = apps.get_model('auth', 'User')
+                else:
+                    to_model = apps.get_model('cc', rel.to_model)
+                
+                # Get the objects
+                from_obj = from_model.objects.get(pk=rel.from_object_id)
+                to_obj = to_model.objects.get(pk=rel.to_object_id)
+                
+                # Remove the relationship
+                relationship_field = getattr(from_obj, rel.relationship_field)
+                relationship_field.remove(to_obj)
+                
+                self.stats['relationships_removed'] += 1
+                
+            except Exception as e:
+                self.stats['errors'].append(f"Failed to remove relationship {rel}: {e}")
+                
+        print(f"Removed {self.stats['relationships_removed']} relationships")
+    
+    def _revert_files(self):
+        """Delete files created during import"""
+        files = self.import_tracker.imported_files.all()
+        
+        for file_record in files:
+            try:
+                file_path = os.path.join(settings.MEDIA_ROOT, file_record.file_path)
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    
+                    # Try to remove empty directories
+                    try:
+                        parent_dir = os.path.dirname(file_path)
+                        if os.path.exists(parent_dir) and not os.listdir(parent_dir):
+                            os.rmdir(parent_dir)
+                    except OSError:
+                        pass  # Directory not empty or can't be removed
+                
+                self.stats['files_deleted'] += 1
+                
+            except Exception as e:
+                self.stats['errors'].append(f"Failed to delete file {file_record.file_path}: {e}")
+                
+        print(f"Deleted {self.stats['files_deleted']} files")
+    
+    def _revert_objects(self):
+        """Delete objects created during import in reverse order"""
+        # Group objects by model and delete in dependency order
+        objects_by_model = {}
+        for obj_record in self.import_tracker.imported_objects.all().order_by('-created_at'):
+            model_name = obj_record.model_name
+            if model_name not in objects_by_model:
+                objects_by_model[model_name] = []
+            objects_by_model[model_name].append(obj_record)
+        
+        # Delete in reverse dependency order
+        deletion_order = [
+            'MetadataColumn',
+            'StepTag', 'ProtocolTag',
+            'ProtocolRating',
+            'Annotation', 'AnnotationFolder',
+            'Session',
+            'ProtocolStep', 'ProtocolSection',
+            'ProtocolModel',
+            'ReagentAction', 'StoredReagent',
+            'StorageObject',
+            'Project',
+            'LabGroup',
+            'RemoteHost',
+            'Tag', 'Reagent'
+        ]
+        
+        # Delete objects in specified order, then any remaining
+        all_models = set(objects_by_model.keys())
+        for model_name in deletion_order:
+            if model_name in objects_by_model:
+                self._delete_objects_of_model(model_name, objects_by_model[model_name])
+                all_models.remove(model_name)
+        
+        # Delete any remaining models not in the explicit order
+        for model_name in all_models:
+            self._delete_objects_of_model(model_name, objects_by_model[model_name])
+            
+        print(f"Deleted {self.stats['objects_deleted']} objects")
+    
+    def _delete_objects_of_model(self, model_name: str, obj_records: List):
+        """Delete all objects of a specific model"""
+        try:
+            model_class = apps.get_model('cc', model_name)
+            
+            for obj_record in obj_records:
+                try:
+                    obj = model_class.objects.get(pk=obj_record.object_id)
+                    obj.delete()
+                    self.stats['objects_deleted'] += 1
+                    
+                except model_class.DoesNotExist:
+                    # Object already deleted or doesn't exist
+                    pass
+                except Exception as e:
+                    self.stats['errors'].append(f"Failed to delete {model_name}({obj_record.object_id}): {e}")
+                    
+        except LookupError:
+            self.stats['errors'].append(f"Model {model_name} not found")
+
+
+def revert_user_data_import(import_id: str, reverting_user: User) -> Dict[str, Any]:
+    """
+    Revert a user data import by import ID.
+    
+    Args:
+        import_id: UUID string of the import to revert
+        reverting_user: User performing the revert (must be staff or the original user)
+    
+    Returns:
+        Dict: Revert results and statistics
+    """
+    try:
+        import_tracker = ImportTracker.objects.get(import_id=import_id)
+        
+        # Check permissions
+        if not (reverting_user.is_staff or reverting_user == import_tracker.user):
+            return {
+                'success': False,
+                'error': 'Insufficient permissions to revert this import'
+            }
+        
+        reverter = ImportReverter(import_tracker, reverting_user)
+        return reverter.revert_import()
+        
+    except ImportTracker.DoesNotExist:
+        return {
+            'success': False,
+            'error': f'Import with ID {import_id} not found'
+        }
+
+
+def list_user_imports(user: User, include_reverted: bool = False) -> List[Dict[str, Any]]:
+    """
+    List all imports for a user.
+    
+    Args:
+        user: User to list imports for
+        include_reverted: Whether to include reverted imports
+    
+    Returns:
+        List of import information dictionaries
+    """
+    queryset = ImportTracker.objects.filter(user=user)
+    
+    if not include_reverted:
+        queryset = queryset.exclude(import_status='reverted')
+    
+    imports = []
+    for tracker in queryset.order_by('-import_started_at'):
+        imports.append({
+            'import_id': str(tracker.import_id),
+            'import_started_at': tracker.import_started_at.isoformat(),
+            'import_completed_at': tracker.import_completed_at.isoformat() if tracker.import_completed_at else None,
+            'import_status': tracker.import_status,
+            'archive_size_mb': tracker.archive_size_mb,
+            'total_objects_created': tracker.total_objects_created,
+            'total_files_imported': tracker.total_files_imported,
+            'total_relationships_created': tracker.total_relationships_created,
+            'can_revert': tracker.can_revert,
+            'reverted_at': tracker.reverted_at.isoformat() if tracker.reverted_at else None,
+            'reverted_by': tracker.reverted_by.username if tracker.reverted_by else None
+        })
+    
+    return imports
 
 
 def import_user_data_revised(target_user: User, import_path: str, import_options: dict = None, progress_callback=None) -> Dict[str, Any]:

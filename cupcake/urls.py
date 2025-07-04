@@ -28,7 +28,8 @@ from cc.viewsets import ProtocolViewSet, SessionViewSet, StepViewSet, Annotation
     UnimodViewSets, InstrumentJobViewSets, FavouriteMetadataOptionViewSets, PresetViewSet, \
     MetadataTableTemplateViewSets, SupportInformationViewSet, ExternalContactViewSet, ExternalContactDetailsViewSet, \
     MaintenanceLogViewSet, MessageThreadViewSet, MessageViewSet, MessageRecipientViewSet, MessageAttachmentViewSet, \
-    ReagentDocumentViewSet, SiteSettingsViewSet, BackupLogViewSet, SharedDocumentViewSet, DocumentPermissionViewSet
+    ReagentDocumentViewSet, SiteSettingsViewSet, BackupLogViewSet, SharedDocumentViewSet, DocumentPermissionViewSet, \
+    ImportTrackerViewSet
 
 router = routers.DefaultRouter()
 router.register(r'protocol', ProtocolViewSet)
@@ -75,6 +76,7 @@ router.register(r'site_settings', SiteSettingsViewSet)
 router.register(r'backup_logs', BackupLogViewSet)
 router.register(r'shared_documents', SharedDocumentViewSet, basename="shared_documents")
 router.register(r'document_permissions', DocumentPermissionViewSet)
+router.register(r'import_tracking', ImportTrackerViewSet)
 
 urlpatterns = [
     path('admin/', admin.site.urls),

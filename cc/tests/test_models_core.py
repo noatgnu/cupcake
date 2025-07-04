@@ -322,7 +322,9 @@ class AnnotationModelTest(TestCase):
         )
         
         self.assertIsNotNone(annotation.file)
-        self.assertTrue(annotation.file.name.endswith('test.txt'))
+        # Django may add unique suffixes to file names, so check if it contains the expected name
+        self.assertIn('test', annotation.file.name)
+        self.assertTrue(annotation.file.name.endswith('.txt'))
     
     def test_annotation_permission_check_owner(self):
         """Test annotation permission checking for owner"""

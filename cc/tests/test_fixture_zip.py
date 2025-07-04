@@ -21,7 +21,7 @@ class FixtureZipValidationTest(TestCase):
         import os
         from django.conf import settings
         project_root = getattr(settings, 'BASE_DIR', os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-        self.fixture_path = os.path.join(project_root, 'tests', 'fixtures', 'cupcake_export_toan_20250701_200055.zip')
+        self.fixture_path = os.path.join(project_root, 'tests', 'fixtures', 'test_fixture_zip.zip')
     
     def test_fixture_exists(self):
         """Test that the fixture ZIP file exists"""
@@ -137,6 +137,224 @@ class FixtureZipValidationTest(TestCase):
                                   f"Media file {test_file} is empty")
                 except Exception as e:
                     self.fail(f"Could not read media file {test_file}: {e}")
+    
+    def test_comprehensive_annotation_types(self):
+        """Test that the fixture contains all expected annotation types"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Extract SQLite file from ZIP
+            with zipfile.ZipFile(self.fixture_path, 'r') as zip_file:
+                zip_file.extract('user_data.sqlite', temp_dir)
+            
+            sqlite_path = os.path.join(temp_dir, 'user_data.sqlite')
+            
+            with sqlite3.connect(sqlite_path) as conn:
+                cursor = conn.cursor()
+                
+                # Check annotation types distribution
+                cursor.execute('''
+                    SELECT annotation_type, COUNT(*) 
+                    FROM export_annotations 
+                    GROUP BY annotation_type 
+                    ORDER BY annotation_type
+                ''')
+                ann_types = dict(cursor.fetchall())
+                
+                # Verify we have all expected annotation types
+                expected_types = ["text", "file", "image", "video", "audio", "sketch", "other", "checklist", "counter", "table"]
+                for ann_type in expected_types:
+                    self.assertIn(ann_type, ann_types, f"Missing annotation type: {ann_type}")
+                
+                # Verify we have at least 78 annotations total
+                total_annotations = sum(ann_types.values())
+                self.assertGreaterEqual(total_annotations, 78, "Should have at least 78 annotations")
+                
+                # Verify specific counts for key types
+                self.assertGreaterEqual(ann_types.get('text', 0), 15, "Should have substantial text annotations")
+                self.assertGreaterEqual(ann_types.get('image', 0), 10, "Should have substantial image annotations")
+                self.assertGreaterEqual(ann_types.get('file', 0), 10, "Should have substantial file annotations")
+                self.assertGreaterEqual(ann_types.get('video', 0), 5, "Should have several video annotations")
+    
+    def test_comprehensive_protocols_and_steps(self):
+        """Test that the fixture contains comprehensive protocol data"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Extract SQLite file from ZIP
+            with zipfile.ZipFile(self.fixture_path, 'r') as zip_file:
+                zip_file.extract('user_data.sqlite', temp_dir)
+            
+            sqlite_path = os.path.join(temp_dir, 'user_data.sqlite')
+            
+            with sqlite3.connect(sqlite_path) as conn:
+                cursor = conn.cursor()
+                
+                # Check protocols
+                cursor.execute('SELECT COUNT(*) FROM export_protocols')
+                protocol_count = cursor.fetchone()[0]
+                self.assertGreaterEqual(protocol_count, 5, "Should have at least 5 protocols")
+                
+                # Check protocol steps
+                cursor.execute('SELECT COUNT(*) FROM export_protocol_steps')
+                step_count = cursor.fetchone()[0]
+                self.assertGreaterEqual(step_count, 40, "Should have at least 40 protocol steps")
+                
+                # Check protocol sections
+                cursor.execute('SELECT COUNT(*) FROM export_protocol_sections')
+                section_count = cursor.fetchone()[0]
+                self.assertGreaterEqual(section_count, 15, "Should have at least 15 protocol sections")
+                
+                # Verify protocols have proper data
+                cursor.execute('''
+                    SELECT protocol_title, protocol_description, user_id 
+                    FROM export_protocols 
+                    WHERE protocol_title IS NOT NULL AND protocol_title != ""
+                ''')
+                protocols = cursor.fetchall()
+                self.assertGreaterEqual(len(protocols), 5, "All protocols should have titles")
+                
+                # Check that steps are linked to protocols
+                cursor.execute('''
+                    SELECT DISTINCT protocol_id 
+                    FROM export_protocol_steps 
+                    WHERE protocol_id IS NOT NULL
+                ''')
+                linked_protocols = cursor.fetchall()
+                self.assertGreaterEqual(len(linked_protocols), 5, "Steps should be linked to protocols")
+    
+    def test_comprehensive_instruments_and_usage(self):
+        """Test that the fixture contains comprehensive instrument data"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Extract SQLite file from ZIP
+            with zipfile.ZipFile(self.fixture_path, 'r') as zip_file:
+                zip_file.extract('user_data.sqlite', temp_dir)
+            
+            sqlite_path = os.path.join(temp_dir, 'user_data.sqlite')
+            
+            with sqlite3.connect(sqlite_path) as conn:
+                cursor = conn.cursor()
+                
+                # Check instruments
+                cursor.execute('SELECT COUNT(*) FROM export_instruments')
+                instrument_count = cursor.fetchone()[0]
+                self.assertGreaterEqual(instrument_count, 6, "Should have at least 6 instruments")
+                
+                # Check instrument names for realism
+                cursor.execute('SELECT instrument_name FROM export_instruments')
+                instruments = [row[0] for row in cursor.fetchall()]
+                
+                # Should include realistic lab instruments
+                expected_instruments = ["LC-MS", "Microscope", "PCR", "Hood", "Spectrophotometer"]
+                found_instruments = 0
+                for expected in expected_instruments:
+                    for actual in instruments:
+                        if expected.lower() in actual.lower():
+                            found_instruments += 1
+                            break
+                
+                self.assertGreaterEqual(found_instruments, 4, "Should have realistic lab instruments")
+                
+                # Check instrument usage records
+                cursor.execute('SELECT COUNT(*) FROM export_instrument_usage')
+                usage_count = cursor.fetchone()[0]
+                self.assertGreaterEqual(usage_count, 3, "Should have instrument usage records")
+    
+    def test_comprehensive_sessions_and_annotations(self):
+        """Test that sessions are properly linked to annotations"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Extract SQLite file from ZIP
+            with zipfile.ZipFile(self.fixture_path, 'r') as zip_file:
+                zip_file.extract('user_data.sqlite', temp_dir)
+            
+            sqlite_path = os.path.join(temp_dir, 'user_data.sqlite')
+            
+            with sqlite3.connect(sqlite_path) as conn:
+                cursor = conn.cursor()
+                
+                # Check sessions
+                cursor.execute('SELECT COUNT(*) FROM export_sessions')
+                session_count = cursor.fetchone()[0]
+                self.assertGreaterEqual(session_count, 5, "Should have at least 5 sessions")
+                
+                # Check that annotations are linked to sessions
+                cursor.execute('''
+                    SELECT session_id, COUNT(*) 
+                    FROM export_annotations 
+                    WHERE session_id IS NOT NULL 
+                    GROUP BY session_id
+                ''')
+                session_annotations = cursor.fetchall()
+                self.assertGreaterEqual(len(session_annotations), 5, "Annotations should be linked to sessions")
+                
+                # Check that each session has a reasonable number of annotations
+                for session_id, ann_count in session_annotations:
+                    self.assertGreaterEqual(ann_count, 10, f"Session {session_id} should have substantial annotations")
+                
+                # Check session-protocol relationships
+                cursor.execute('SELECT COUNT(*) FROM export_session_protocols')
+                session_protocol_count = cursor.fetchone()[0]
+                self.assertGreaterEqual(session_protocol_count, 5, "Should have session-protocol links")
+    
+    def test_comprehensive_metadata_validation(self):
+        """Test that the comprehensive metadata is valid and complete"""
+        with zipfile.ZipFile(self.fixture_path, 'r') as zip_file:
+            metadata_content = zip_file.read('export_metadata.json')
+            metadata = json.loads(metadata_content)
+            
+            # Check comprehensive statistics
+            stats = metadata.get('stats', {})
+            
+            # Verify substantial data volumes
+            self.assertGreaterEqual(stats.get('protocols_exported', 0), 5)
+            self.assertGreaterEqual(stats.get('sessions_exported', 0), 5)
+            self.assertGreaterEqual(stats.get('annotations_exported', 0), 78)
+            self.assertGreaterEqual(stats.get('files_exported', 0), 40)
+            self.assertGreaterEqual(stats.get('instruments_exported', 0), 6)
+            self.assertGreaterEqual(stats.get('users_exported', 0), 4)
+            
+            # Check export summary if present
+            summary = metadata.get('export_summary', {})
+            if summary:
+                self.assertIn('annotation_type_distribution', summary)
+                ann_dist = summary['annotation_type_distribution']
+                
+                # Verify annotation type distribution
+                total_dist_annotations = sum(ann_dist.values())
+                self.assertGreaterEqual(total_dist_annotations, 78)
+                
+                # Check that we have diversity in annotation types
+                self.assertGreaterEqual(len(ann_dist), 8, "Should have at least 8 different annotation types")
+    
+    def test_media_files_correspond_to_annotations(self):
+        """Test that media files correspond to file-type annotations"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with zipfile.ZipFile(self.fixture_path, 'r') as zip_file:
+                # Get all media files
+                media_files = [f for f in zip_file.namelist() if f.startswith('media/annotations/')]
+                
+                # Extract database to check file annotations
+                zip_file.extract('user_data.sqlite', temp_dir)
+                
+            sqlite_path = os.path.join(temp_dir, 'user_data.sqlite')
+            
+            with sqlite3.connect(sqlite_path) as conn:
+                cursor = conn.cursor()
+                
+                # Get file-type annotations
+                cursor.execute('''
+                    SELECT file FROM export_annotations 
+                    WHERE file IS NOT NULL AND file != ""
+                ''')
+                annotation_files = [row[0] for row in cursor.fetchall()]
+                
+                # Verify substantial overlap between media files and annotation file references
+                matching_files = 0
+                for ann_file in annotation_files:
+                    file_basename = os.path.basename(ann_file)
+                    for media_file in media_files:
+                        if file_basename in media_file:
+                            matching_files += 1
+                            break
+                
+                self.assertGreaterEqual(matching_files, 25, 
+                    "Most annotation file references should have corresponding media files")
 
 
 class ZipImportExportUtilityTest(TestCase):

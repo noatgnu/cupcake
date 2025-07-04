@@ -9,7 +9,8 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, StepVariation, Se
     Instrument, InstrumentUsage, StorageObject, StoredReagent, ReagentAction, LabGroup, MSUniqueVocabularies, \
     HumanDisease, Tissue, SubcellularLocation, MetadataColumn, Species, Unimod, InstrumentJob, FavouriteMetadataOption, \
     Preset, MetadataTableTemplate, ExternalContactDetails, SupportInformation, ExternalContact, MaintenanceLog, \
-    MessageRecipient, MessageThread, Message, MessageAttachment, ReagentSubscription, SiteSettings, BackupLog, DocumentPermission
+    MessageRecipient, MessageThread, Message, MessageAttachment, ReagentSubscription, SiteSettings, BackupLog, DocumentPermission, \
+    ImportTracker, ImportedObject, ImportedFile, ImportedRelationship
 
 
 class UserBasicSerializer(ModelSerializer):
@@ -1395,3 +1396,185 @@ class SharedDocumentSerializer(AnnotationSerializer):
                 'name': os.path.basename(obj.file.name) if obj.file else None,
                 'url': obj.file.url if obj.file else None,
             }
+
+
+# Import Tracking Serializers
+
+class ImportedObjectSerializer(ModelSerializer):
+    """Serializer for objects created during import"""
+    
+    class Meta:
+        model = ImportedObject
+        fields = ['id', 'model_name', 'object_id', 'original_id', 'created_at', 'object_data']
+        read_only_fields = fields
+
+
+class ImportedFileSerializer(ModelSerializer):
+    """Serializer for files created during import"""
+    
+    class Meta:
+        model = ImportedFile
+        fields = ['id', 'file_path', 'original_name', 'file_size_bytes', 'created_at']
+        read_only_fields = fields
+
+
+class ImportedRelationshipSerializer(ModelSerializer):
+    """Serializer for relationships created during import"""
+    
+    class Meta:
+        model = ImportedRelationship
+        fields = ['id', 'from_model', 'from_object_id', 'to_model', 'to_object_id', 'relationship_field', 'created_at']
+        read_only_fields = fields
+
+
+class ImportTrackerSerializer(ModelSerializer):
+    """Serializer for import tracking with detailed information"""
+    
+    user_username = CharField(source='user.username', read_only=True)
+    user_full_name = SerializerMethodField()
+    archive_size_mb = SerializerMethodField()
+    duration = SerializerMethodField()
+    imported_objects = ImportedObjectSerializer(many=True, read_only=True)
+    imported_files = ImportedFileSerializer(many=True, read_only=True)
+    imported_relationships = ImportedRelationshipSerializer(many=True, read_only=True)
+    stats = SerializerMethodField()
+    
+    class Meta:
+        model = ImportTracker
+        fields = [
+            'id', 'import_id', 'user', 'user_username', 'user_full_name',
+            'archive_path', 'archive_size_bytes', 'archive_size_mb',
+            'import_status', 'import_options', 'metadata',
+            'import_started_at', 'import_completed_at', 'duration',
+            'total_objects_created', 'total_files_imported', 'total_relationships_created',
+            'can_revert', 'revert_reason', 'reverted_at', 'reverted_by',
+            'imported_objects', 'imported_files', 'imported_relationships', 'stats'
+        ]
+        read_only_fields = [
+            'id', 'import_id', 'user_username', 'user_full_name', 'archive_size_mb', 
+            'duration', 'imported_objects', 'imported_files', 'imported_relationships', 'stats'
+        ]
+    
+    def get_user_full_name(self, obj):
+        """Get user's full name"""
+        if obj.user:
+            return f"{obj.user.first_name} {obj.user.last_name}".strip() or obj.user.username
+        return None
+    
+    def get_archive_size_mb(self, obj):
+        """Convert archive size to MB"""
+        if obj.archive_size_bytes:
+            return round(obj.archive_size_bytes / (1024 * 1024), 2)
+        return None
+    
+    def get_duration(self, obj):
+        """Calculate import duration"""
+        if obj.import_started_at and obj.import_completed_at:
+            delta = obj.import_completed_at - obj.import_started_at
+            return {
+                'seconds': delta.total_seconds(),
+                'formatted': str(delta).split('.')[0]  # Remove microseconds
+            }
+        return None
+    
+    def get_stats(self, obj):
+        """Get import statistics"""
+        return {
+            'objects_by_type': self._get_objects_by_type(obj),
+            'files_by_type': self._get_files_by_type(obj),
+            'relationships_by_field': self._get_relationships_by_field(obj),
+            'status_color': self._get_status_color(obj.import_status),
+        }
+    
+    def _get_objects_by_type(self, obj):
+        """Group imported objects by model type"""
+        objects_by_type = {}
+        for imported_obj in obj.imported_objects.all():
+            model_name = imported_obj.model_name
+            if model_name not in objects_by_type:
+                objects_by_type[model_name] = 0
+            objects_by_type[model_name] += 1
+        return objects_by_type
+    
+    def _get_files_by_type(self, obj):
+        """Group imported files by extension"""
+        files_by_type = {}
+        for imported_file in obj.imported_files.all():
+            file_ext = imported_file.file_path.split('.')[-1].lower() if '.' in imported_file.file_path else 'no_ext'
+            if file_ext not in files_by_type:
+                files_by_type[file_ext] = 0
+            files_by_type[file_ext] += 1
+        return files_by_type
+    
+    def _get_relationships_by_field(self, obj):
+        """Group imported relationships by field name"""
+        relationships_by_field = {}
+        for imported_rel in obj.imported_relationships.all():
+            field_name = imported_rel.relationship_field
+            if field_name not in relationships_by_field:
+                relationships_by_field[field_name] = 0
+            relationships_by_field[field_name] += 1
+        return relationships_by_field
+    
+    def _get_status_color(self, status):
+        """Get color for import status"""
+        status_colors = {
+            'in_progress': 'primary',
+            'completed': 'success',
+            'failed': 'danger',
+            'reverted': 'warning'
+        }
+        return status_colors.get(status, 'secondary')
+
+
+class ImportTrackerListSerializer(ModelSerializer):
+    """Simplified serializer for import tracker lists"""
+    
+    user_username = CharField(source='user.username', read_only=True)
+    user_full_name = SerializerMethodField()
+    archive_size_mb = SerializerMethodField()
+    duration = SerializerMethodField()
+    status_color = SerializerMethodField()
+    
+    class Meta:
+        model = ImportTracker
+        fields = [
+            'id', 'import_id', 'user', 'user_username', 'user_full_name',
+            'archive_path', 'archive_size_mb', 'import_status', 'status_color',
+            'import_started_at', 'import_completed_at', 'duration',
+            'total_objects_created', 'total_files_imported', 'total_relationships_created',
+            'can_revert', 'reverted_at', 'reverted_by'
+        ]
+        read_only_fields = fields
+    
+    def get_user_full_name(self, obj):
+        """Get user's full name"""
+        if obj.user:
+            return f"{obj.user.first_name} {obj.user.last_name}".strip() or obj.user.username
+        return None
+    
+    def get_archive_size_mb(self, obj):
+        """Convert archive size to MB"""
+        if obj.archive_size_bytes:
+            return round(obj.archive_size_bytes / (1024 * 1024), 2)
+        return None
+    
+    def get_duration(self, obj):
+        """Calculate import duration"""
+        if obj.import_started_at and obj.import_completed_at:
+            delta = obj.import_completed_at - obj.import_started_at
+            return {
+                'seconds': delta.total_seconds(),
+                'formatted': str(delta).split('.')[0]  # Remove microseconds
+            }
+        return None
+    
+    def get_status_color(self, obj):
+        """Get color for import status"""
+        status_colors = {
+            'in_progress': 'primary',
+            'completed': 'success',
+            'failed': 'danger',
+            'reverted': 'warning'
+        }
+        return status_colors.get(obj.import_status, 'secondary')

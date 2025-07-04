@@ -43,7 +43,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
     SubcellularLocation, HumanDisease, Tissue, MetadataColumn, MSUniqueVocabularies, Unimod, InstrumentJob, \
     FavouriteMetadataOption, Preset, MetadataTableTemplate, MaintenanceLog, SupportInformation, ExternalContact, \
     ExternalContactDetails, Message, MessageRecipient, MessageAttachment, MessageRecipient, MessageThread, \
-    ReagentSubscription, SiteSettings, BackupLog, DocumentPermission
+    ReagentSubscription, SiteSettings, BackupLog, DocumentPermission, ImportTracker
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission, IsParticipantOrAdmin
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, dry_run_import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
@@ -60,8 +60,10 @@ from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, Anno
     ExternalContactDetailsSerializer, MessageSerializer, MessageRecipientSerializer, MessageAttachmentSerializer, \
     MessageRecipientSerializer, MessageThreadSerializer, MessageThreadDetailSerializer, ReagentSubscriptionSerializer, \
     SiteSettingsSerializer, BackupLogSerializer, DocumentPermissionSerializer, SharedDocumentSerializer, \
-    UserBasicSerializer
+    UserBasicSerializer, ImportTrackerSerializer, ImportTrackerListSerializer
 from cc.utils import user_metadata, staff_metadata, send_slack_notification
+from cc.utils.user_data_import_revised import ImportReverter
+
 
 class ProtocolViewSet(ModelViewSet, FilterMixin):
     permission_classes = [OwnerOrReadOnly]
@@ -2000,22 +2002,22 @@ class UserViewSet(ModelViewSet, FilterMixin):
     def export_data(self, request):
         """
         Export user data in various formats and scopes.
-        
+
         Supports three export types:
         - Protocol-specific: Export data for specified protocols only
-        - Session-specific: Export data for specified sessions only  
+        - Session-specific: Export data for specified sessions only
         - Complete: Export all user data (default)
-        
+
         Request Data:
             protocol_ids (list): Protocol IDs to export (optional)
             session_ids (list): Session IDs to export (optional)
             format (str): Export format - 'zip' (default), 'tar.gz'
-            
+
         Returns:
             Response: 200 OK when export task is queued
         """
         custom_id = self.request.META.get('HTTP_X_CUPCAKE_INSTANCE_ID', None)
-        
+
         protocol_ids = request.data.get('protocol_ids', None)
         session_ids = request.data.get('session_ids', None)
         export_options = request.data.get('export_options', None)
@@ -2024,45 +2026,45 @@ class UserViewSet(ModelViewSet, FilterMixin):
             if "format" in export_options:
                 format_type = export_options.get('format', 'zip')
 
-        
+
         if protocol_ids:
             export_data.delay(
-                request.user.id, 
-                protocol_ids=protocol_ids, 
-                instance_id=custom_id, 
+                request.user.id,
+                protocol_ids=protocol_ids,
+                instance_id=custom_id,
                 export_type="protocol",
                 format_type=format_type
             )
         elif session_ids:
             export_data.delay(
-                request.user.id, 
-                session_ids=session_ids, 
-                instance_id=custom_id, 
+                request.user.id,
+                session_ids=session_ids,
+                instance_id=custom_id,
                 export_type="session",
                 format_type=format_type
             )
         else:
             export_data.delay(
-                request.user.id, 
-                instance_id=custom_id, 
+                request.user.id,
+                instance_id=custom_id,
                 export_type="complete",
                 format_type=format_type
             )
-        
+
         return Response(status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['post'])
     def import_user_data(self, request):
         """
         Import user data from uploaded archive file.
-        
+
         Processes a previously uploaded chunked file and imports data
         based on provided import options and file contents.
-        
+
         Request Data:
             upload_id (str): ID of completed chunked upload
             import_options (dict): Import configuration options (optional)
-            
+
         Returns:
             Response: 200 OK when import task is queued
         """
@@ -2087,15 +2089,15 @@ class UserViewSet(ModelViewSet, FilterMixin):
         chunked_upload_id = request.data['upload_id']
         import_options = request.data.get('import_options', None)
         custom_id = self.request.META.get('HTTP_X_CUPCAKE_INSTANCE_ID', None)
-        
+
         try:
             chunked_upload = ChunkedUpload.objects.get(id=chunked_upload_id, user=user)
         except ChunkedUpload.DoesNotExist:
             return Response(
-                {"error": "Upload not found"}, 
+                {"error": "Upload not found"},
                 status=status.HTTP_404_NOT_FOUND
             )
-        
+
         if chunked_upload.completed_at:
             # get completed file path
             file_path = chunked_upload.file.path
@@ -2104,9 +2106,9 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 "message": "Dry run analysis started",
                 "instance_id": custom_id
             }, status=status.HTTP_200_OK)
-        
+
         return Response(
-            {"error": "Upload not completed yet"}, 
+            {"error": "Upload not completed yet"},
             status=status.HTTP_400_BAD_REQUEST
         )
 
@@ -2226,7 +2228,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
     def current(self, request):
         """
         Get current authenticated user's profile information.
-        
+
         Returns:
             Response: User profile data including username, email, and staff status
         """
@@ -2238,10 +2240,10 @@ class UserViewSet(ModelViewSet, FilterMixin):
     def user_activity_summary(self, request):
         """
         Get comprehensive summary of user's activity across the platform.
-        
+
         Returns activity counts across all major platform features including
         total resource counts and recent activity over the last 30 days.
-        
+
         Returns:
             Response: Activity summary containing:
                 - total_counts: Overall resource counts (protocols, sessions, annotations, projects, stored_reagents)
@@ -2249,31 +2251,31 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 - lab_groups: Lab group membership statistics
         """
         user = request.user
-        
+
         protocols_count = ProtocolModel.objects.filter(user=user).count()
         sessions_count = Session.objects.filter(user=user).count()
         annotations_count = Annotation.objects.filter(user=user).count()
         projects_count = Project.objects.filter(owner=user).count()
-        
+
         thirty_days_ago = datetime.now() - timedelta(days=30)
-        
+
         recent_protocols = ProtocolModel.objects.filter(
-            user=user, 
+            user=user,
             protocol_created_on__gte=thirty_days_ago
         ).count()
         recent_sessions = Session.objects.filter(
-            user=user, 
+            user=user,
             created_at__gte=thirty_days_ago
         ).count()
         recent_annotations = Annotation.objects.filter(
-            user=user, 
+            user=user,
             created_at__gte=thirty_days_ago
         ).count()
-        
+
         stored_reagents_count = StoredReagent.objects.filter(
             user=user
         ).count()
-        
+
         activity_summary = {
             'total_counts': {
                 'protocols': protocols_count,
@@ -2292,23 +2294,23 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 'managing': user.managed_lab_groups.count(),
             }
         }
-        
+
         return Response(activity_summary, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
     def search_users(self, request):
         """
         Enhanced user search with multiple filtering criteria.
-        
+
         Supports text search across username, first name, last name, and email,
         plus filtering by lab group membership, user role, and activity status.
-        
+
         Query Parameters:
             q (str): Text search query across user fields
             lab_group (int): Filter by lab group ID membership
             role (str): Filter by role - 'staff' or 'regular'
             active (bool): Filter for active users only (default: true)
-        
+
         Returns:
             Response: Paginated list of users matching search criteria
         """
@@ -2316,9 +2318,9 @@ class UserViewSet(ModelViewSet, FilterMixin):
         lab_group_id = request.query_params.get('lab_group', None)
         role = request.query_params.get('role', None)
         active_only = request.query_params.get('active', 'true').lower() == 'true'
-        
+
         queryset = User.objects.all()
-        
+
         if query:
             queryset = queryset.filter(
                 Q(username__icontains=query) |
@@ -2326,26 +2328,26 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 Q(last_name__icontains=query) |
                 Q(email__icontains=query)
             )
-        
+
         if lab_group_id:
             try:
                 lab_group = LabGroup.objects.get(id=lab_group_id)
                 queryset = queryset.filter(lab_groups=lab_group)
             except LabGroup.DoesNotExist:
                 return Response(
-                    {'error': 'Lab group not found'}, 
+                    {'error': 'Lab group not found'},
                     status=status.HTTP_404_NOT_FOUND
                 )
-        
+
         if role == 'staff':
             queryset = queryset.filter(is_staff=True)
         elif role == 'regular':
             queryset = queryset.filter(is_staff=False)
-        
+
         if active_only:
             thirty_days_ago = datetime.now() - timedelta(days=30)
             active_user_ids = set()
-            
+
             active_user_ids.update(
                 Session.objects.filter(created_at__gte=thirty_days_ago)
                 .values_list('user_id', flat=True)
@@ -2358,9 +2360,9 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 Annotation.objects.filter(created_at__gte=thirty_days_ago)
                 .values_list('user_id', flat=True)
             )
-            
+
             queryset = queryset.filter(id__in=active_user_ids)
-        
+
         paginator = LimitOffsetPagination()
         paginator.default_limit = 20
         paginated_users = paginator.paginate_queryset(queryset, request)
@@ -2381,23 +2383,23 @@ class UserViewSet(ModelViewSet, FilterMixin):
             target_user = User.objects.get(pk=pk)
         except User.DoesNotExist:
             return Response(
-                {'error': 'User not found'}, 
+                {'error': 'User not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
-        
+
         # Permission check: staff can view any user, users can only view themselves
         if not request.user.is_staff and request.user != target_user:
             return Response(
-                {'error': 'Permission denied'}, 
+                {'error': 'Permission denied'},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         # Time ranges for statistics
         now = datetime.now()
         last_week = now - timedelta(days=7)
         last_month = now - timedelta(days=30)
         last_year = now - timedelta(days=365)
-        
+
         # Protocol statistics
         protocol_stats = {
             'total': ProtocolModel.objects.filter(user=target_user).count(),
@@ -2409,7 +2411,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 user=target_user, protocol_created_on__gte=last_month
             ).count(),
         }
-        
+
         # Session statistics
         session_stats = {
             'total': Session.objects.filter(user=target_user).count(),
@@ -2421,7 +2423,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 user=target_user, created_at__gte=last_month
             ).count(),
         }
-        
+
         # Annotation statistics
         annotation_stats = {
             'total': Annotation.objects.filter(user=target_user).count(),
@@ -2435,7 +2437,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 user=target_user, created_at__gte=last_month
             ).count(),
         }
-        
+
         # Project statistics
         project_stats = {
             'owned': Project.objects.filter(owner=target_user).count(),
@@ -2443,19 +2445,19 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 owner=target_user, created_at__gte=last_month
             ).count(),
         }
-        
+
         # Lab group participation
         lab_group_stats = {
             'member_of': target_user.lab_groups.count(),
             'managing': target_user.managed_lab_groups.count(),
         }
-        
+
         # Storage statistics
         storage_stats = {
             'stored_reagents': StoredReagent.objects.filter(user=target_user).count(),
             'storage_objects': StorageObject.objects.filter(user=target_user).count(),
         }
-        
+
         statistics = {
             'user_info': {
                 'id': target_user.id,
@@ -2473,7 +2475,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
             'lab_groups': lab_group_stats,
             'storage': storage_stats,
         }
-        
+
         return Response(statistics, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
@@ -2482,23 +2484,23 @@ class UserViewSet(ModelViewSet, FilterMixin):
         Get comprehensive dashboard data for current user
         """
         user = request.user
-        
+
         # Recent activity
         last_week = datetime.now() - timedelta(days=7)
-        
+
         # Get recent items
         recent_protocols = ProtocolModel.objects.filter(
             user=user, protocol_created_on__gte=last_week
         ).order_by('-protocol_created_on')[:5]
-        
+
         recent_sessions = Session.objects.filter(
             user=user, created_at__gte=last_week
         ).order_by('-created_at')[:5]
-        
+
         recent_annotations = Annotation.objects.filter(
             user=user, created_at__gte=last_week
         ).order_by('-created_at')[:5]
-        
+
         # Lab groups with member counts
         lab_groups_data = []
         for lab_group in user.lab_groups.all():
@@ -2508,7 +2510,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 'member_count': lab_group.users.count(),
                 'is_professional': getattr(lab_group, 'is_professional', False),
             })
-        
+
         dashboard_data = {
             'user_info': {
                 'username': user.username,
@@ -2541,7 +2543,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
             },
             'lab_groups': lab_groups_data,
         }
-        
+
         return Response(dashboard_data, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
@@ -2552,27 +2554,27 @@ class UserViewSet(ModelViewSet, FilterMixin):
         user_ids = request.data.get('user_ids', [])
         resource_type = request.data.get('resource_type')  # 'protocol', 'session', 'annotation'
         resource_ids = request.data.get('resource_ids', [])
-        
+
         if not user_ids or not resource_type or not resource_ids:
             return Response(
-                {'error': 'user_ids, resource_type, and resource_ids are required'}, 
+                {'error': 'user_ids, resource_type, and resource_ids are required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Only staff can check other users' permissions
         if not request.user.is_staff:
             user_ids = [request.user.id]
-        
+
         users = User.objects.filter(id__in=user_ids)
         permission_matrix = []
-        
+
         for user in users:
             user_permissions = {
                 'user_id': user.id,
                 'username': user.username,
                 'permissions': []
             }
-            
+
             if resource_type == 'protocol':
                 protocols = ProtocolModel.objects.filter(id__in=resource_ids)
                 for protocol in protocols:
@@ -2582,19 +2584,19 @@ class UserViewSet(ModelViewSet, FilterMixin):
                         'view': False,
                         'delete': False
                     }
-                    
+
                     if protocol.user == user:
                         permission.update({'edit': True, 'view': True, 'delete': True})
                     elif user in protocol.editors.all():
                         permission.update({'edit': True, 'view': True})
                     elif user in protocol.viewers.all():
                         permission['view'] = True
-                    
+
                     if protocol.enabled:
                         permission['view'] = True
-                    
+
                     user_permissions['permissions'].append(permission)
-            
+
             elif resource_type == 'session':
                 sessions = Session.objects.filter(id__in=resource_ids)
                 for session in sessions:
@@ -2604,21 +2606,21 @@ class UserViewSet(ModelViewSet, FilterMixin):
                         'view': False,
                         'delete': False
                     }
-                    
+
                     if session.user == user:
                         permission.update({'edit': True, 'view': True, 'delete': True})
                     elif user in session.editors.all():
                         permission.update({'edit': True, 'view': True})
                     elif user in session.viewers.all():
                         permission['view'] = True
-                    
+
                     if session.enabled:
                         permission['view'] = True
-                    
+
                     user_permissions['permissions'].append(permission)
-            
+
             permission_matrix.append(user_permissions)
-        
+
         return Response(permission_matrix, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
@@ -2627,7 +2629,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
         Get user preferences (can be extended to include custom settings)
         """
         user = request.user
-        
+
         # For now, return basic user settings that could be considered preferences
         preferences = {
             'profile': {
@@ -2645,7 +2647,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 'is_superuser': user.is_superuser,
             }
         }
-        
+
         return Response(preferences, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
@@ -2655,45 +2657,45 @@ class UserViewSet(ModelViewSet, FilterMixin):
         """
         if not request.user.is_staff:
             return Response(
-                {'error': 'Only staff can deactivate users'}, 
+                {'error': 'Only staff can deactivate users'},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         user_id = request.data.get('user_id')
         reason = request.data.get('reason', '')
-        
+
         if not user_id:
             return Response(
-                {'error': 'user_id is required'}, 
+                {'error': 'user_id is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         try:
             target_user = User.objects.get(id=user_id)
         except User.DoesNotExist:
             return Response(
-                {'error': 'User not found'}, 
+                {'error': 'User not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
-        
+
         # Prevent deactivating superusers or self
         if target_user.is_superuser:
             return Response(
-                {'error': 'Cannot deactivate superuser accounts'}, 
+                {'error': 'Cannot deactivate superuser accounts'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         if target_user == request.user:
             return Response(
-                {'error': 'Cannot deactivate your own account'}, 
+                {'error': 'Cannot deactivate your own account'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         target_user.is_active = False
         target_user.save()
 
         return Response(
-            {'message': f'User {target_user.username} has been deactivated'}, 
+            {'message': f'User {target_user.username} has been deactivated'},
             status=status.HTTP_200_OK
         )
 
@@ -2704,34 +2706,34 @@ class UserViewSet(ModelViewSet, FilterMixin):
         """
         if not request.user.is_staff:
             return Response(
-                {'error': 'Only staff can reactivate users'}, 
+                {'error': 'Only staff can reactivate users'},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         user_id = request.data.get('user_id')
-        
+
         if not user_id:
             return Response(
-                {'error': 'user_id is required'}, 
+                {'error': 'user_id is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         try:
             target_user = User.objects.get(id=user_id)
         except User.DoesNotExist:
             return Response(
-                {'error': 'User not found'}, 
+                {'error': 'User not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
-        
+
         target_user.is_active = True
         target_user.save()
-        
+
         # Log the reactivation
         print(f"User {target_user.username} reactivated by {request.user.username}")
-        
+
         return Response(
-            {'message': f'User {target_user.username} has been reactivated'}, 
+            {'message': f'User {target_user.username} has been reactivated'},
             status=status.HTTP_200_OK
         )
 
@@ -2741,13 +2743,13 @@ class UserViewSet(ModelViewSet, FilterMixin):
         Get lab groups where user has management permissions
         """
         user = request.user
-        
+
         # Lab groups user manages
         managed_groups = user.managed_lab_groups.all()
-        
+
         # Lab groups user is member of
         member_groups = user.lab_groups.all()
-        
+
         # For each managed group, get member details
         managed_groups_data = []
         for group in managed_groups:
@@ -2766,7 +2768,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 } for member in group.users.all()]
             }
             managed_groups_data.append(group_data)
-        
+
         # Basic info for member groups
         member_groups_data = [{
             'id': group.id,
@@ -2775,7 +2777,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
             'is_professional': getattr(group, 'is_professional', False),
             'member_count': group.users.count(),
         } for group in member_groups]
-        
+
         lab_group_info = {
             'managed_groups': managed_groups_data,
             'member_groups': member_groups_data,
@@ -2785,7 +2787,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 'total_managed_members': sum(group['member_count'] for group in managed_groups_data),
             }
         }
-        
+
         return Response(lab_group_info, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
@@ -2795,27 +2797,27 @@ class UserViewSet(ModelViewSet, FilterMixin):
         """
         if not request.user.is_staff:
             return Response(
-                {'error': 'Only staff can access platform analytics'}, 
+                {'error': 'Only staff can access platform analytics'},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         # User statistics
         total_users = User.objects.count()
         active_users = User.objects.filter(is_active=True).count()
         staff_users = User.objects.filter(is_staff=True).count()
-        
+
         # Activity in last 30 days
         thirty_days_ago = datetime.now() - timedelta(days=30)
-        
+
         recent_users = User.objects.filter(date_joined__gte=thirty_days_ago).count()
-        
+
         # Resource counts
         total_protocols = ProtocolModel.objects.count()
         total_sessions = Session.objects.count()
         total_annotations = Annotation.objects.count()
         total_projects = Project.objects.count()
         total_lab_groups = LabGroup.objects.count()
-        
+
         # Recent activity
         recent_protocols = ProtocolModel.objects.filter(
             protocol_created_on__gte=thirty_days_ago
@@ -2826,7 +2828,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
         recent_annotations = Annotation.objects.filter(
             created_at__gte=thirty_days_ago
         ).count()
-        
+
         # Top active users (by recent activity)
         active_user_data = []
         for user in User.objects.filter(is_active=True)[:10]:
@@ -2838,15 +2840,15 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 'annotations': Annotation.objects.filter(user=user).count(),
             }
             user_activity['total_activity'] = (
-                user_activity['protocols'] + 
-                user_activity['sessions'] + 
+                user_activity['protocols'] +
+                user_activity['sessions'] +
                 user_activity['annotations']
             )
             active_user_data.append(user_activity)
-        
+
         # Sort by total activity
         active_user_data.sort(key=lambda x: x['total_activity'], reverse=True)
-        
+
         analytics = {
             'users': {
                 'total': total_users,
@@ -2868,7 +2870,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
             },
             'top_active_users': active_user_data[:5],
         }
-        
+
         return Response(analytics, status=status.HTTP_200_OK)
 
 
@@ -3605,16 +3607,16 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
         user = request.user
         if not user.is_authenticated:
             return Response({'can_manage': False}, status=status.HTTP_200_OK)
-        
+
         if user.is_staff:
             return Response({'can_manage': True}, status=status.HTTP_200_OK)
-        
+
         # Check if user has manage permission for any instrument
         has_manage_permission = InstrumentPermission.objects.filter(
             user=user,
             can_manage=True
         ).exists()
-        
+
         return Response({'can_manage': has_manage_permission}, status=status.HTTP_200_OK)
 
 class InstrumentUsageViewSet(ModelViewSet, FilterMixin):
@@ -4565,12 +4567,12 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
-        
+
         # Check if user has permission to update this lab group
         if not self.request.user.is_staff:
             if not instance.managers.filter(id=self.request.user.id).exists():
                 return Response(status=status.HTTP_401_UNAUTHORIZED)
-        
+
         if "name" in request.data:
             instance.name = request.data['name']
         if "description" in request.data:
@@ -6155,7 +6157,7 @@ class MaintenanceLogViewSet(ModelViewSet, FilterMixin):
             a.transcribed = request.data["transcribed"]
         if "summary" in request.data:
             a.summary = request.data["summary"]
-        
+
         a.save()
         serialized = AnnotationSerializer(a, many=False)
         return Response(serialized.data, status=status.HTTP_201_CREATED)
@@ -6914,28 +6916,28 @@ class SiteSettingsViewSet(ModelViewSet):
     serializer_class = SiteSettingsSerializer
     authentication_classes = [TokenAuthentication, SessionAuthentication]
     permission_classes = [IsAuthenticated]
-    
+
     def get_queryset(self):
         """Return only active site settings"""
         return SiteSettings.objects.filter(is_active=True)
-    
+
     def list(self, request, *args, **kwargs):
         """Get current site settings (singleton pattern)"""
         current_settings = SiteSettings.get_or_create_default()
         serializer = self.get_serializer(current_settings)
         return Response(serializer.data)
-    
+
     def create(self, request, *args, **kwargs):
         """Create new site settings (replaces existing)"""
         # Only staff/superusers can modify site settings
         if not request.user.is_staff:
             raise PermissionDenied("Only staff members can modify site settings")
-        
+
         # Deactivate existing settings
         SiteSettings.objects.filter(is_active=True).update(is_active=False)
-        
+
         return super().create(request, *args, **kwargs)
-    
+
     def update(self, request, *args, **kwargs):
         """Update existing site settings"""
         # Only staff/superusers can modify site settings
@@ -6943,22 +6945,22 @@ class SiteSettingsViewSet(ModelViewSet):
             raise PermissionDenied("Only staff members can modify site settings")
 
         return super().update(request, *args, **kwargs)
-    
+
     def partial_update(self, request, *args, **kwargs):
         """Partially update site settings"""
         # Only staff/superusers can modify site settings
         if not request.user.is_staff:
             raise PermissionDenied("Only staff members can modify site settings")
-        
+
         return super().partial_update(request, *args, **kwargs)
-    
+
     def destroy(self, request, *args, **kwargs):
         """Prevent deletion of site settings"""
         return Response(
-            {"error": "Site settings cannot be deleted"}, 
+            {"error": "Site settings cannot be deleted"},
             status=status.HTTP_405_METHOD_NOT_ALLOWED
         )
-    
+
     @action(detail=False, methods=['get'], permission_classes=[AllowAny])
     def public(self, request):
         """Get public site settings (no authentication required)"""
@@ -6980,104 +6982,104 @@ class SiteSettingsViewSet(ModelViewSet):
 
         }
         return Response(public_data)
-    
+
     @action(detail=False, methods=['get'], permission_classes=[AllowAny])
     def download_logo(self, request):
         """Download site logo using X-Accel-Redirect"""
         current_settings = SiteSettings.get_or_create_default()
         if not current_settings.logo:
             return Response({"error": "No logo file available"}, status=status.HTTP_404_NOT_FOUND)
-        
+
         response = HttpResponse(status=200)
         filename = current_settings.logo.name.split('/')[-1]
         response["Content-Disposition"] = f'inline; filename="{filename}"'
         response["X-Accel-Redirect"] = f"/media/{current_settings.logo.name}"
         return response
-    
+
     @action(detail=False, methods=['get'], permission_classes=[AllowAny])
     def download_favicon(self, request):
         """Download site favicon using X-Accel-Redirect"""
         current_settings = SiteSettings.get_or_create_default()
         if not current_settings.favicon:
             return Response({"error": "No favicon file available"}, status=status.HTTP_404_NOT_FOUND)
-        
+
         response = HttpResponse(status=200)
         filename = current_settings.favicon.name.split('/')[-1]
         response["Content-Disposition"] = f'inline; filename="{filename}"'
         response["X-Accel-Redirect"] = f"/media/{current_settings.favicon.name}"
         return response
-    
+
     @action(detail=False, methods=['post'])
     def get_logo_signed_url(self, request):
         """Get signed URL for logo download"""
         current_settings = SiteSettings.get_or_create_default()
         if not current_settings.logo:
             return Response({"error": "No logo file available"}, status=status.HTTP_404_NOT_FOUND)
-        
+
         signer = TimestampSigner()
         filename = current_settings.logo.name.split('/')[-1]
         token = signer.sign(filename)
         return Response({"token": token, "filename": filename})
-    
+
     @action(detail=False, methods=['post'])
     def get_favicon_signed_url(self, request):
         """Get signed URL for favicon download"""
         current_settings = SiteSettings.get_or_create_default()
         if not current_settings.favicon:
             return Response({"error": "No favicon file available"}, status=status.HTTP_404_NOT_FOUND)
-        
+
         signer = TimestampSigner()
         filename = current_settings.favicon.name.split('/')[-1]
         token = signer.sign(filename)
         return Response({"token": token, "filename": filename})
-    
+
     @action(detail=False, methods=['get'])
     def download_logo_signed(self, request):
         """Download logo using a signed token"""
         token = request.query_params.get('token', None)
         if not token:
             return Response({"error": "No token provided"}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         signer = TimestampSigner()
         try:
             filename = signer.unsign(token, max_age=60 * 30)  # 30 minute expiration
             current_settings = SiteSettings.get_or_create_default()
             if not current_settings.logo:
                 return Response({"error": "No logo file available"}, status=status.HTTP_404_NOT_FOUND)
-            
+
             response = HttpResponse(status=200)
             response["Content-Disposition"] = f'inline; filename="{filename}"'
             response["X-Accel-Redirect"] = f"/media/{current_settings.logo.name}"
             return response
         except (BadSignature, SignatureExpired) as e:
             return Response({"error": "Invalid or expired token"}, status=status.HTTP_400_BAD_REQUEST)
-    
+
     @action(detail=False, methods=['get'])
     def download_favicon_signed(self, request):
         """Download favicon using a signed token"""
         token = request.query_params.get('token', None)
         if not token:
             return Response({"error": "No token provided"}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         signer = TimestampSigner()
         try:
             filename = signer.unsign(token, max_age=60 * 30)  # 30 minute expiration
             current_settings = SiteSettings.get_or_create_default()
             if not current_settings.favicon:
                 return Response({"error": "No favicon file available"}, status=status.HTTP_404_NOT_FOUND)
-            
+
             response = HttpResponse(status=200)
             response["Content-Disposition"] = f'inline; filename="{filename}"'
             response["X-Accel-Redirect"] = f"/media/{current_settings.favicon.name}"
             return response
         except (BadSignature, SignatureExpired) as e:
             return Response({"error": "Invalid or expired token"}, status=status.HTTP_400_BAD_REQUEST)
-    
+
     @action(detail=False, methods=['get'])
     def available_import_options(self, request):
         """Get available import options based on site settings and user permissions"""
         current_settings = SiteSettings.get_or_create_default()
-        
+
         # Default import options
         default_options = {
             'protocols': True,
@@ -7090,10 +7092,10 @@ class SiteSettingsViewSet(ModelViewSet):
             'messaging': False,  # Default to false for privacy
             'support_models': True
         }
-        
+
         # Filter based on site settings and user permissions
         available_options = current_settings.filter_import_options(default_options, request.user)
-        
+
         return Response({
             'available_options': available_options,
             'is_staff_override': request.user.is_staff,
@@ -7114,7 +7116,7 @@ class BackupLogViewSet(ModelViewSet, FilterMixin):
     ordering_fields = ["started_at", "completed_at", "duration_seconds", "file_size_bytes"]
     ordering = ["-started_at"]
     pagination_class = LimitOffsetPagination
-    
+
     def get_permissions(self):
         """Only staff users can view backup logs"""
         if self.action in ["list", "retrieve"]:
@@ -7122,32 +7124,32 @@ class BackupLogViewSet(ModelViewSet, FilterMixin):
         else:
             # Backup logs should be read-only via API
             return [IsAdminUser()]
-    
+
     @action(detail=False, methods=["get"])
     def backup_status(self, request):
         """Get summary of recent backup status"""
         # Get backup status from last 30 days
         thirty_days_ago = timezone.now() - timedelta(days=30)
         recent_backups = BackupLog.objects.filter(started_at__gte=thirty_days_ago)
-        
+
         # Count by status
         status_counts = {}
         for status_choice in BackupLog.STATUS_CHOICES:
             status_key = status_choice[0]
             status_counts[status_key] = recent_backups.filter(status=status_key).count()
-        
+
         # Get latest backup for each type
         latest_backups = {}
         for backup_type in ["database", "media"]:
             latest = recent_backups.filter(backup_type=backup_type).first()
             if latest:
                 latest_backups[backup_type] = BackupLogSerializer(latest).data
-        
+
         # Calculate success rate
         total_backups = recent_backups.count()
         successful_backups = recent_backups.filter(status="completed").count()
         success_rate = (successful_backups / total_backups * 100) if total_backups > 0 else 0
-        
+
         return Response({
             "period_days": 30,
             "total_backups": total_backups,
@@ -7169,11 +7171,11 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
     ordering = ["-created_at"]
     pagination_class = LimitOffsetPagination
     filterset_fields = ["annotation_type", "created_at", "updated_at", "user", "folder", "session"]
-    
+
     def get_queryset(self):
         """Get annotations that are specifically shared documents (files in shared document folders or with document permissions)"""
         user = self.request.user
-        
+
         # Start with annotations that have files AND are in shared document folders OR have document permissions
         queryset = Annotation.objects.filter(
             file__isnull=False
@@ -7182,7 +7184,7 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
             Q(folder__isnull=True, document_permissions__isnull=False) |  # Root level with permissions
             Q(document_permissions__isnull=False)  # Has document permissions
         ).select_related("user", "folder", "session").distinct()
-        
+
         # Filter by access permissions
         accessible_annotations = []
         for annotation in queryset:
@@ -7190,38 +7192,38 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
             if annotation.user == user:
                 accessible_annotations.append(annotation.id)
                 continue
-            
+
             # Check document permissions
             if DocumentPermission.user_can_access_annotation_with_folder_inheritance(annotation, user, "view"):
                 accessible_annotations.append(annotation.id)
-        
+
         return Annotation.objects.filter(id__in=accessible_annotations).select_related("user", "folder", "session")
-    
+
     def perform_create(self, serializer):
         """Override create to ensure user and handle file uploads for shared documents"""
         # Ensure this is a file annotation
         if not serializer.validated_data.get('file'):
             raise ValidationError("SharedDocumentViewSet only handles file annotations")
-        
+
         # If folder is specified, ensure it's a shared document folder
         folder = serializer.validated_data.get('folder')
         if folder and not folder.is_shared_document_folder:
             raise ValidationError("Files can only be added to shared document folders")
-        
+
         serializer.save(user=self.request.user, annotation_type="file")
-    
+
     @action(detail=True, methods=["post"])
     def share(self, request, pk=None):
         """Share document with specific users or groups"""
         annotation = self.get_object()
-        
+
         # Check if user can share this document
         if annotation.user != request.user and not DocumentPermission.user_can_access_annotation_with_folder_inheritance(annotation, request.user, "share"):
             return Response(
                 {"error": "You do not have permission to share this document"},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         # Validate required fields
         permissions_data = request.data.get("permissions", {})
         if not permissions_data:
@@ -7236,7 +7238,7 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
             permissions_data['annotation'] = annotation.id
             permissions_data['user_id'] = user
             serializer = DocumentPermissionSerializer(data=permissions_data, context={"request": request})
-            
+
             if serializer.is_valid():
                 # check if the user already has permission
                 existing_perm = DocumentPermission.objects.filter(
@@ -7255,65 +7257,65 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                 created_permissions.append(permission)
             else:
                 errors.append(serializer.errors)
-        
+
         if errors:
             # Clean up any successfully created permissions if there were errors
             for perm in created_permissions:
                 perm.delete()
             return Response({"errors": errors}, status=status.HTTP_400_BAD_REQUEST)
-        
+
         return Response({
             "message": f"Document shared with {len(created_permissions)} recipients",
             "permissions": DocumentPermissionSerializer(created_permissions, many=True).data
         }, status=status.HTTP_201_CREATED)
-    
+
     @action(detail=True, methods=["delete"])
     def unshare(self, request, pk=None):
         """Remove sharing permissions for specific users or groups"""
         annotation = self.get_object()
-        
+
         # Check if user can share this document
         if annotation.user != request.user and not DocumentPermission.user_can_access_annotation_with_folder_inheritance(annotation, request.user, "share"):
             return Response(
                 {"error": "You do not have permission to manage sharing for this document"},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         user_id = request.data.get("user_id")
         lab_group_id = request.data.get("lab_group_id")
-        
+
         if not user_id and not lab_group_id:
             return Response(
                 {"error": "Either user_id or lab_group_id must be provided"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Remove the permission
         filter_kwargs = {"annotation": annotation}
         if user_id:
             filter_kwargs["user_id"] = user_id
         if lab_group_id:
             filter_kwargs["lab_group_id"] = lab_group_id
-        
+
         deleted_count, _ = DocumentPermission.objects.filter(**filter_kwargs).delete()
-        
+
         return Response({
             "message": f"Removed {deleted_count} permission(s)",
             "deleted_count": deleted_count
         }, status=status.HTTP_200_OK)
-    
+
     @action(detail=True, methods=["get"])
     def download(self, request, pk=None):
         """Download document with permission check and access tracking using X-Accel-Redirect"""
         annotation = self.get_object()
-        
+
         # Check download permissions
         if annotation.user != request.user and not DocumentPermission.user_can_access_annotation_with_folder_inheritance(annotation, request.user, "download"):
             return Response(
                 {"error": "You do not have permission to download this document"},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         # Record access if not the owner
         if annotation.user != request.user:
             perm = DocumentPermission.objects.filter(
@@ -7330,23 +7332,23 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                     ).first()
                     if perm:
                         break
-            
+
             if perm:
                 perm.record_access()
-        
+
         if not annotation.file:
             return Response(
                 {"error": "No file attached to this annotation"},
                 status=status.HTTP_404_NOT_FOUND
             )
-        
+
         # Use X-Accel-Redirect for efficient nginx file delivery
         file_name = annotation.file.name
         filename = file_name.split('/')[-1]
         view = request.query_params.get('view', None)
-        
+
         response = HttpResponse(status=200)
-        
+
         # Set appropriate content type and disposition based on file extension
         if view:
             if file_name.endswith(".pdf"):
@@ -7365,23 +7367,23 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                 response["Content-Disposition"] = f'attachment; filename="{filename}"'
         else:
             response["Content-Disposition"] = f'attachment; filename="{filename}"'
-        
+
         # Let nginx handle the actual file serving
         response["X-Accel-Redirect"] = f"/media/{file_name}"
         return response
-    
+
     @action(detail=True, methods=["get"])
     def get_signed_url(self, request, pk=None):
         """Generate a signed, time-limited download URL for secure access"""
         annotation = self.get_object()
-        
+
         # Check download permissions
         if annotation.user != request.user and not DocumentPermission.user_can_access_annotation_with_folder_inheritance(annotation, request.user, "download"):
             return Response(
                 {"error": "You do not have permission to download this document"},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
         if not annotation.file:
             return Response(
                 {"error": "No file attached to this document"},
@@ -7389,7 +7391,7 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
             )
 
         signer = TimestampSigner()
-        
+
         # Sign the annotation data for secure access
         file_data = {
             'file': annotation.file.name,
@@ -7397,12 +7399,12 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
             'user_id': request.user.id
         }
         signed_token = signer.sign_object(file_data)
-        
+
         return Response({
             "signed_token": signed_token,
             "expires_in": 1800  # 30 minutes
         }, status=status.HTTP_200_OK)
-    
+
     @action(detail=False, methods=["get"], permission_classes=[AllowAny])
     def download_signed(self, request):
         """Download document using a signed token (no authentication required)"""
@@ -7414,11 +7416,11 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
             )
         signer = TimestampSigner()
         view = request.query_params.get('view', None)
-        
+
         try:
             file_data = signer.unsign_object(token, max_age=60*30)
             annotation = Annotation.objects.get(id=file_data['id'])
-            
+
             if not annotation.file:
                 return Response(
                     {"error": "No file attached to this document"},
@@ -7441,7 +7443,7 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                             ).first()
                             if perm:
                                 break
-                    
+
                     if perm:
                         perm.record_access()
             except User.DoesNotExist:
@@ -7449,7 +7451,7 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
 
             file_name = annotation.file.name
             filename = file_name.split('/')[-1]
-            
+
             response = HttpResponse(status=200)
 
             if view:
@@ -7469,11 +7471,11 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                     response["Content-Disposition"] = f'attachment; filename="{filename}"'
             else:
                 response["Content-Disposition"] = f'attachment; filename="{filename}"'
-            
+
             # Let nginx handle the actual file serving
             response["X-Accel-Redirect"] = f"/media/{file_name}"
             return response
-            
+
         except (BadSignature, SignatureExpired):
             return Response(
                 {"error": "Invalid or expired token"},
@@ -7489,14 +7491,14 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                 {"error": "Failed to process download request"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-    
+
     @action(detail=False, methods=["get"])
     def browse(self, request):
         """Browse documents and folders in a hierarchical structure"""
         folder_id = request.query_params.get('folder_id', None)
         filter_type = request.query_params.get('filter_type', 'all')  # 'all', 'personal', 'shared'
         user = request.user
-        
+
         # Get the current folder or root level
         current_folder = None
         if folder_id:
@@ -7507,16 +7509,16 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                     {"error": "Folder not found"},
                     status=status.HTTP_404_NOT_FOUND
                 )
-        
+
         # Get subfolders in current directory that contain shared documents
         subfolders = self._get_folders_with_shared_documents(current_folder, filter_type)
-        
+
         # Filter documents in this specific folder
         if current_folder:
             folder_documents = self.get_queryset().filter(folder=current_folder)
         else:
             folder_documents = self.get_queryset().filter(folder__isnull=True)
-        
+
         # Build folder structure with metadata
         folders_data = []
         for folder in subfolders:
@@ -7525,14 +7527,14 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
             # Only include if folder has documents or accessible subfolders with documents
             # OR if it's a personal folder owned by the user (when filter_type is 'personal' or 'all')
             should_include = (
-                folder_doc_count > 0 or 
+                folder_doc_count > 0 or
                 self._folder_has_accessible_content(folder, user) or
                 (filter_type in ['personal', 'all'] and folder.owner == user)
             )
             if should_include:
                 # Get folder permissions
                 folder_permissions = DocumentPermission.objects.filter(folder=folder).select_related('user', 'lab_group', 'shared_by')
-                
+
                 # Calculate user's permissions for this folder
                 is_folder_owner = folder.owner == user
                 user_folder_permissions = {
@@ -7544,7 +7546,7 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                     'can_delete': is_folder_owner or DocumentPermission.user_can_access_folder(folder, user, 'delete'),
                     'is_owner': is_folder_owner
                 }
-                
+
                 folders_data.append({
                     'id': folder.id,
                     'name': folder.folder_name,
@@ -7570,14 +7572,14 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                         'total_access_count': sum(perm.access_count for perm in folder_permissions)
                     }
                 })
-        
+
         # Get documents in current folder with filtering
         documents_data = []
         for doc in folder_documents:
             is_owner = doc.user == user
             has_shared_access = DocumentPermission.user_can_access_annotation_with_folder_inheritance(doc, user, 'view')
             can_view = is_owner or has_shared_access
-            
+
             # Apply filter_type logic
             include_document = False
             if filter_type == 'all' and can_view:
@@ -7586,7 +7588,7 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                 include_document = True
             elif filter_type == 'shared' and has_shared_access and not is_owner:
                 include_document = True
-            
+
             if include_document:
                 doc_serializer = self.get_serializer(doc)
                 doc_data = doc_serializer.data
@@ -7594,10 +7596,10 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                 doc_data['is_personal'] = is_owner
                 doc_data['is_shared'] = has_shared_access and not is_owner
                 documents_data.append(doc_data)
-        
+
         # Build breadcrumb path
         breadcrumbs = self._build_breadcrumbs(current_folder)
-        
+
         return Response({
             'current_folder': {
                 'id': current_folder.id if current_folder else None,
@@ -7612,18 +7614,18 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
             'total_documents': len(documents_data),
             'filter_type': filter_type
         })
-    
+
     def _count_documents_in_folder(self, folder, user, filter_type='all'):
         """Recursively count documents user can access in folder and subfolders"""
         count = 0
-        
+
         # Count documents directly in this folder
         folder_docs = self.get_queryset().filter(folder=folder)
         for doc in folder_docs:
             is_owner = doc.user == user
             has_shared_access = DocumentPermission.user_can_access_annotation_with_folder_inheritance(doc, user, 'view')
             can_view = is_owner or has_shared_access
-            
+
             # Apply filter_type logic
             include_document = False
             if filter_type == 'all' and can_view:
@@ -7632,43 +7634,43 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                 include_document = True
             elif filter_type == 'shared' and has_shared_access and not is_owner:
                 include_document = True
-            
+
             if include_document:
                 count += 1
-        
+
         # Count documents in subfolders that have shared documents
         subfolders = self._get_folders_with_shared_documents(folder, filter_type)
         for subfolder in subfolders:
             count += self._count_documents_in_folder(subfolder, user, filter_type)
-        
+
         return count
-    
+
     def _build_breadcrumbs(self, current_folder):
         """Build breadcrumb navigation path"""
         breadcrumbs = []
         folder = current_folder
-        
+
         while folder:
             breadcrumbs.insert(0, {
                 'id': folder.id,
                 'name': folder.folder_name
             })
             folder = folder.parent_folder
-        
+
         # Add root
         breadcrumbs.insert(0, {
             'id': None,
             'name': 'Root'
         })
-        
+
         return breadcrumbs
-    
+
     @action(detail=False, methods=["get"])
     def my_documents(self, request):
         """Get documents owned by the current user organized by folder"""
         user = request.user
         folder_id = request.query_params.get('folder_id', None)
-        
+
         # Get user's shared documents only (in shared document folders or root level with permissions)
         user_documents = Annotation.objects.filter(
             user=user,
@@ -7678,7 +7680,7 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
             Q(folder__isnull=True, document_permissions__isnull=False) |  # Root level with permissions
             Q(document_permissions__isnull=False)  # Has document permissions
         ).select_related('folder', 'session').distinct()
-        
+
         if folder_id:
             try:
                 folder = AnnotationFolder.objects.get(id=folder_id, is_shared_document_folder=True)
@@ -7690,16 +7692,16 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                 )
         else:
             user_documents = user_documents.filter(folder__isnull=True)
-        
+
         # Get user's folders at this level that contain shared documents
         if folder_id:
             current_folder = AnnotationFolder.objects.get(id=folder_id)
         else:
             current_folder = None
-        
+
         # Get folders that contain file annotations accessible to this user (personal only)
         user_folders = self._get_folders_with_shared_documents(current_folder, 'personal')
-        
+
         # Build response
         folders_data = []
         for folder in user_folders:
@@ -7709,7 +7711,7 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                 folder=folder,
                 folder__is_shared_document_folder=True
             ).count()
-            
+
             # Get folder permissions (since this is my_documents, user is owner so they have full permissions)
             folder_permissions = DocumentPermission.objects.filter(folder=folder).select_related('user', 'lab_group', 'shared_by')
             is_folder_owner = folder.owner == user
@@ -7722,7 +7724,7 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                 'can_delete': True,
                 'is_owner': is_folder_owner
             }
-            
+
             folders_data.append({
                 'id': folder.id,
                 'name': folder.folder_name,
@@ -7748,7 +7750,7 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                     'total_access_count': sum(perm.access_count for perm in folder_permissions)
                 }
             })
-        
+
         # Serialize documents
         documents_data = []
         for doc in user_documents:
@@ -7757,10 +7759,10 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
             doc_data['type'] = 'file'
             doc_data['folder_path'] = self._get_folder_path_string(doc_data.get('folder'))
             documents_data.append(doc_data)
-        
+
         # Build breadcrumbs
         breadcrumbs = self._build_breadcrumbs(current_folder)
-        
+
         return Response({
             'current_folder': {
                 'id': current_folder.id if current_folder else None,
@@ -7774,19 +7776,19 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
             'total_folders': len(folders_data),
             'total_documents': len(documents_data)
         })
-    
+
     @action(detail=False, methods=["post"])
     def create_folder(self, request):
         """Create a new folder for organizing documents"""
         folder_name = request.data.get('folder_name', '').strip()
         parent_folder_id = request.data.get('parent_folder_id')
-        
+
         if not folder_name:
             return Response(
                 {"error": "folder_name is required"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Validate parent folder if provided
         parent_folder = None
         if parent_folder_id:
@@ -7806,20 +7808,20 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                     {"error": "Parent folder not found"},
                     status=status.HTTP_404_NOT_FOUND
                 )
-        
+
         # Check for duplicate folder names at the same level
         existing_folder = AnnotationFolder.objects.filter(
             folder_name=folder_name,
             parent_folder=parent_folder,
             is_shared_document_folder=True
         ).first()
-        
+
         if existing_folder:
             return Response(
                 {"error": "A folder with this name already exists at this location"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Create the folder marked as shared document folder
         folder = AnnotationFolder.objects.create(
             folder_name=folder_name,
@@ -7827,7 +7829,7 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
             is_shared_document_folder=True,
             owner=request.user
         )
-        
+
         # Get folder permissions (newly created folder has no shared permissions yet)
         folder_permissions = DocumentPermission.objects.filter(folder=folder).select_related('user', 'lab_group', 'shared_by')
         user_folder_permissions = {
@@ -7839,7 +7841,7 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
             'can_delete': True,
             'is_owner': True
         }
-        
+
         return Response({
             'id': folder.id,
             'name': folder.folder_name,
@@ -7866,34 +7868,34 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                 'total_access_count': 0
             }
         }, status=status.HTTP_201_CREATED)
-    
+
     @action(detail=False, methods=["get"])
     def search(self, request):
         """Search documents and folders with full-text search"""
         query = request.query_params.get('q', '').strip()
         folder_id = request.query_params.get('folder_id')  # Optional: search within specific folder
-        
+
         if not query:
             return Response(
                 {"error": "Search query 'q' parameter is required"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         user = request.user
-        
+
         # Search in documents (annotation content and names)
         document_query = Q(annotation__icontains=query) | Q(annotation_name__icontains=query)
         if folder_id:
             document_query &= Q(folder_id=folder_id)
-        
+
         documents = self.get_queryset().filter(document_query)
-        
+
         # Filter by permissions
         accessible_documents = []
         for doc in documents:
             if doc.user == user or DocumentPermission.user_can_access_annotation_with_folder_inheritance(doc, user, 'view'):
                 accessible_documents.append(doc)
-        
+
         # Search in folders
         folder_query = Q(folder_name__icontains=query)
         if folder_id:
@@ -7903,14 +7905,14 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                 folder_query &= Q(parent_folder=parent_folder)
             except AnnotationFolder.DoesNotExist:
                 pass
-        
+
         # Filter folders to only those with shared documents
         all_folders = AnnotationFolder.objects.filter(folder_query)
         folders = []
         for folder in all_folders:
             if self._folder_has_accessible_content(folder, user):
                 folders.append(folder)
-        
+
         # Serialize results
         documents_data = []
         for doc in accessible_documents:
@@ -7923,14 +7925,14 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
             else:
                 doc_data['folder_path'] = "Root"
             documents_data.append(doc_data)
-        
+
         folders_data = []
         for folder in folders:
             doc_count = self._count_documents_in_folder(folder, user, 'all')
-            
+
             # Get folder permissions
             folder_permissions = DocumentPermission.objects.filter(folder=folder).select_related('user', 'lab_group', 'shared_by')
-            
+
             # Calculate user's permissions for this folder
             is_folder_owner = folder.owner == user
             user_folder_permissions = {
@@ -7942,7 +7944,7 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                 'can_delete': is_folder_owner or DocumentPermission.user_can_access_folder(folder, user, 'delete'),
                 'is_owner': is_folder_owner
             }
-            
+
             folders_data.append({
                 'id': folder.id,
                 'name': folder.folder_name,
@@ -7969,14 +7971,14 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                     'total_access_count': sum(perm.access_count for perm in folder_permissions)
                 }
             })
-        
+
         return Response({
             'query': query,
             'total_results': len(documents_data) + len(folders_data),
             'folders': folders_data,
             'documents': documents_data
         })
-    
+
     def _get_folder_path(self, folder):
         """Get the full path to a folder"""
         path_parts = []
@@ -7985,32 +7987,32 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
             path_parts.insert(0, current.folder_name)
             current = current.parent_folder
         return ' / '.join(path_parts)
-    
+
     def _get_folder_path_string(self, folder_data):
         """Convert serialized folder data to readable path string"""
         if not folder_data:
             return "Root"
-        
+
         # folder_data is an array from the serializer - reverse it to get root-to-file order
         path_parts = [folder['folder_name'] for folder in reversed(folder_data)]
         return ' / '.join(['Root'] + path_parts)
-    
+
     def _get_folders_with_shared_documents(self, parent_folder=None, filter_type='all'):
         """Get folders that are designated for shared documents with ownership filtering"""
         user = self.request.user
-        
+
         # Base folder filter
         if parent_folder:
             folder_filter = Q(parent_folder=parent_folder)
         else:
             folder_filter = Q(parent_folder__isnull=True)
-        
+
         # Get folders marked as shared document folders
         queryset = AnnotationFolder.objects.filter(
             folder_filter,
             is_shared_document_folder=True
         )
-        
+
         # Apply ownership filtering based on filter_type
         if filter_type == 'personal':
             queryset = queryset.filter(owner=user)
@@ -8027,9 +8029,9 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                 Q(annotations__document_permissions__user=user) |
                 Q(annotations__document_permissions__lab_group__in=user.lab_groups.all())
             ).distinct()
-        
+
         return queryset
-    
+
     def _folder_has_accessible_content(self, folder, user):
         """Check if folder is marked for shared documents and has accessible content"""
         # If folder is marked as shared document folder, check if it has accessible files
@@ -8042,40 +8044,40 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                 Q(document_permissions__user=user) |
                 Q(document_permissions__lab_group__in=user.lab_groups.all())
             ).exists()
-            
+
             if has_direct_files:
                 return True
-        
+
         # Check subfolders recursively that are marked for shared documents
         subfolders = self._get_folders_with_shared_documents(folder, 'all')
         for subfolder in subfolders:
             if self._folder_has_accessible_content(subfolder, user):
                 return True
-        
+
         return False
-    
+
     @action(detail=False, methods=["get"])
     def shared_with_me(self, request):
         """Get documents shared with the current user, including folder path information"""
         user = request.user
-        
+
         # Get documents shared directly with user
         user_permissions = DocumentPermission.objects.filter(user=user).select_related("annotation")
-        
+
         # Get documents shared with user's lab groups
         user_groups = user.lab_groups.all()
         group_permissions = DocumentPermission.objects.filter(lab_group__in=user_groups).select_related("annotation")
-        
+
         # Combine and get unique annotations
         all_permissions = list(user_permissions) + list(group_permissions)
         annotation_ids = list(set(perm.annotation.id for perm in all_permissions if perm.annotation.file))
-        
+
         annotations = Annotation.objects.filter(id__in=annotation_ids).select_related("user", "folder", "session")
-        
+
         # Apply filtering and ordering
         queryset = self.filter_queryset(annotations)
         page = self.paginate_queryset(queryset)
-        
+
         if page is not None:
             serializer = self.get_serializer(page, many=True)
             # Enhance response data with folder path information
@@ -8083,14 +8085,14 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
             for doc_data in response_data:
                 doc_data['folder_path'] = self._get_folder_path_string(doc_data.get('folder'))
             return self.get_paginated_response(response_data)
-        
+
         serializer = self.get_serializer(queryset, many=True)
         # Enhance response data with folder path information
         response_data = serializer.data
         for doc_data in response_data:
             doc_data['folder_path'] = self._get_folder_path_string(doc_data.get('folder'))
         return Response(response_data)
-    
+
     @action(detail=False, methods=["post"])
     def bind_chunked_file(self, request):
         """
@@ -8101,32 +8103,32 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
         annotation_name = request.data.get('annotation_name', '')
         annotation_text = request.data.get('annotation', '')
         folder_id = request.data.get('folder_id')
-        
+
         # Validation
         if not upload_id:
             return Response(
                 {'error': 'upload_id is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         try:
             # Get and validate chunked upload
             chunked_upload = ChunkedUpload.objects.get(id=upload_id)
-            
+
             # Permission check - user must own the upload
             if chunked_upload.user != request.user and not request.user.is_staff:
                 return Response(
                     {'error': 'You do not have permission to use this upload'},
                     status=status.HTTP_403_FORBIDDEN
                 )
-            
+
             # Verify upload is completed
             if not chunked_upload.completed_at:
                 return Response(
                     {'error': 'Upload is not completed yet'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            
+
             # Validate folder if provided
             folder = None
             if folder_id:
@@ -8138,11 +8140,11 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                         {'error': 'Shared document folder not found'},
                         status=status.HTTP_404_NOT_FOUND
                     )
-            
+
             # Use chunked upload filename if no name provided
             if not annotation_name:
                 annotation_name = chunked_upload.filename or 'Uploaded Document'
-            
+
             # Create the annotation with file
             with open(chunked_upload.file.path, 'rb') as file:
                 django_file = djangoFile(file)
@@ -8206,7 +8208,7 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
         # Check ownership
         if folder.owner != request.user:
             return Response(
-                {'error': 'You can only delete folders you own'}, 
+                {'error': 'You can only delete folders you own'},
                 status=status.HTTP_403_FORBIDDEN
             )
         
@@ -8264,7 +8266,7 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
         # Check if user can share this folder
         if folder.owner != request.user and not DocumentPermission.user_can_access_folder(folder, request.user, "share"):
             return Response(
-                {'error': 'You do not have permission to share this folder'}, 
+                {'error': 'You do not have permission to share this folder'},
                 status=status.HTTP_403_FORBIDDEN
             )
         
@@ -8586,3 +8588,138 @@ class DocumentPermissionViewSet(ModelViewSet, FilterMixin):
         
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
+
+
+class ImportTrackerViewSet(ModelViewSet):
+    """ViewSet for managing import tracking records"""
+    queryset = ImportTracker.objects.all()
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    search_fields = ['import_id', 'archive_path', 'user__username']
+    ordering_fields = ['import_started_at', 'import_completed_at', 'archive_size_bytes']
+    ordering = ['-import_started_at']
+    filterset_fields = ['import_status', 'user', 'can_revert']
+    
+    def get_queryset(self):
+        """Filter import tracking records by user permissions"""
+        user = self.request.user
+        if user.is_staff:
+            return ImportTracker.objects.all()
+        return ImportTracker.objects.filter(user=user)
+    
+    def get_serializer_class(self):
+        """Use appropriate serializer based on action"""
+        if self.action == 'list':
+            return ImportTrackerListSerializer
+        return ImportTrackerSerializer
+    
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
+    def revert_import(self, request, pk=None):
+        """
+        Revert an import by removing all imported data
+        
+        This action completely reverses the import process by:
+        - Deleting all imported objects in proper dependency order
+        - Removing all imported files
+        - Clearing all imported relationships
+        - Marking the import as reverted
+        
+        Returns:
+            Response: Status of revert operation with detailed information
+        """
+        import_tracker = self.get_object()
+        user = request.user
+        
+        # Check permissions - only the import user or staff can revert
+        if import_tracker.user != user and not user.is_staff:
+            raise PermissionDenied("You don't have permission to revert this import")
+        
+        # Check if import can be reverted
+        if not import_tracker.can_revert:
+            return Response(
+                {'error': 'This import cannot be reverted. It may have already been reverted or failed during import.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if import_tracker.import_status != 'completed':
+            return Response(
+                {'error': 'Only completed imports can be reverted.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+
+
+            reverter = ImportReverter(import_tracker, user)
+            revert_result = reverter.revert_import()
+            
+            if revert_result['success']:
+                import_tracker.can_revert = False
+                import_tracker.reverted_at = timezone.now()
+                import_tracker.reverted_by = user
+                import_tracker.import_status = 'reverted'
+                import_tracker.save()
+                
+                return Response({
+                    'success': True,
+                    'message': 'Import successfully reverted',
+                    'stats': revert_result['stats']
+                }, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    'success': False,
+                    'error': revert_result.get('error', 'Unknown error during reversion'),
+                    'details': revert_result.get('details', {})
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'Error during import reversion: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
+    def user_import_stats(self, request):
+        """
+        Get import statistics for the current user
+        
+        Returns:
+            Response: Import statistics including counts and summaries
+        """
+        user = request.user
+        
+        # Get queryset based on permissions
+        if user.is_staff:
+            queryset = ImportTracker.objects.all()
+        else:
+            queryset = ImportTracker.objects.filter(user=user)
+        
+        # Calculate statistics
+        total_imports = queryset.count()
+        completed_imports = queryset.filter(import_status='completed').count()
+        failed_imports = queryset.filter(import_status='failed').count()
+        reverted_imports = queryset.filter(import_status='reverted').count()
+        in_progress_imports = queryset.filter(import_status='in_progress').count()
+        
+        # Calculate total objects and files
+        total_objects_created = sum(queryset.values_list('total_objects_created', flat=True))
+        total_files_imported = sum(queryset.values_list('total_files_imported', flat=True))
+        
+        # Get recent imports
+        recent_imports = queryset.order_by('-import_started_at')[:5]
+        recent_serializer = ImportTrackerListSerializer(recent_imports, many=True)
+        
+        return Response({
+            'stats': {
+                'total_imports': total_imports,
+                'completed_imports': completed_imports,
+                'failed_imports': failed_imports,
+                'reverted_imports': reverted_imports,
+                'in_progress_imports': in_progress_imports,
+                'total_objects_created': total_objects_created,
+                'total_files_imported': total_files_imported,
+                'success_rate': round((completed_imports / total_imports * 100), 2) if total_imports > 0 else 0
+            },
+            'recent_imports': recent_serializer.data
+        }, status=status.HTTP_200_OK)

@@ -17,6 +17,95 @@ from simple_history.models import HistoricalRecords
 
 # Create your models here.
 
+
+class ImportTracker(models.Model):
+    """Track user data imports for rollback functionality"""
+    import_id = models.UUIDField(unique=True, db_index=True)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="import_trackers")
+    import_started_at = models.DateTimeField(auto_now_add=True)
+    import_completed_at = models.DateTimeField(blank=True, null=True)
+    import_status = models.CharField(max_length=50, choices=[
+        ('in_progress', 'In Progress'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+        ('reverted', 'Reverted')
+    ], default='in_progress')
+    archive_path = models.TextField()
+    archive_size_mb = models.FloatField(blank=True, null=True)
+    import_options = models.JSONField(default=dict)
+    metadata = models.JSONField(default=dict)
+    
+    # Statistics
+    total_objects_created = models.IntegerField(default=0)
+    total_files_imported = models.IntegerField(default=0)
+    total_relationships_created = models.IntegerField(default=0)
+    
+    # Rollback info
+    can_revert = models.BooleanField(default=True)
+    revert_reason = models.TextField(blank=True, null=True)
+    reverted_at = models.DateTimeField(blank=True, null=True)
+    reverted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, 
+                                   related_name="reverted_imports", blank=True, null=True)
+    
+    class Meta:
+        app_label = "cc"
+        ordering = ["-import_started_at"]
+        
+    def __str__(self):
+        return f"Import {self.import_id} - {self.user.username} - {self.import_status}"
+
+
+class ImportedObject(models.Model):
+    """Track individual objects created during import"""
+    import_tracker = models.ForeignKey(ImportTracker, on_delete=models.CASCADE, related_name="imported_objects")
+    model_name = models.CharField(max_length=100)
+    object_id = models.IntegerField()
+    original_id = models.IntegerField(blank=True, null=True)  # Original ID from export
+    object_data = models.JSONField(default=dict)  # Store object data for rollback
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        app_label = "cc"
+        unique_together = ['import_tracker', 'model_name', 'object_id']
+        ordering = ["created_at"]
+        
+    def __str__(self):
+        return f"{self.model_name}({self.object_id}) from import {self.import_tracker.import_id}"
+
+
+class ImportedFile(models.Model):
+    """Track files imported during import"""
+    import_tracker = models.ForeignKey(ImportTracker, on_delete=models.CASCADE, related_name="imported_files")
+    file_path = models.TextField()
+    original_name = models.CharField(max_length=255)
+    file_size_bytes = models.BigIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        app_label = "cc"
+        ordering = ["created_at"]
+        
+    def __str__(self):
+        return f"File {self.original_name} from import {self.import_tracker.import_id}"
+
+
+class ImportedRelationship(models.Model):
+    """Track many-to-many relationships created during import"""
+    import_tracker = models.ForeignKey(ImportTracker, on_delete=models.CASCADE, related_name="imported_relationships")
+    from_model = models.CharField(max_length=100)
+    from_object_id = models.IntegerField()
+    to_model = models.CharField(max_length=100)
+    to_object_id = models.IntegerField()
+    relationship_field = models.CharField(max_length=100)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        app_label = "cc"
+        ordering = ["created_at"]
+        
+    def __str__(self):
+        return f"{self.from_model}({self.from_object_id}) -> {self.to_model}({self.to_object_id})"
+
 class Project(models.Model):
     history = HistoricalRecords()
     project_name = models.CharField(max_length=255)

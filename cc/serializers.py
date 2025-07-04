@@ -1432,7 +1432,6 @@ class ImportTrackerSerializer(ModelSerializer):
     
     user_username = CharField(source='user.username', read_only=True)
     user_full_name = SerializerMethodField()
-    archive_size_mb = SerializerMethodField()
     duration = SerializerMethodField()
     imported_objects = ImportedObjectSerializer(many=True, read_only=True)
     imported_files = ImportedFileSerializer(many=True, read_only=True)
@@ -1443,7 +1442,7 @@ class ImportTrackerSerializer(ModelSerializer):
         model = ImportTracker
         fields = [
             'id', 'import_id', 'user', 'user_username', 'user_full_name',
-            'archive_path', 'archive_size_bytes', 'archive_size_mb',
+            'archive_path', 'archive_size_mb',
             'import_status', 'import_options', 'metadata',
             'import_started_at', 'import_completed_at', 'duration',
             'total_objects_created', 'total_files_imported', 'total_relationships_created',
@@ -1451,7 +1450,7 @@ class ImportTrackerSerializer(ModelSerializer):
             'imported_objects', 'imported_files', 'imported_relationships', 'stats'
         ]
         read_only_fields = [
-            'id', 'import_id', 'user_username', 'user_full_name', 'archive_size_mb', 
+            'id', 'import_id', 'user_username', 'user_full_name', 
             'duration', 'imported_objects', 'imported_files', 'imported_relationships', 'stats'
         ]
     
@@ -1459,12 +1458,6 @@ class ImportTrackerSerializer(ModelSerializer):
         """Get user's full name"""
         if obj.user:
             return f"{obj.user.first_name} {obj.user.last_name}".strip() or obj.user.username
-        return None
-    
-    def get_archive_size_mb(self, obj):
-        """Convert archive size to MB"""
-        if obj.archive_size_bytes:
-            return round(obj.archive_size_bytes / (1024 * 1024), 2)
         return None
     
     def get_duration(self, obj):
@@ -1532,7 +1525,6 @@ class ImportTrackerListSerializer(ModelSerializer):
     
     user_username = CharField(source='user.username', read_only=True)
     user_full_name = SerializerMethodField()
-    archive_size_mb = SerializerMethodField()
     duration = SerializerMethodField()
     status_color = SerializerMethodField()
     
@@ -1551,12 +1543,6 @@ class ImportTrackerListSerializer(ModelSerializer):
         """Get user's full name"""
         if obj.user:
             return f"{obj.user.first_name} {obj.user.last_name}".strip() or obj.user.username
-        return None
-    
-    def get_archive_size_mb(self, obj):
-        """Convert archive size to MB"""
-        if obj.archive_size_bytes:
-            return round(obj.archive_size_bytes / (1024 * 1024), 2)
         return None
     
     def get_duration(self, obj):

@@ -8600,6 +8600,7 @@ class ImportTrackerViewSet(ModelViewSet):
     ordering_fields = ['import_started_at', 'import_completed_at', 'archive_size_bytes']
     ordering = ['-import_started_at']
     filterset_fields = ['import_status', 'user', 'can_revert']
+    pagination_class = LimitOffsetPagination
     
     def get_queryset(self):
         """Filter import tracking records by user permissions"""

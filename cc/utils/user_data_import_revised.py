@@ -994,7 +994,7 @@ class UserDataImportDryRun:
         
         # Detect and extract
         archive_format = self._detect_archive_format()
-        self._extract_archive_safe()
+        self._extract_archive_safe(archive_format)
         
         # Validate structure
         self.sqlite_path = os.path.join(self.temp_dir, 'user_data.sqlite')
@@ -1032,11 +1032,9 @@ class UserDataImportDryRun:
         
         raise ValueError(f"Cannot determine archive format for file: {self.import_path}")
     
-    def _extract_archive_safe(self):
+    def _extract_archive_safe(self, archive_format: str):
         """Extract archive safely"""
         import tarfile
-        
-        archive_format = self.analysis_report['archive_info']['format']
         
         if archive_format == 'zip':
             with zipfile.ZipFile(self.import_path, 'r') as zip_ref:

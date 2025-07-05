@@ -509,10 +509,7 @@ class UserDataImporter:
                 
                 reagent = Reagent.objects.create(
                     name=reagent_name,
-                    unit=row['unit'],
-                    description=row.get('description', ''),
-                    cas_number=row.get('cas_number', ''),
-                    # Add other reagent fields as needed
+                    unit=row['unit']
                 )
                 
                 # Track created reagent
@@ -541,10 +538,7 @@ class UserDataImporter:
                     
                     reagent = Reagent.objects.create(
                         name=reagent_name,
-                        unit=row['unit'],
-                        description=row.get('description', ''),
-                        cas_number=row.get('cas_number', ''),
-                        # Add other reagent fields as needed
+                        unit=row['unit']
                     )
                     
                     # Track created reagent
@@ -608,8 +602,10 @@ class UserDataImporter:
                 # Verify the nominated storage object exists and user has access
                 try:
                     storage_obj = StorageObject.objects.get(id=nominated_storage_id)
-                    # Check if user has access to this storage object
-                    if storage_obj.user != self.target_user and not storage_obj.access_users.filter(id=self.target_user.id).exists():
+                    # Check if user has access to this storage object (via ownership or lab group membership)
+                    has_access = (storage_obj.user == self.target_user or 
+                                storage_obj.access_lab_groups.filter(users=self.target_user).exists())
+                    if not has_access:
                         skipped_count += 1
                         self.stats.setdefault('skipped_stored_reagents', []).append(
                             f"Stored reagent skipped - no access to nominated storage object {nominated_storage_id}"
@@ -633,7 +629,7 @@ class UserDataImporter:
                 notes=notes,
                 barcode=row['barcode'],
                 png_base64=row['png_base64'],
-                shareable=bool(row.get('shareable', True)),
+                shareable=bool(row['shareable']) if row['shareable'] is not None else True,
                 user=self.target_user,
                 # Add other fields as needed from the export schema
             )
@@ -1049,7 +1045,7 @@ class UserDataImporter:
                 instrument = Instrument.objects.create(
                     name=instrument_name,
                     description=row['description'],
-                    accepts_bookings=bool(row.get('accepts_bookings', True)),
+                    accepts_bookings=True,  # Default value since not exported in current schema
                     # Add other instrument fields as needed
                 )
                 self._track_created_object(instrument, row['id'])

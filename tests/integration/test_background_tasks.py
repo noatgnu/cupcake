@@ -49,6 +49,7 @@ class TestBackgroundTasks:
             'rq:queue:llama',
             'rq:queue:export',
             'rq:queue:import-data',
+            'rq:queue:import-data',
             'rq:queue:ocr',
             'rq:queue:maintenance'
         ]

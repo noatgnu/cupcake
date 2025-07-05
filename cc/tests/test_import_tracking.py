@@ -143,6 +143,9 @@ class ImportTrackerFunctionalityTest(TestCase):
         
         # Mock importer for testing tracking functionality
         self.importer = UserDataImporter(self.user, self.archive_path)
+        
+        # Mock importer for bulk transfer mode testing
+        self.bulk_importer = UserDataImporter(self.user, self.archive_path, bulk_transfer_mode=True)
     
     def test_initialize_import_tracker(self):
         """Test import tracker initialization"""
@@ -258,6 +261,53 @@ class ImportTrackerFunctionalityTest(TestCase):
         self.importer.import_tracker.refresh_from_db()
         self.assertEqual(self.importer.import_tracker.import_status, 'failed')
         self.assertIsNotNone(self.importer.import_tracker.import_completed_at)
+    
+    def test_bulk_transfer_mode_initialization(self):
+        """Test that bulk transfer mode is properly initialized"""
+        # Test bulk transfer mode enabled
+        self.assertTrue(self.bulk_importer.bulk_transfer_mode)
+        
+        # Test normal mode
+        self.assertFalse(self.importer.bulk_transfer_mode)
+    
+    def test_bulk_transfer_mode_tracking_same_as_normal(self):
+        """Test that bulk transfer mode uses same tracking as normal mode"""
+        # Initialize both trackers
+        self.importer._initialize_import_tracker()
+        self.bulk_importer._initialize_import_tracker()
+        
+        # Create and track objects in both modes
+        protocol1 = ProtocolModel.objects.create(
+            protocol_title='Normal Mode Protocol',
+            user=self.user
+        )
+        protocol2 = ProtocolModel.objects.create(
+            protocol_title='Bulk Mode Protocol',
+            user=self.user
+        )
+        
+        self.importer._track_created_object(protocol1, original_id=123)
+        self.bulk_importer._track_created_object(protocol2, original_id=456)
+        
+        # Verify both tracking systems work the same way
+        self.importer.import_tracker.refresh_from_db()
+        self.bulk_importer.import_tracker.refresh_from_db()
+        
+        self.assertEqual(self.importer.import_tracker.total_objects_created, 1)
+        self.assertEqual(self.bulk_importer.import_tracker.total_objects_created, 1)
+        
+        # Verify tracked objects exist for both
+        normal_tracked = ImportedObject.objects.get(
+            import_tracker=self.importer.import_tracker,
+            object_id=protocol1.id
+        )
+        bulk_tracked = ImportedObject.objects.get(
+            import_tracker=self.bulk_importer.import_tracker,
+            object_id=protocol2.id
+        )
+        
+        self.assertEqual(normal_tracked.model_name, 'ProtocolModel')
+        self.assertEqual(bulk_tracked.model_name, 'ProtocolModel')
     
     def test_initialize_import_tracker_missing_archive_fails(self):
         """Test that missing archive file causes proper failure (no graceful fallback)"""
@@ -691,6 +741,7 @@ class IntegrationTest(TransactionTestCase):
     @patch.object(UserDataImporter, '_import_lab_groups')
     @patch.object(UserDataImporter, '_import_storage_objects')
     @patch.object(UserDataImporter, '_import_reagents')
+    @patch.object(UserDataImporter, '_import_stored_reagents')
     @patch.object(UserDataImporter, '_import_projects')
     @patch.object(UserDataImporter, '_import_protocols_accurate')
     @patch.object(UserDataImporter, '_import_sessions_accurate')
@@ -731,7 +782,7 @@ class IntegrationTest(TransactionTestCase):
             )
             importer._track_created_object(project, original_id=456)
         
-        mock_methods[9].side_effect = mock_protocol_import  # _import_protocols_accurate
+        mock_methods[10].side_effect = mock_protocol_import  # _import_protocols_accurate
         
         # Run the import
         result = importer.import_user_data()

@@ -2064,6 +2064,8 @@ class UserViewSet(ModelViewSet, FilterMixin):
         Request Data:
             upload_id (str): ID of completed chunked upload
             import_options (dict): Import configuration options (optional)
+            storage_object_mappings (dict): Map of original storage IDs to nominated storage IDs (optional)
+            bulk_transfer_mode (bool): If True, import everything as-is without user-centric modifications (optional)
 
         Returns:
             Response: 200 OK when import task is queued
@@ -2071,13 +2073,38 @@ class UserViewSet(ModelViewSet, FilterMixin):
         user = self.request.user
         chunked_upload_id = request.data['upload_id']
         import_options = request.data.get('import_options', None)
+        storage_object_mappings = request.data.get('storage_object_mappings', None)
+        bulk_transfer_mode = request.data.get('bulk_transfer_mode', False)
         custom_id = self.request.META.get('HTTP_X_CUPCAKE_INSTANCE_ID', None)
         chunked_upload = ChunkedUpload.objects.get(id=chunked_upload_id, user=user)
         if chunked_upload.completed_at:
             file_path = chunked_upload.file.path
-            import_data.delay(user.id, file_path, custom_id, import_options)
+            import_data.delay(user.id, file_path, custom_id, import_options, storage_object_mappings, bulk_transfer_mode)
             return Response(status=status.HTTP_200_OK)
         return Response(status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['get'])
+    def get_available_storage_objects(self, request):
+        """
+        Get available storage objects for the current user for import nomination.
+        
+        Returns:
+            Response: List of storage objects the user can access
+        """
+        user = self.request.user
+        
+        # Get storage objects the user owns or has access to via lab groups
+        from cc.models import StorageObject
+        from django.db.models import Q
+        accessible_storage = StorageObject.objects.filter(
+            Q(user=user) | Q(access_lab_groups__users=user)
+        ).distinct().values(
+            'id', 'object_name', 'object_type', 'object_description'
+        )
+        
+        return Response({
+            'storage_objects': list(accessible_storage)
+        }, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['post'])
     def dry_run_import_user_data(self, request):
@@ -2088,6 +2115,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
         user = self.request.user
         chunked_upload_id = request.data['upload_id']
         import_options = request.data.get('import_options', None)
+        bulk_transfer_mode = request.data.get('bulk_transfer_mode', False)
         custom_id = self.request.META.get('HTTP_X_CUPCAKE_INSTANCE_ID', None)
 
         try:
@@ -2101,7 +2129,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
         if chunked_upload.completed_at:
             # get completed file path
             file_path = chunked_upload.file.path
-            dry_run_import_data.delay(user.id, file_path, custom_id, import_options)
+            dry_run_import_data.delay(user.id, file_path, custom_id, import_options, bulk_transfer_mode)
             return Response({
                 "message": "Dry run analysis started",
                 "instance_id": custom_id

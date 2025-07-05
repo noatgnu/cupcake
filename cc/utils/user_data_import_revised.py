@@ -71,13 +71,17 @@ class UserDataImporter:
     COMPLETELY REVISED comprehensive user data importer with exact field mapping
     """
     
-    def __init__(self, target_user: User, import_path: str, import_options: dict = None, progress_callback=None):
+    def __init__(self, target_user: User, import_path: str, import_options: dict = None, progress_callback=None, storage_object_mappings: dict = None, bulk_transfer_mode: bool = False):
         self.target_user = target_user
         self.import_path = import_path
         self.temp_dir = tempfile.mkdtemp(prefix=f'cupcake_import_{target_user.username}_')
         self.sqlite_path = None
         self.media_dir = None
         self.progress_callback = progress_callback
+        self.bulk_transfer_mode = bulk_transfer_mode
+        
+        # Storage object mappings for stored reagents: {original_storage_id: nominated_storage_id}
+        self.storage_object_mappings = storage_object_mappings or {}
         
         # Import options for selective import
         self.import_options = import_options or {
@@ -310,6 +314,7 @@ class UserDataImporter:
                     self._send_progress(25, "Importing storage and reagents...")
                     self._import_storage_objects()
                     self._import_reagents()
+                    self._import_stored_reagents()
                 
                 if self.import_options.get('projects', True):
                     self._send_progress(35, "Importing projects...")
@@ -330,6 +335,10 @@ class UserDataImporter:
                 if self.import_options.get('instruments', True):
                     self._send_progress(80, "Importing instruments...")
                     self._import_instruments_accurate()
+                
+                # Import instrument usage after both annotations and instruments are imported
+                self._send_progress(82, "Importing instrument usage...")
+                self._import_instrument_usage_and_jobs()
                 
                 self._send_progress(85, "Importing tags and relationships...")
                 self._import_tags_and_relationships()
@@ -486,21 +495,155 @@ class UserDataImporter:
         self.stats['models_imported'] += 1
     
     def _import_reagents(self):
-        """Import reagents"""
+        """Import reagents - behavior depends on bulk_transfer_mode"""
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM export_reagents")
         
+        imported_count = 0
+        skipped_count = 0
+        
         for row in cursor.fetchall():
-            # Check if reagent already exists (by name and unit)
-            reagent, created = Reagent.objects.get_or_create(
-                name=row['name'],
-                unit=row['unit'],
-                defaults={}
+            if self.bulk_transfer_mode:
+                # In bulk transfer mode, always import reagents as-is
+                reagent_name = row['name'] or "Imported Reagent"
+                
+                reagent = Reagent.objects.create(
+                    name=reagent_name,
+                    unit=row['unit'],
+                    description=row.get('description', ''),
+                    cas_number=row.get('cas_number', ''),
+                    # Add other reagent fields as needed
+                )
+                
+                # Track created reagent
+                self._track_created_object(reagent, row['id'])
+                self.id_mappings['reagents'][row['id']] = reagent.id
+                imported_count += 1
+            else:
+                # User-centric mode: check if reagent already exists (by name and unit)
+                existing_reagent = Reagent.objects.filter(
+                    name=row['name'],
+                    unit=row['unit']
+                ).first()
+                
+                if existing_reagent:
+                    # Use existing reagent
+                    self.id_mappings['reagents'][row['id']] = existing_reagent.id
+                    skipped_count += 1
+                    self.stats.setdefault('skipped_reagents', []).append(
+                        f"Reagent '{row['name']}' ({row['unit']}) already exists - using existing"
+                    )
+                else:
+                    # Create new reagent with import marking
+                    reagent_name = row['name']
+                    if reagent_name and not reagent_name.startswith('[IMPORTED]'):
+                        reagent_name = f"[IMPORTED] {reagent_name}"
+                    
+                    reagent = Reagent.objects.create(
+                        name=reagent_name,
+                        unit=row['unit'],
+                        description=row.get('description', ''),
+                        cas_number=row.get('cas_number', ''),
+                        # Add other reagent fields as needed
+                    )
+                    
+                    # Track created reagent
+                    self._track_created_object(reagent, row['id'])
+                    self.id_mappings['reagents'][row['id']] = reagent.id
+                    imported_count += 1
+        
+        print(f"Imported {imported_count} reagents, skipped {skipped_count} existing reagents")
+        self.stats['models_imported'] += 1
+    
+    def _import_stored_reagents(self):
+        """Import stored reagents - behavior depends on bulk_transfer_mode"""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM export_stored_reagents")
+        
+        imported_count = 0
+        skipped_count = 0
+        
+        for row in cursor.fetchall():
+            reagent_id = row['reagent_id']
+            original_storage_id = row['storage_object_id']
+            
+            # Check if we have mappings for reagent
+            if reagent_id not in self.id_mappings.get('reagents', {}):
+                skipped_count += 1
+                self.stats.setdefault('skipped_stored_reagents', []).append(
+                    f"Stored reagent skipped - reagent ID {reagent_id} not found"
+                )
+                continue
+            
+            if self.bulk_transfer_mode:
+                # In bulk transfer mode, use original storage objects as-is
+                target_storage_id = self.id_mappings.get('storage_objects', {}).get(original_storage_id)
+                if not target_storage_id:
+                    skipped_count += 1
+                    self.stats.setdefault('skipped_stored_reagents', []).append(
+                        f"Stored reagent skipped - storage object {original_storage_id} not imported"
+                    )
+                    continue
+                
+                notes = row['notes'] or "Imported Stored Reagent"
+            else:
+                # User-centric mode: require storage object nomination
+                if not hasattr(self, 'storage_object_mappings') or not self.storage_object_mappings:
+                    # Don't return early, just skip this item and log the issue
+                    skipped_count += 1
+                    self.stats.setdefault('skipped_stored_reagents', []).append(
+                        f"Stored reagent skipped - no storage object mappings provided"
+                    )
+                    continue
+
+                # Get the user-nominated storage object for this original storage
+                nominated_storage_id = self.storage_object_mappings.get(str(original_storage_id))
+                if not nominated_storage_id:
+                    skipped_count += 1
+                    self.stats.setdefault('skipped_stored_reagents', []).append(
+                        f"Stored reagent skipped - no storage object nominated for original storage {original_storage_id}"
+                    )
+                    continue
+                
+                # Verify the nominated storage object exists and user has access
+                try:
+                    storage_obj = StorageObject.objects.get(id=nominated_storage_id)
+                    # Check if user has access to this storage object
+                    if storage_obj.user != self.target_user and not storage_obj.access_users.filter(id=self.target_user.id).exists():
+                        skipped_count += 1
+                        self.stats.setdefault('skipped_stored_reagents', []).append(
+                            f"Stored reagent skipped - no access to nominated storage object {nominated_storage_id}"
+                        )
+                        continue
+                except StorageObject.DoesNotExist:
+                    skipped_count += 1
+                    self.stats.setdefault('skipped_stored_reagents', []).append(
+                        f"Stored reagent skipped - nominated storage object {nominated_storage_id} does not exist"
+                    )
+                    continue
+                
+                target_storage_id = nominated_storage_id
+                notes = f"[IMPORTED] {row['notes']}" if row['notes'] else "[IMPORTED] Stored Reagent"
+            
+            # Create the stored reagent
+            stored_reagent = StoredReagent.objects.create(
+                reagent_id=self.id_mappings['reagents'][reagent_id],
+                storage_object_id=target_storage_id,
+                quantity=row['quantity'],
+                notes=notes,
+                barcode=row['barcode'],
+                png_base64=row['png_base64'],
+                shareable=bool(row.get('shareable', True)),
+                user=self.target_user,
+                # Add other fields as needed from the export schema
             )
             
-            self.id_mappings['reagents'][row['id']] = reagent.id
+            # Track created stored reagent
+            self._track_created_object(stored_reagent, row['id'])
+            self.id_mappings.setdefault('stored_reagents', {})[row['id']] = stored_reagent.id
+            imported_count += 1
         
-        print("Imported reagents")
+        print(f"Imported {imported_count} stored reagents, skipped {skipped_count} stored reagents")
         self.stats['models_imported'] += 1
     
     def _import_projects(self):
@@ -528,10 +671,17 @@ class UserDataImporter:
         print("Importing protocols...")
         
         for row in cursor.fetchall():
+            # Add import marking to protocol title
+            protocol_title = row['protocol_title']
+            if protocol_title and not protocol_title.startswith('[IMPORTED]'):
+                protocol_title = f"[IMPORTED] {protocol_title}"
+            elif not protocol_title:
+                protocol_title = "[IMPORTED] Protocol"
+            
             # Create protocol with exact field mapping
             protocol = ProtocolModel.objects.create(
                 protocol_id=row['protocol_id'],
-                protocol_title=row['protocol_title'],  # Exact field name
+                protocol_title=protocol_title,  # Exact field name
                 protocol_description=row['protocol_description'],
                 protocol_url=row['protocol_url'],
                 protocol_version_uri=row['protocol_version_uri'],
@@ -552,11 +702,12 @@ class UserDataImporter:
         cursor.execute("SELECT * FROM export_protocol_sections")
         for row in cursor.fetchall():
             if row['protocol_id'] in self.id_mappings['protocols']:
-                ProtocolSection.objects.create(
+                section = ProtocolSection.objects.create(
                     section_description=row['section_description'],
                     section_duration=row['section_duration'],
                     protocol_id=self.id_mappings['protocols'][row['protocol_id']],
                 )
+                self._track_created_object(section, row['id'])
         
         # Import protocol steps
         cursor.execute("SELECT * FROM export_protocol_steps")
@@ -575,6 +726,7 @@ class UserDataImporter:
                 )
                 step_mapping[row['id']] = step.id
                 self.id_mappings['steps'][row['id']] = step.id
+                self._track_created_object(step, row['id'])
         
         # Second pass: update foreign key references
         cursor.execute("SELECT * FROM export_protocol_steps")
@@ -640,15 +792,25 @@ class UserDataImporter:
         
         for row in cursor.fetchall():
             # Generate new UUID for unique_id to avoid conflicts
+            # Add import marking to session name
+            session_name = row['name']
+            if session_name and not session_name.startswith('[IMPORTED]'):
+                session_name = f"[IMPORTED] {session_name}"
+            elif not session_name:
+                session_name = "[IMPORTED] Session"
+            
             session = Session.objects.create(
                 unique_id=uuid.uuid4(),  # Generate new UUID
-                name=row['name'],
+                name=session_name,
                 enabled=bool(row['enabled']),
                 processing=bool(row['processing']),
                 started_at=datetime.fromisoformat(row['started_at']) if row['started_at'] else None,
                 ended_at=datetime.fromisoformat(row['ended_at']) if row['ended_at'] else None,
                 user=self.target_user,
             )
+            
+            # Track created session
+            self._track_created_object(session, row['id'])
             
             self.id_mappings['sessions'][row['id']] = session.id
         
@@ -714,10 +876,61 @@ class UserDataImporter:
         # Import annotations
         cursor.execute("SELECT * FROM export_annotations")
         for row in cursor.fetchall():
+            annotation_text = row['annotation']
+            annotation_type = row['annotation_type']
+            annotation_name = row['annotation_name']
+            converted_from_instrument = False
+            
+            # Handle instrument annotation conversion (only in user-centric mode)
+            if annotation_type == 'instrument' and not self.bulk_transfer_mode:
+                # Check if instruments are allowed to be imported
+                if not self.import_options.get('instruments', True):
+                    # Convert to text annotation with special marking
+                    converted_from_instrument = True
+                    annotation_type = 'text'
+                    
+                    # Get instrument usage details if available to include in text
+                    instrument_usage_text = self._get_instrument_usage_details(row['id'])
+                    if instrument_usage_text:
+                        annotation_text = f"[IMPORTED INSTRUMENT BOOKING]\n\n{instrument_usage_text}\n\nOriginal annotation: {annotation_text}"
+                    else:
+                        annotation_text = f"[IMPORTED INSTRUMENT BOOKING]\n\nThis was originally an instrument booking annotation.\n\nOriginal annotation: {annotation_text}"
+                    
+                    if annotation_name:
+                        annotation_name = f"[IMPORTED] {annotation_name}"
+                    else:
+                        annotation_name = "[IMPORTED] Converted Instrument Booking"
+                else:
+                    # Check if the referenced instrument exists
+                    referenced_instrument = self._get_annotation_referenced_instrument(row['id'])
+                    if referenced_instrument and not self._instrument_exists_or_importable(referenced_instrument):
+                        # Convert to text if instrument doesn't exist
+                        converted_from_instrument = True
+                        annotation_type = 'text'
+                        
+                        instrument_usage_text = self._get_instrument_usage_details(row['id'])
+                        instrument_info = f"Instrument: {referenced_instrument.get('name', 'Unknown')}"
+                        if instrument_usage_text:
+                            annotation_text = f"[IMPORTED INSTRUMENT BOOKING - INSTRUMENT NOT AVAILABLE]\n\n{instrument_info}\n\n{instrument_usage_text}\n\nOriginal annotation: {annotation_text}"
+                        else:
+                            annotation_text = f"[IMPORTED INSTRUMENT BOOKING - INSTRUMENT NOT AVAILABLE]\n\n{instrument_info}\n\nOriginal annotation: {annotation_text}"
+                        
+                        if annotation_name:
+                            annotation_name = f"[IMPORTED - NO INSTRUMENT] {annotation_name}"
+                        else:
+                            annotation_name = "[IMPORTED - NO INSTRUMENT] Converted Instrument Booking"
+            
+            # Add import marking to annotation name for easy identification (only in user-centric mode)
+            if not self.bulk_transfer_mode:
+                if not converted_from_instrument and annotation_name and not annotation_name.startswith('[IMPORTED]'):
+                    annotation_name = f"[IMPORTED] {annotation_name}"
+                elif not converted_from_instrument and not annotation_name:
+                    annotation_name = "[IMPORTED] Annotation"
+            
             annotation = Annotation.objects.create(
-                annotation=row['annotation'],
-                annotation_type=row['annotation_type'],
-                annotation_name=row['annotation_name'],
+                annotation=annotation_text,
+                annotation_type=annotation_type,
+                annotation_name=annotation_name,
                 transcribed=bool(row['transcribed']),
                 transcription=row['transcription'],
                 language=row['language'],
@@ -732,16 +945,163 @@ class UserDataImporter:
                 # file will be handled during media import
             )
             
+            # Track the created annotation
+            self._track_created_object(annotation, row['id'])
+            
             self.id_mappings['annotations'][row['id']] = annotation.id
+            
+            # Log conversion if it happened
+            if converted_from_instrument:
+                self.stats.setdefault('conversions', []).append(
+                    f"Converted instrument annotation '{annotation_name}' to text annotation"
+                )
         
         print("Imported annotations and folders")
         self.stats['models_imported'] += 2
     
+    def _get_instrument_usage_details(self, annotation_id):
+        """Get instrument usage details for an annotation"""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT iu.*, i.name as instrument_name, i.description as instrument_description
+            FROM export_instrument_usage iu
+            LEFT JOIN export_instruments i ON iu.instrument_id = i.id
+            WHERE iu.annotation_id = ?
+        """, (annotation_id,))
+        
+        usage_row = cursor.fetchone()
+        if not usage_row:
+            return None
+        
+        details = []
+        details.append(f"Instrument: {usage_row['instrument_name'] or 'Unknown'}")
+        
+        if usage_row['instrument_description']:
+            details.append(f"Description: {usage_row['instrument_description']}")
+        
+        if usage_row['time_started']:
+            details.append(f"Start Time: {usage_row['time_started']}")
+        
+        if usage_row['time_ended']:
+            details.append(f"End Time: {usage_row['time_ended']}")
+        
+        if usage_row['description']:
+            details.append(f"Usage Description: {usage_row['description']}")
+        
+        if usage_row['approved']:
+            details.append("Status: Approved")
+        
+        if usage_row['maintenance']:
+            details.append("Type: Maintenance")
+        
+        return "\n".join(details)
+    
+    def _get_annotation_referenced_instrument(self, annotation_id):
+        """Get the instrument referenced by an annotation"""
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT i.*
+            FROM export_instrument_usage iu
+            JOIN export_instruments i ON iu.instrument_id = i.id
+            WHERE iu.annotation_id = ?
+        """, (annotation_id,))
+        
+        instrument_row = cursor.fetchone()
+        if instrument_row:
+            return dict(instrument_row)
+        return None
+    
+    def _instrument_exists_or_importable(self, instrument_data):
+        """Check if an instrument exists in the system or can be imported"""
+        # Check if instrument exists by name
+        instrument_name = instrument_data.get('name')
+        if instrument_name:
+            existing = Instrument.objects.filter(name=instrument_name).exists()
+            if existing:
+                return True
+        
+        # Check if instruments are set to be imported
+        if self.import_options.get('instruments', True):
+            # In this case, the instrument would be imported, so it would be available
+            return True
+        
+        return False
+    
     def _import_instruments_accurate(self):
-        """Import instruments (limited - only metadata, not actual instruments)"""
-        # Note: In a real import, you might want to skip instruments or handle them specially
-        # since they're typically system-wide resources
-        print("Skipped instrument import (system resources)")
+        """Import instruments - behavior depends on bulk_transfer_mode"""
+        # Import instruments if allowed by options
+        if self.import_options.get('instruments', True):
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT * FROM export_instruments")
+            
+            for row in cursor.fetchall():
+                if self.bulk_transfer_mode:
+                    # In bulk transfer mode, import instruments as-is
+                    instrument_name = row['name'] or "Imported Instrument"
+                else:
+                    # User-centric mode: add import marking
+                    instrument_name = row['name']
+                    if instrument_name and not instrument_name.startswith('[IMPORTED]'):
+                        instrument_name = f"[IMPORTED] {instrument_name}"
+                    elif not instrument_name:
+                        instrument_name = "[IMPORTED] Instrument"
+                
+                instrument = Instrument.objects.create(
+                    name=instrument_name,
+                    description=row['description'],
+                    accepts_bookings=bool(row.get('accepts_bookings', True)),
+                    # Add other instrument fields as needed
+                )
+                self._track_created_object(instrument, row['id'])
+                self.id_mappings['instruments'][row['id']] = instrument.id
+            
+            print(f"Imported {len(self.id_mappings['instruments'])} instruments")
+        else:
+            print("Skipped instrument import (disabled in options)")
+        
+        self.stats['models_imported'] += 1
+    
+    def _import_instrument_usage_and_jobs(self):
+        """Import instrument usage records, converting to annotations if needed"""
+        cursor = self.conn.cursor()
+        
+        # Import instrument usage - but only if we haven't converted these to text annotations
+        cursor.execute("SELECT * FROM export_instrument_usage")
+        for row in cursor.fetchall():
+            annotation_id = row['annotation_id']
+            instrument_id = row['instrument_id']
+            
+            # Check if this annotation still exists and is of type 'instrument'
+            if (annotation_id in self.id_mappings['annotations'] and 
+                instrument_id in self.id_mappings.get('instruments', {})):
+                
+                annotation = Annotation.objects.get(id=self.id_mappings['annotations'][annotation_id])
+                
+                if annotation.annotation_type == 'instrument':
+                    # Create the instrument usage
+                    usage = InstrumentUsage.objects.create(
+                        instrument_id=self.id_mappings['instruments'][instrument_id],
+                        annotation=annotation,
+                        time_started=datetime.fromisoformat(row['time_started']) if row['time_started'] else None,
+                        time_ended=datetime.fromisoformat(row['time_ended']) if row['time_ended'] else None,
+                        approved=bool(row['approved']),
+                        maintenance=bool(row['maintenance']),
+                        description=row['description'],
+                        user=self.target_user,
+                    )
+                    self._track_created_object(usage, row['id'])
+                else:
+                    # This was converted to text, so we don't create usage
+                    self.stats.setdefault('skipped_usage', []).append(
+                        f"Skipped instrument usage for converted annotation {annotation_id}"
+                    )
+            else:
+                # Either annotation doesn't exist or instrument doesn't exist
+                self.stats.setdefault('skipped_usage', []).append(
+                    f"Skipped instrument usage - annotation {annotation_id} or instrument {instrument_id} not found"
+                )
+        
+        print("Imported instrument usage records")
         self.stats['models_imported'] += 1
     
     def _import_tags_and_relationships(self):
@@ -822,33 +1182,33 @@ class UserDataImporter:
                 src_path = os.path.join(root, file)
                 rel_path = os.path.relpath(src_path, self.media_dir)
                 dst_path = os.path.join(settings.MEDIA_ROOT, rel_path)
-                
+
                 # Create destination directory
                 os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-                
+
                 # Copy file
                 shutil.copy2(src_path, dst_path)
-                
+
                 # Track copied files for linking
                 copied_files[file] = rel_path
                 self.stats['files_imported'] += 1
-                
+
                 # Track file for rollback
                 self._track_created_file(rel_path, file)
-        
+
         # Now link files to annotation records
         cursor = self.conn.cursor()
         cursor.execute("SELECT id, file FROM export_annotations WHERE file IS NOT NULL AND file != ''")
-        
+
         files_linked = 0
         for row in cursor.fetchall():
             original_id = row['id']
             original_file_path = row['file']
-            
+
             if original_id in self.id_mappings['annotations']:
                 # Extract filename from original path
                 filename = os.path.basename(original_file_path)
-                
+
                 if filename in copied_files:
                     # Update annotation with correct file path
                     try:
@@ -860,7 +1220,7 @@ class UserDataImporter:
                         print(f"Warning: Annotation not found for file {filename}")
                 else:
                     print(f"Warning: File not found - annotation exists but file is missing: {filename}")
-        
+
         print(f"Imported {self.stats['files_imported']} media files")
         print(f"Linked {files_linked} files to annotation records")
     
@@ -1161,6 +1521,66 @@ class UserDataImportDryRun:
                     })
             except Exception as e:
                 self.analysis_report['warnings'].append(f"Could not check project conflicts: {e}")
+        
+        # Check for reagent duplicates and stored reagent storage requirements
+        if self.import_options.get('reagents', True):
+            try:
+                # Check for reagent name+unit duplicates
+                cursor.execute("SELECT name, unit FROM export_reagents")
+                reagent_combinations = [(row['name'], row['unit']) for row in cursor.fetchall()]
+                
+                from cc.models import Reagent
+                existing_reagents = []
+                for name, unit in reagent_combinations:
+                    if Reagent.objects.filter(name=name, unit=unit).exists():
+                        existing_reagents.append(f"{name} ({unit})")
+                
+                if existing_reagents:
+                    conflicts.append({
+                        'type': 'Existing Reagents',
+                        'description': f"Found {len(existing_reagents)} reagents that already exist (will use existing)",
+                        'items': existing_reagents[:10],
+                        'total_conflicts': len(existing_reagents)
+                    })
+                
+                # Check for stored reagents requiring storage object nomination
+                cursor.execute("""
+                    SELECT COUNT(*) as count, 
+                           GROUP_CONCAT(DISTINCT so.object_name) as storage_names
+                    FROM export_stored_reagents sr
+                    JOIN export_storage_objects so ON sr.storage_object_id = so.id
+                """)
+                stored_reagent_row = cursor.fetchone()
+                
+                if stored_reagent_row and stored_reagent_row['count'] > 0:
+                    # Get detailed storage object requirements
+                    cursor.execute("""
+                        SELECT so.id, so.object_name, so.object_type, COUNT(sr.id) as reagent_count
+                        FROM export_stored_reagents sr
+                        JOIN export_storage_objects so ON sr.storage_object_id = so.id
+                        GROUP BY so.id, so.object_name, so.object_type
+                    """)
+                    storage_requirements = cursor.fetchall()
+                    
+                    storage_info = []
+                    for req in storage_requirements:
+                        storage_info.append(f"{req['object_name']} ({req['object_type']}) - {req['reagent_count']} reagents")
+                    
+                    self.analysis_report['storage_object_requirements'] = {
+                        'total_stored_reagents': stored_reagent_row['count'],
+                        'required_storage_objects': storage_requirements,
+                        'description': f"Import contains {stored_reagent_row['count']} stored reagents requiring storage object nomination"
+                    }
+                    
+                    conflicts.append({
+                        'type': 'Storage Object Requirements',
+                        'description': f"Found {stored_reagent_row['count']} stored reagents requiring storage object nomination",
+                        'items': storage_info,
+                        'total_conflicts': len(storage_requirements)
+                    })
+                
+            except Exception as e:
+                self.analysis_report['warnings'].append(f"Could not check reagent conflicts: {e}")
         
         self.analysis_report['potential_conflicts'] = conflicts
     
@@ -1565,7 +1985,7 @@ def list_user_imports(user: User, include_reverted: bool = False) -> List[Dict[s
     return imports
 
 
-def import_user_data_revised(target_user: User, import_path: str, import_options: dict = None, progress_callback=None) -> Dict[str, Any]:
+def import_user_data_revised(target_user: User, import_path: str, import_options: dict = None, progress_callback=None, storage_object_mappings: dict = None, bulk_transfer_mode: bool = False) -> Dict[str, Any]:
     """
     REVISED comprehensive function to import user data with progress tracking and selective import.
     
@@ -1574,9 +1994,11 @@ def import_user_data_revised(target_user: User, import_path: str, import_options
         import_path: Path to archive file (ZIP or TAR.GZ) containing exported data
         import_options: Optional dict specifying what to import
         progress_callback: Optional callback function for progress updates
+        storage_object_mappings: Optional dict mapping original storage IDs to nominated storage IDs
+        bulk_transfer_mode: If True, import everything as-is without user-centric modifications
     
     Returns:
         Dict: Import results and statistics
     """
-    importer = UserDataImporter(target_user, import_path, import_options, progress_callback)
+    importer = UserDataImporter(target_user, import_path, import_options, progress_callback, storage_object_mappings, bulk_transfer_mode)
     return importer.import_user_data()

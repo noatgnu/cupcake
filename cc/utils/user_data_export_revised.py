@@ -1273,10 +1273,11 @@ class UserDataExporter:
         """Export reagents and storage with exact field mapping"""
         cursor = self.conn.cursor()
         
-        # Export all reagents that appear in user's protocols/steps
+        # Export all reagents that appear in user's protocols/steps OR are used in stored reagents
         reagents = Reagent.objects.filter(
             models.Q(protocolreagent__protocol__user=self.user) |
-            models.Q(stepreagent__step__protocol__user=self.user)
+            models.Q(stepreagent__step__protocol__user=self.user) |
+            models.Q(stored_reagents__user=self.user)
         ).distinct()
         
         print(f"Exporting {reagents.count()} reagents...")

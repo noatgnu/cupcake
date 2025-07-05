@@ -281,6 +281,29 @@ class ProtocolModel(models.Model):
     def __repr__(self):
         return self.protocol_title
 
+    @property
+    def is_imported(self):
+        """Check if this protocol was imported from another system"""
+        return self.protocol_title and '[IMPORTED]' in self.protocol_title
+
+    @property
+    def import_source_info(self):
+        """Get information about the import source"""
+        try:
+            imported_obj = ImportedObject.objects.filter(
+                model_name='ProtocolModel',
+                object_id=self.pk
+            ).first()
+            if imported_obj:
+                return {
+                    'import_tracker': imported_obj.import_tracker,
+                    'original_id': imported_obj.original_id,
+                    'imported_at': imported_obj.created_at
+                }
+        except:
+            pass
+        return None
+
     def get_first_in_protocol(self):
         step_list = self.steps.all()
         if step_list:
@@ -728,6 +751,31 @@ class Session(models.Model):
         app_label = "cc"
         ordering = ["id"]
 
+    def __str__(self):
+        return self.name or f"Session {self.unique_id}"
+
+    @property
+    def is_imported(self):
+        """Check if this session was imported from another system"""
+        return self.name and '[IMPORTED]' in self.name
+
+    @property
+    def import_source_info(self):
+        """Get information about the import source"""
+        try:
+            imported_obj = ImportedObject.objects.filter(
+                model_name='Session',
+                object_id=self.pk
+            ).first()
+            if imported_obj:
+                return {
+                    'import_tracker': imported_obj.import_tracker,
+                    'original_id': imported_obj.original_id,
+                    'imported_at': imported_obj.created_at
+                }
+        except:
+            pass
+        return None
 
     def sync_session_upstream(self, upstream_node_url: str):
         """
@@ -1045,6 +1093,36 @@ class Annotation(models.Model):
 
     def __str__(self):
         return self.annotation
+
+    @property
+    def is_imported(self):
+        """Check if this annotation was imported from another system"""
+        return (self.annotation_name and '[IMPORTED]' in self.annotation_name) or \
+               (self.annotation and '[IMPORTED' in self.annotation)
+
+    @property
+    def was_converted_from_instrument(self):
+        """Check if this annotation was converted from an instrument booking"""
+        return self.annotation_type == 'text' and \
+               self.annotation and '[IMPORTED INSTRUMENT BOOKING' in self.annotation
+
+    @property
+    def import_source_info(self):
+        """Get information about the import source"""
+        try:
+            imported_obj = ImportedObject.objects.filter(
+                model_name='Annotation',
+                object_id=self.pk
+            ).first()
+            if imported_obj:
+                return {
+                    'import_tracker': imported_obj.import_tracker,
+                    'original_id': imported_obj.original_id,
+                    'imported_at': imported_obj.created_at
+                }
+        except:
+            pass
+        return None
 
     def __repr__(self):
         return self.annotation

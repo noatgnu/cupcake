@@ -1412,7 +1412,7 @@ def export_user_data(user_id: int, filename: str = None, protocol_ids: list[int]
     return filename
 
 @job('import-data', timeout='3h')
-def import_data(user_id: int, archive_file: str, instance_id: str = None, import_options: dict = None):
+def import_data(user_id: int, archive_file: str, instance_id: str = None, import_options: dict = None, storage_object_mappings: dict = None, bulk_transfer_mode: bool = False):
     """
     Import user data with progress tracking and selective import options
     
@@ -1420,6 +1420,8 @@ def import_data(user_id: int, archive_file: str, instance_id: str = None, import
     :param archive_file: Path to the archive file (zip or tar.gz)
     :param instance_id: Optional instance ID for tracking the import job
     :param import_options: Optional dict specifying what to import (protocols, sessions, etc.)
+    :param storage_object_mappings: Optional dict mapping original storage IDs to nominated storage IDs
+    :param bulk_transfer_mode: If True, import everything as-is without user-centric modifications
     """
     from cc.utils.user_data_import_revised import import_user_data_revised
     from cc.models import SiteSettings
@@ -1491,7 +1493,9 @@ def import_data(user_id: int, archive_file: str, instance_id: str = None, import
             user, 
             archive_file, 
             import_options=import_options,
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            storage_object_mappings=storage_object_mappings,
+            bulk_transfer_mode=bulk_transfer_mode
         )
         
         if result['success']:
@@ -1546,7 +1550,7 @@ def import_data(user_id: int, archive_file: str, instance_id: str = None, import
 
 
 @job('import-data', timeout='1h')
-def dry_run_import_data(user_id: int, archive_file: str, instance_id: str = None, import_options: dict = None):
+def dry_run_import_data(user_id: int, archive_file: str, instance_id: str = None, import_options: dict = None, bulk_transfer_mode: bool = False):
     """
     Perform a dry run analysis of user data import without making any changes
     

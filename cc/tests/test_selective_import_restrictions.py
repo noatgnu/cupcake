@@ -112,7 +112,8 @@ class SelectiveImportTestCase(TransactionTestCase):
         self.stored_reagent = StoredReagent.objects.create(
             reagent=self.reagent,
             storage_object=self.storage,
-            quantity=100.0
+            quantity=100.0,
+            user=self.export_user
         )
     
     def create_test_export(self):
@@ -157,6 +158,50 @@ class ImportWithNoRestrictionsTest(SelectiveImportTestCase):
                 file__isnull=False
             ).exclude(file='').first()
             self.assertIsNotNone(annotation_with_file)
+            
+        finally:
+            os.unlink(temp_zip_path)
+    
+    def test_import_all_data_types_bulk_mode(self):
+        """Test importing all data types in bulk transfer mode"""
+        zip_content = self.create_test_export()
+        
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as temp_zip:
+            temp_zip.write(zip_content)
+            temp_zip_path = temp_zip.name
+        
+        try:
+            # Import with bulk transfer mode enabled
+            result = import_user_data_revised(
+                self.import_user, 
+                temp_zip_path, 
+                bulk_transfer_mode=True
+            )
+            
+            # Verify import success
+            self.assertTrue(result['success'])
+            
+            # Verify all data types were imported
+            self.assertTrue(LabGroup.objects.filter(users=self.import_user).exists())
+            self.assertTrue(Project.objects.filter(owner=self.import_user).exists())
+            self.assertTrue(ProtocolModel.objects.filter(user=self.import_user).exists())
+            self.assertTrue(Session.objects.filter(user=self.import_user).exists())
+            self.assertTrue(Annotation.objects.filter(user=self.import_user).exists())
+            self.assertTrue(StorageObject.objects.filter(user=self.import_user).exists())
+            
+            # In bulk mode, verify objects don't have [IMPORTED] prefixes
+            protocols = ProtocolModel.objects.filter(user=self.import_user)
+            for protocol in protocols:
+                self.assertNotIn('[IMPORTED]', protocol.protocol_title)
+            
+            annotations = Annotation.objects.filter(user=self.import_user)
+            for annotation in annotations:
+                if annotation.annotation_name:
+                    self.assertNotIn('[IMPORTED]', annotation.annotation_name)
+            
+            storage_objects = StorageObject.objects.filter(user=self.import_user)
+            for storage in storage_objects:
+                self.assertNotIn('[IMPORTED]', storage.object_name)
             
         finally:
             os.unlink(temp_zip_path)
@@ -278,10 +323,73 @@ class ImportWithSpecificRestrictionsTest(SelectiveImportTestCase):
             # Verify storage objects were imported
             self.assertTrue(StorageObject.objects.filter(user=self.import_user).exists())
             
+            # Note: In user mode without storage mappings, stored reagents should NOT be imported
+            # Only reagents and empty storage objects should be imported
+            imported_stored_reagents = StoredReagent.objects.filter(user=self.import_user)
+            self.assertEqual(imported_stored_reagents.count(), 0, 
+                           "Stored reagents should not be imported without storage object nomination")
+            
             # Verify protocols and sessions were NOT imported
             self.assertFalse(ProtocolModel.objects.filter(user=self.import_user).exists())
             self.assertFalse(Session.objects.filter(user=self.import_user).exists())
             self.assertFalse(Annotation.objects.filter(user=self.import_user).exists())
+            
+        finally:
+            os.unlink(temp_zip_path)
+    
+    def test_import_reagents_with_storage_nomination(self):
+        """Test importing reagents with proper storage object nomination"""
+        zip_content = self.create_test_export()
+        
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as temp_zip:
+            temp_zip.write(zip_content)
+            temp_zip_path = temp_zip.name
+        
+        try:
+            # First, create a storage object in the import user's environment
+            import_storage = StorageObject.objects.create(
+                object_name='Import User Storage',
+                object_type='freezer',
+                user=self.import_user
+            )
+
+            storage_object_mappings = {
+                str(self.storage.id): import_storage.id
+            }
+
+            import_options = {
+                'lab_groups': True,
+                'reagents': True,
+                'projects': False,
+                'protocols': False,
+                'sessions': False,
+                'annotations': False,
+                'instruments': False
+            }
+            
+            result = import_user_data_revised(
+                self.import_user, 
+                temp_zip_path, 
+                import_options,
+                storage_object_mappings=storage_object_mappings
+            )
+            
+            # Verify import success
+            self.assertTrue(result['success'])
+            
+            # Verify storage objects were imported
+            imported_storage_objects = StorageObject.objects.filter(user=self.import_user)
+            # Should have original storage + the storage we created for nomination
+            self.assertGreaterEqual(imported_storage_objects.count(), 1)
+            
+            # With proper storage nomination, stored reagents should now be imported
+            imported_stored_reagents = StoredReagent.objects.filter(user=self.import_user)
+            self.assertGreater(imported_stored_reagents.count(), 0, 
+                             "Stored reagents should be imported with proper storage nomination")
+            
+            # Verify the stored reagent is linked to the nominated storage
+            for stored_reagent in imported_stored_reagents:
+                self.assertEqual(stored_reagent.storage_object_id, import_storage.id)
             
         finally:
             os.unlink(temp_zip_path)

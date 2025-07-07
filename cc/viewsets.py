@@ -8269,8 +8269,6 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
                 annotation.file.save(annotation_name, django_file, save=True)
                 annotation.save()
                 
-                # Create default document permissions for the owner
-                # This ensures the uploaded file is visible in shared documents and ready for sharing
                 DocumentPermission.objects.create(
                     annotation=annotation,
                     user=request.user,

@@ -105,6 +105,9 @@ class UserDataImporter:
             'steps': {},
             'instruments': {},
             'reagents': {},
+            'stored_reagents': {},
+            'reagent_actions': {},
+            'step_reagents': {},
             'storage_objects': {},
             'lab_groups': {},
             'projects': {},
@@ -315,6 +318,7 @@ class UserDataImporter:
                     self._import_storage_objects()
                     self._import_reagents()
                     self._import_stored_reagents()
+                    self._import_reagent_actions()
                 
                 if self.import_options.get('projects', True):
                     self._send_progress(35, "Importing projects...")
@@ -640,6 +644,56 @@ class UserDataImporter:
             imported_count += 1
         
         print(f"Imported {imported_count} stored reagents, skipped {skipped_count} stored reagents")
+        self.stats['models_imported'] += 1
+    
+    def _import_reagent_actions(self):
+        """Import reagent actions and assign to target user"""
+        cursor = self.conn.cursor()
+        
+        try:
+            cursor.execute("SELECT * FROM export_reagent_actions")
+        except sqlite3.OperationalError:
+            print("No reagent actions table found, skipping reagent actions import")
+            return
+        
+        imported_count = 0
+        for row in cursor.fetchall():
+            try:
+                # Map foreign key relationships
+                reagent_id = self.id_mappings['stored_reagents'].get(row['reagent_id'])
+                step_reagent_id = self.id_mappings.get('step_reagents', {}).get(row['step_reagent_id']) if row['step_reagent_id'] else None
+                session_id = self.id_mappings['sessions'].get(row['session_id']) if row['session_id'] else None
+                
+                # Skip if required reagent reference is missing
+                if not reagent_id:
+                    print(f"Skipping reagent action {row['id']}: Missing reagent reference")
+                    continue
+                
+                # Create reagent action - ALWAYS assign to target user as requested
+                reagent_action = ReagentAction.objects.create(
+                    action_type=row['action_type'],
+                    quantity=row['quantity'],
+                    notes=row['notes'] if row['notes'] else '',
+                    user=self.target_user,  # Critical: Always assign to importing user
+                    reagent_id=reagent_id,
+                    step_reagent_id=step_reagent_id,
+                    session_id=session_id,
+                    created_at=row['created_at'],
+                    updated_at=row['updated_at']
+                )
+                
+                # Track created object for potential rollback
+                self._track_created_object(reagent_action, row['id'])
+                
+                # Map the ID for any future relationships
+                self.id_mappings['reagent_actions'][row['id']] = reagent_action.id
+                imported_count += 1
+                
+            except Exception as e:
+                print(f"Error importing reagent action {row['id']}: {e}")
+                self.stats['errors'].append(f"ReagentAction import error: {e}")
+        
+        print(f"Imported {imported_count} reagent actions")
         self.stats['models_imported'] += 1
     
     def _import_projects(self):

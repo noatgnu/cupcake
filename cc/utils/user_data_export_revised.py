@@ -103,6 +103,7 @@ class UserDataExporter:
             'remote_hosts': set(),
             'storage_objects': set(),
             'reagents': set(),
+            'reagent_actions': set(),
             'protocols': set(),
             'sessions': set(),
             'annotations': set(),
@@ -156,6 +157,9 @@ class UserDataExporter:
             
             self._send_progress(40, "Exporting reagents...")
             self._export_reagents_accurate()
+            
+            self._send_progress(42, "Exporting reagent actions...")
+            self._export_reagent_actions_accurate()
             
             self._send_progress(45, "Exporting projects...")
             self._export_projects_accurate()
@@ -651,6 +655,26 @@ class UserDataExporter:
                 FOREIGN KEY (storage_object_id) REFERENCES export_storage_objects(id),
                 FOREIGN KEY (user_id) REFERENCES export_users(id),
                 FOREIGN KEY (remote_host_id) REFERENCES export_remote_hosts(id)
+            )
+        ''')
+        
+        # Reagent Actions table (from cc_reagentaction schema - exact field names)
+        self.conn.execute('''
+            CREATE TABLE export_reagent_actions (
+                id INTEGER PRIMARY KEY,
+                action_type TEXT NOT NULL,
+                quantity REAL NOT NULL,
+                notes TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                reagent_id INTEGER,
+                step_reagent_id INTEGER,
+                session_id INTEGER,
+                user_id INTEGER,
+                FOREIGN KEY (reagent_id) REFERENCES export_stored_reagents(id),
+                FOREIGN KEY (step_reagent_id) REFERENCES export_step_reagents(id),
+                FOREIGN KEY (session_id) REFERENCES export_sessions(id),
+                FOREIGN KEY (user_id) REFERENCES export_users(id)
             )
         ''')
         
@@ -1351,6 +1375,43 @@ class UserDataExporter:
         self.conn.commit()
         print(f"Exported reagents and storage objects")
         self.stats['models_exported'] += 3
+
+    def _export_reagent_actions_accurate(self):
+        """Export reagent actions owned by user"""
+        reagent_actions = ReagentAction.objects.filter(user=self.user)
+        cursor = self.conn.cursor()
+        
+        print(f"Exporting {reagent_actions.count()} reagent actions...")
+        
+        for action in reagent_actions:
+            # Skip if already exported
+            if action.id in self.exported_objects['reagent_actions']:
+                continue
+                
+            cursor.execute('''
+                INSERT INTO export_reagent_actions 
+                (id, action_type, quantity, notes, created_at, updated_at,
+                 reagent_id, step_reagent_id, session_id, user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                action.id,
+                action.action_type,
+                action.quantity,
+                action.notes,
+                action.created_at.isoformat() if action.created_at else None,
+                action.updated_at.isoformat() if action.updated_at else None,
+                action.reagent_id,  # This references stored_reagent.id
+                getattr(action, 'step_reagent_id', None),
+                getattr(action, 'session_id', None),
+                action.user_id
+            ))
+            
+            # Mark as exported
+            self.exported_objects['reagent_actions'].add(action.id)
+
+        self.conn.commit()
+        print(f"Exported {reagent_actions.count()} reagent actions")
+        self.stats['models_exported'] += 1
 
     def _export_lab_groups_accurate(self):
         """Export lab groups user belongs to"""

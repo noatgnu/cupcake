@@ -8130,7 +8130,7 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
         upload_id = request.data.get('chunked_upload_id')
         annotation_name = request.data.get('annotation_name', '')
         annotation_text = request.data.get('annotation', '')
-        folder_id = request.data.get('folder_id')
+        folder_id = request.data.get('folder_id') or request.data.get('folder')
 
         # Validation
         if not upload_id:
@@ -8188,6 +8188,20 @@ class SharedDocumentViewSet(ModelViewSet, FilterMixin):
 
                 annotation.file.save(annotation_name, django_file, save=True)
                 annotation.save()
+                
+                # Create default document permissions for the owner
+                # This ensures the uploaded file is visible in shared documents and ready for sharing
+                DocumentPermission.objects.create(
+                    annotation=annotation,
+                    user=request.user,
+                    can_view=True,
+                    can_download=True,
+                    can_comment=True,
+                    can_edit=True,
+                    can_share=True,
+                    can_delete=True,
+                    shared_by=request.user
+                )
             
             # Clean up chunked upload
             chunked_upload.delete()

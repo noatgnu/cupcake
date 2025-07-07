@@ -60,7 +60,7 @@ from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, Anno
     ExternalContactDetailsSerializer, MessageSerializer, MessageRecipientSerializer, MessageAttachmentSerializer, \
     MessageRecipientSerializer, MessageThreadSerializer, MessageThreadDetailSerializer, ReagentSubscriptionSerializer, \
     SiteSettingsSerializer, BackupLogSerializer, DocumentPermissionSerializer, SharedDocumentSerializer, \
-    UserBasicSerializer, ImportTrackerSerializer, ImportTrackerListSerializer
+    UserBasicSerializer, ImportTrackerSerializer, ImportTrackerListSerializer, HistoricalRecordSerializer
 from cc.utils import user_metadata, staff_metadata, send_slack_notification
 from cc.utils.user_data_import_revised import ImportReverter
 
@@ -8752,3 +8752,110 @@ class ImportTrackerViewSet(ModelViewSet):
             },
             'recent_imports': recent_serializer.data
         }, status=status.HTTP_200_OK)
+
+
+class HistoricalRecordsViewSet(ReadOnlyModelViewSet):
+    """
+    Generic endpoint for accessing historical records of any model
+    """
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    search_fields = ['history_user__username', 'history_type']
+    ordering_fields = ['history_date', 'history_type']
+    filterset_fields = ['history_type', 'history_user']
+    pagination_class = LimitOffsetPagination
+    queryset = Annotation.history.all()
+    
+    def get_queryset(self):
+        """Get historical records for the specified model"""
+        model_name = self.request.query_params.get('model')
+        
+        # Define allowed models that have history tracking
+        allowed_models = {
+            'annotation': Annotation,
+            'annotationfolder': AnnotationFolder,
+            'protocolmodel': ProtocolModel,
+            'protocolstep': ProtocolStep,
+            'session': Session,
+            'instrument': Instrument,
+            'instrumentusage': InstrumentUsage,
+            'instrumentjob': InstrumentJob,
+            'storedreagent': StoredReagent,
+            'reagentaction': ReagentAction,
+            'maintenancelog': MaintenanceLog,
+            'supportinformation': SupportInformation,
+            'labgroup': LabGroup,
+            'sitesettings': SiteSettings,
+            'backuplog': BackupLog,
+        }
+        
+        if not model_name or model_name not in allowed_models:
+            return Annotation.history.all()
+            
+        model_class = allowed_models[model_name]
+        
+        # Get the historical model
+        if hasattr(model_class, 'history'):
+            return model_class.history.all()
+        else:
+            return Annotation.history.all()
+    
+    serializer_class = HistoricalRecordSerializer
+    
+    @action(detail=False, methods=['get'])
+    def summary(self, request):
+        """Get summary statistics for historical records"""
+        queryset = self.get_queryset()
+        model_name = request.query_params.get('model', 'annotation')
+        
+        total_records = queryset.count()
+        created_records = queryset.filter(history_type='+').count()
+        updated_records = queryset.filter(history_type='~').count()
+        deleted_records = queryset.filter(history_type='-').count()
+        
+        # Recent changes (last 7 days)
+        recent_date = timezone.now() - timedelta(days=7)
+        recent_changes = queryset.filter(history_date__gte=recent_date).count()
+        
+        # Top contributors
+        top_contributors = queryset.values('history_user__username').annotate(
+            change_count=Count('history_id')
+        ).order_by('-change_count')[:5]
+        
+        return Response({
+            'model_name': model_name,
+            'total_records': total_records,
+            'created_records': created_records,
+            'updated_records': updated_records,
+            'deleted_records': deleted_records,
+            'recent_changes_7_days': recent_changes,
+            'top_contributors': top_contributors
+        })
+    
+    @action(detail=False, methods=['get'])
+    def timeline(self, request):
+        """Get timeline of changes for the model"""
+        queryset = self.get_queryset()
+        model_name = request.query_params.get('model', 'annotation')
+        
+        # Get changes grouped by date
+        days_back = int(request.query_params.get('days', 30))
+        start_date = timezone.now() - timedelta(days=days_back)
+        
+        timeline_data = queryset.filter(
+            history_date__gte=start_date
+        ).extra(
+            select={'date': 'DATE(history_date)'}
+        ).values('date').annotate(
+            total_changes=Count('history_id'),
+            created=Count('history_id', filter=Q(history_type='+')),
+            updated=Count('history_id', filter=Q(history_type='~')),
+            deleted=Count('history_id', filter=Q(history_type='-'))
+        ).order_by('date')
+        
+        return Response({
+            'model_name': model_name,
+            'timeline': list(timeline_data),
+            'period_days': days_back
+        })

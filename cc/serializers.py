@@ -1564,3 +1564,28 @@ class ImportTrackerListSerializer(ModelSerializer):
             'reverted': 'warning'
         }
         return status_colors.get(obj.import_status, 'secondary')
+
+
+class HistoricalRecordSerializer(ModelSerializer):
+    """Generic serializer for historical records"""
+    history_user = CharField(source='history_user.username', read_only=True)
+    history_date = ReadOnlyField()
+    history_type = ReadOnlyField()
+    history_id = ReadOnlyField()
+    
+    class Meta:
+        model = None  # Will be set dynamically
+        fields = '__all__'
+    
+    def __init__(self, *args, **kwargs):
+        # Set the model dynamically based on the instance
+        super().__init__(*args, **kwargs)
+        if self.instance and hasattr(self.instance, '__class__'):
+            self.Meta.model = self.instance.__class__
+        elif hasattr(self, 'context') and 'view' in self.context:
+            # Get model from viewset's queryset
+            view = self.context['view']
+            if hasattr(view, 'get_queryset'):
+                queryset = view.get_queryset()
+                if queryset and hasattr(queryset, 'model'):
+                    self.Meta.model = queryset.model

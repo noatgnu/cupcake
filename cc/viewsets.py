@@ -4589,7 +4589,11 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
         group.description = request.data['description']
         group.is_professional = request.data['is_professional']
         group.save()
+        
+        # Add creator as both user and manager
         group.users.add(user)
+        group.managers.add(user)
+        
         data = self.get_serializer(group).data
         return Response(data, status=status.HTTP_201_CREATED)
 
@@ -4656,6 +4660,82 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
         managers = group.managers.all()
         data = UserSerializer(managers, many=True).data
         return Response(data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def add_manager(self, request, pk=None):
+        """Add a user as a manager to the lab group"""
+        group = self.get_object()
+        
+        # Only staff or existing managers can add new managers
+        if not self.request.user.is_staff:
+            if not group.managers.filter(id=self.request.user.id).exists():
+                return Response(
+                    {'error': 'Only staff or existing managers can add new managers'}, 
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
+        try:
+            user_id = request.data['user']
+            user = User.objects.get(id=user_id)
+            
+            # Add user as manager (also add as regular user if not already)
+            group.managers.add(user)
+            group.users.add(user)  # Ensure manager is also a user of the group
+            
+            data = self.get_serializer(group).data
+            return Response(data, status=status.HTTP_200_OK)
+            
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'User not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except KeyError:
+            return Response(
+                {'error': 'User ID is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    @action(detail=True, methods=['post'])
+    def remove_manager(self, request, pk=None):
+        """Remove a user from managers of the lab group"""
+        group = self.get_object()
+        
+        # Only staff or existing managers can remove managers
+        if not self.request.user.is_staff:
+            if not group.managers.filter(id=self.request.user.id).exists():
+                return Response(
+                    {'error': 'Only staff or existing managers can remove managers'}, 
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
+        try:
+            user_id = request.data['user']
+            user = User.objects.get(id=user_id)
+            
+            # Prevent removing the last manager (unless staff is doing it)
+            if not self.request.user.is_staff and group.managers.count() <= 1:
+                return Response(
+                    {'error': 'Cannot remove the last manager. At least one manager must remain.'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Remove user from managers (but keep as regular user)
+            group.managers.remove(user)
+            
+            data = self.get_serializer(group).data
+            return Response(data, status=status.HTTP_200_OK)
+            
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'User not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except KeyError:
+            return Response(
+                {'error': 'User ID is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
 class SpeciesViewSet(ModelViewSet, FilterMixin):
     serializer_class = SpeciesSerializer

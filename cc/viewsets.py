@@ -8818,19 +8818,13 @@ class HistoricalRecordsViewSet(ReadOnlyModelViewSet):
         recent_date = timezone.now() - timedelta(days=7)
         recent_changes = queryset.filter(history_date__gte=recent_date).count()
         
-        # Top contributors
-        top_contributors = queryset.values('history_user__username').annotate(
-            change_count=Count('history_id')
-        ).order_by('-change_count')[:5]
-        
         return Response({
             'model_name': model_name,
             'total_records': total_records,
             'created_records': created_records,
             'updated_records': updated_records,
             'deleted_records': deleted_records,
-            'recent_changes_7_days': recent_changes,
-            'top_contributors': top_contributors
+            'recent_changes_7_days': recent_changes
         })
     
     @action(detail=False, methods=['get'])

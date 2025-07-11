@@ -1,4 +1,5 @@
 from rest_framework import permissions
+from rest_framework.permissions import IsAuthenticated
 
 from cc.models import InstrumentUsage, InstrumentPermission, Instrument, MessageThread, Message, MessageRecipient
 
@@ -120,5 +121,18 @@ class IsParticipantOrAdmin(permissions.BasePermission):
                 thread.lab_group and thread.lab_group in request.user.lab_groups.all()
             )
         return False
+
+
+class IsCoreFacilityPermission(IsAuthenticated):
+    """
+    Permission class that allows access only to users belonging to core facility lab groups
+    """
+    def has_permission(self, request, view):
+        if not super().has_permission(request, view):
+            return False
+        
+        # Check if user belongs to any core facility lab group
+        user_core_facility_groups = request.user.lab_groups.filter(is_core_facility=True)
+        return user_core_facility_groups.exists()
 
 

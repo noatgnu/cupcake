@@ -10,7 +10,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, StepVariation, Se
     HumanDisease, Tissue, SubcellularLocation, MetadataColumn, Species, Unimod, InstrumentJob, FavouriteMetadataOption, \
     Preset, MetadataTableTemplate, ExternalContactDetails, SupportInformation, ExternalContact, MaintenanceLog, \
     MessageRecipient, MessageThread, Message, MessageAttachment, ReagentSubscription, SiteSettings, BackupLog, DocumentPermission, \
-    ImportTracker, ImportedObject, ImportedFile, ImportedRelationship
+    ImportTracker, ImportedObject, ImportedFile, ImportedRelationship, ServiceTier, ServicePrice, BillingRecord
 
 
 class UserBasicSerializer(ModelSerializer):
@@ -816,7 +816,7 @@ class LabGroupSerializer(ModelSerializer):
 
     class Meta:
         model = LabGroup
-        fields = ['id', 'name', 'created_at', 'updated_at', 'description', 'default_storage', 'is_professional', 'service_storage', 'managers']
+        fields = ['id', 'name', 'created_at', 'updated_at', 'description', 'default_storage', 'can_perform_ms_analysis', 'is_core_facility', 'service_storage', 'managers']
 
 
 class MetadataColumnSerializer(ModelSerializer):
@@ -1592,3 +1592,86 @@ class HistoricalRecordSerializer(ModelSerializer):
                 queryset = view.get_queryset()
                 if queryset and hasattr(queryset, 'model'):
                     self.Meta.model = queryset.model
+
+
+class ServiceTierSerializer(ModelSerializer):
+    prices = SerializerMethodField()
+    
+    class Meta:
+        model = ServiceTier
+        fields = ['id', 'name', 'description', 'lab_group', 'is_active', 'created_at', 'updated_at', 'prices']
+        read_only_fields = ['created_at', 'updated_at']
+    
+    def get_prices(self, obj):
+        return ServicePriceSerializer(obj.prices.filter(is_active=True), many=True).data
+
+
+class ServicePriceSerializer(ModelSerializer):
+    instrument_name = SerializerMethodField()
+    service_tier_name = SerializerMethodField()
+    
+    class Meta:
+        model = ServicePrice
+        fields = ['id', 'service_tier', 'service_tier_name', 'instrument', 'instrument_name', 
+                 'price', 'billing_unit', 'currency', 'effective_date', 'expiry_date', 
+                 'is_active', 'created_at', 'updated_at']
+        read_only_fields = ['created_at', 'updated_at']
+    
+    def get_instrument_name(self, obj):
+        return obj.instrument.instrument_name if obj.instrument else None
+    
+    def get_service_tier_name(self, obj):
+        return obj.service_tier.name if obj.service_tier else None
+
+
+class BillingRecordSerializer(ModelSerializer):
+    user_name = SerializerMethodField()
+    instrument_name = SerializerMethodField()
+    service_tier_name = SerializerMethodField()
+    cost_breakdown = SerializerMethodField()
+    
+    class Meta:
+        model = BillingRecord
+        fields = ['id', 'user', 'user_name', 'instrument_job', 'service_tier', 'service_tier_name',
+                 'instrument_hours', 'instrument_rate', 'instrument_cost',
+                 'personnel_hours', 'personnel_rate', 'personnel_cost',
+                 'other_quantity', 'other_rate', 'other_cost', 'other_description',
+                 'total_amount', 'status', 'billing_date', 'paid_date', 
+                 'invoice_number', 'notes', 'instrument_name', 'cost_breakdown',
+                 'created_at', 'updated_at']
+        read_only_fields = ['total_amount', 'billing_date', 'created_at', 'updated_at']
+    
+    def get_user_name(self, obj):
+        return f"{obj.user.first_name} {obj.user.last_name}" if obj.user else None
+    
+    def get_instrument_name(self, obj):
+        return obj.instrument_job.instrument.instrument_name if obj.instrument_job and obj.instrument_job.instrument else None
+    
+    def get_service_tier_name(self, obj):
+        return obj.service_tier.name if obj.service_tier else None
+    
+    def get_cost_breakdown(self, obj):
+        breakdown = []
+        if obj.instrument_cost:
+            breakdown.append({
+                'type': 'instrument_time',
+                'hours': obj.instrument_hours,
+                'rate': obj.instrument_rate,
+                'cost': obj.instrument_cost
+            })
+        if obj.personnel_cost:
+            breakdown.append({
+                'type': 'personnel_time', 
+                'hours': obj.personnel_hours,
+                'rate': obj.personnel_rate,
+                'cost': obj.personnel_cost
+            })
+        if obj.other_cost:
+            breakdown.append({
+                'type': 'other',
+                'description': obj.other_description,
+                'quantity': obj.other_quantity,
+                'rate': obj.other_rate,
+                'cost': obj.other_cost
+            })
+        return breakdown

@@ -1774,7 +1774,8 @@ class LabGroup(models.Model):
     users = models.ManyToManyField(settings.AUTH_USER_MODEL, related_name="lab_groups", blank=True)
     managers = models.ManyToManyField(settings.AUTH_USER_MODEL, related_name="managed_lab_groups", blank=True)
     default_storage = models.ForeignKey(StorageObject, on_delete=models.SET_NULL, related_name="lab_groups", blank=True, null=True)
-    is_professional = models.BooleanField(default=False)
+    can_perform_ms_analysis = models.BooleanField(default=False)
+    is_core_facility = models.BooleanField(default=False)
     service_storage = models.ForeignKey(StorageObject, on_delete=models.SET_NULL, related_name="service_lab_groups", blank=True, null=True)
 
     class Meta:
@@ -1963,10 +1964,30 @@ class InstrumentJob(models.Model):
     submitted_at = models.DateTimeField(blank=True, null=True)
     completed_at = models.DateTimeField(blank=True, null=True)
     method = models.TextField(blank=True, null=True)
+    
+    # Time tracking for billing
+    instrument_start_time = models.DateTimeField(null=True, blank=True)
+    instrument_end_time = models.DateTimeField(null=True, blank=True)
+    personnel_start_time = models.DateTimeField(null=True, blank=True)
+    personnel_end_time = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         app_label = 'cc'
         ordering = ['-id']
+    
+    @property
+    def instrument_hours(self):
+        if self.instrument_start_time and self.instrument_end_time:
+            delta = self.instrument_end_time - self.instrument_start_time
+            return delta.total_seconds() / 3600
+        return 0
+    
+    @property
+    def personnel_hours(self):
+        if self.personnel_start_time and self.personnel_end_time:
+            delta = self.personnel_end_time - self.personnel_start_time
+            return delta.total_seconds() / 3600
+        return 0
 
 class Preset(models.Model):
     name = models.CharField(max_length=255)
@@ -2734,3 +2755,254 @@ def notify_timekeeper_changes(sender, instance=None, created=False, **kwargs):
                 "message": notification_data
             }
         )
+
+
+class ServiceTier(models.Model):
+    name = models.CharField(max_length=100)
+    description = models.TextField(blank=True)
+    lab_group = models.ForeignKey(LabGroup, on_delete=models.CASCADE, related_name='service_tiers')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        app_label = "cc"
+        unique_together = ['name', 'lab_group']
+        ordering = ['name']
+
+    def __str__(self):
+        return f"{self.lab_group.name} - {self.name}"
+
+
+class ServicePrice(models.Model):
+    BILLING_UNIT_CHOICES = [
+        ('per_sample', 'Per Sample'),
+        ('per_hour_instrument', 'Per Hour - Instrument Time'),
+        ('per_hour_personnel', 'Per Hour - Personnel Time'),
+        ('per_injection', 'Per Injection'),
+        ('flat_rate', 'Flat Rate'),
+    ]
+    
+    service_tier = models.ForeignKey(ServiceTier, on_delete=models.CASCADE, related_name='prices')
+    instrument = models.ForeignKey(Instrument, on_delete=models.CASCADE)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    billing_unit = models.CharField(max_length=25, choices=BILLING_UNIT_CHOICES)
+    currency = models.CharField(max_length=3, default='USD')
+    effective_date = models.DateField(default=timezone.now)
+    expiry_date = models.DateField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        app_label = "cc"
+        unique_together = ['service_tier', 'instrument', 'billing_unit']
+        ordering = ['service_tier', 'instrument', 'billing_unit']
+
+    def __str__(self):
+        return f"{self.service_tier.name} - {self.instrument.instrument_name} - {self.get_billing_unit_display()}: {self.price}"
+
+
+class BillingRecord(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('billed', 'Billed'),
+        ('paid', 'Paid'),
+        ('cancelled', 'Cancelled'),
+    ]
+    
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    instrument_job = models.ForeignKey(InstrumentJob, on_delete=models.CASCADE)
+    service_tier = models.ForeignKey(ServiceTier, on_delete=models.CASCADE)
+    
+    # Instrument time billing
+    instrument_hours = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+    instrument_rate = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    instrument_cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    
+    # Personnel time billing  
+    personnel_hours = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+    personnel_rate = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    personnel_cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    
+    # Other charges (samples, injections, etc.)
+    other_quantity = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    other_rate = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    other_cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    other_description = models.CharField(max_length=100, blank=True)
+    
+    # Total
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    billing_date = models.DateField(auto_now_add=True)
+    paid_date = models.DateField(null=True, blank=True)
+    invoice_number = models.CharField(max_length=50, blank=True)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        app_label = "cc"
+        ordering = ['-billing_date']
+
+    def __str__(self):
+        return f"Billing for {self.user.username} - {self.instrument_job.instrument.instrument_name} - {self.total_amount}"
+    
+    def save(self, *args, **kwargs):
+        # Auto-calculate total
+        self.total_amount = (
+            (self.instrument_cost or 0) + 
+            (self.personnel_cost or 0) + 
+            (self.other_cost or 0)
+        )
+        super().save(*args, **kwargs)
+
+
+class CellType(models.Model):
+    """Model to store cell types and cell lines for SDRF proteomics metadata"""
+    identifier = models.CharField(max_length=255, primary_key=True)
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True, null=True)
+    cell_line = models.BooleanField(default=False)  # True for cell lines, False for primary cell types
+    organism = models.CharField(max_length=255, blank=True, null=True)
+    tissue_origin = models.CharField(max_length=255, blank=True, null=True)
+    disease_context = models.CharField(max_length=255, blank=True, null=True)
+    accession = models.CharField(max_length=255, blank=True, null=True)  # For ontology references
+    synonyms = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = 'cc'
+        ordering = ['name']
+        verbose_name = 'Cell Type'
+        verbose_name_plural = 'Cell Types'
+
+    def __str__(self):
+        return self.name
+
+
+class MondoDisease(models.Model):
+    """Enhanced disease ontology from MONDO (Monarch Disease Ontology)"""
+    identifier = models.CharField(max_length=255, primary_key=True)  # MONDO:XXXXXXX
+    name = models.CharField(max_length=255)
+    definition = models.TextField(blank=True, null=True)
+    synonyms = models.TextField(blank=True, null=True)  # Semicolon-separated
+    xrefs = models.TextField(blank=True, null=True)  # Cross-references to other databases
+    parent_terms = models.TextField(blank=True, null=True)  # is_a relationships
+    obsolete = models.BooleanField(default=False)
+    replacement_term = models.CharField(max_length=255, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = 'cc'
+        ordering = ['name']
+        verbose_name = 'MONDO Disease'
+        verbose_name_plural = 'MONDO Diseases'
+
+    def __str__(self):
+        return f"{self.name} ({self.identifier})"
+
+
+class UberonAnatomy(models.Model):
+    """Anatomy ontology from UBERON (Uber-anatomy ontology)"""
+    identifier = models.CharField(max_length=255, primary_key=True)  # UBERON:XXXXXXX
+    name = models.CharField(max_length=255)
+    definition = models.TextField(blank=True, null=True)
+    synonyms = models.TextField(blank=True, null=True)  # Semicolon-separated
+    xrefs = models.TextField(blank=True, null=True)  # Cross-references
+    parent_terms = models.TextField(blank=True, null=True)  # is_a relationships
+    part_of = models.TextField(blank=True, null=True)  # part_of relationships
+    develops_from = models.TextField(blank=True, null=True)  # developmental relationships
+    obsolete = models.BooleanField(default=False)
+    replacement_term = models.CharField(max_length=255, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = 'cc'
+        ordering = ['name']
+        verbose_name = 'UBERON Anatomy'
+        verbose_name_plural = 'UBERON Anatomy Terms'
+
+    def __str__(self):
+        return f"{self.name} ({self.identifier})"
+
+
+class NCBITaxonomy(models.Model):
+    """NCBI Taxonomy for comprehensive organism data"""
+    tax_id = models.IntegerField(primary_key=True)  # NCBI Taxonomy ID
+    scientific_name = models.CharField(max_length=255)
+    common_name = models.CharField(max_length=255, blank=True, null=True)
+    synonyms = models.TextField(blank=True, null=True)  # Semicolon-separated
+    rank = models.CharField(max_length=100, blank=True, null=True)  # species, genus, family, etc.
+    parent_tax_id = models.IntegerField(blank=True, null=True)  # Parent in taxonomy tree
+    lineage = models.TextField(blank=True, null=True)  # Full taxonomic lineage
+    genetic_code = models.IntegerField(blank=True, null=True)
+    mitochondrial_genetic_code = models.IntegerField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = 'cc'
+        ordering = ['scientific_name']
+        verbose_name = 'NCBI Taxonomy'
+        verbose_name_plural = 'NCBI Taxonomy'
+
+    def __str__(self):
+        if self.common_name:
+            return f"{self.scientific_name} ({self.common_name}) [{self.tax_id}]"
+        return f"{self.scientific_name} [{self.tax_id}]"
+
+
+class ChEBICompound(models.Model):
+    """Chemical compounds from ChEBI (Chemical Entities of Biological Interest)"""
+    identifier = models.CharField(max_length=255, primary_key=True)  # CHEBI:XXXXXXX
+    name = models.CharField(max_length=255)
+    definition = models.TextField(blank=True, null=True)
+    synonyms = models.TextField(blank=True, null=True)  # Semicolon-separated
+    formula = models.CharField(max_length=255, blank=True, null=True)
+    mass = models.FloatField(blank=True, null=True)
+    charge = models.IntegerField(blank=True, null=True)
+    inchi = models.TextField(blank=True, null=True)
+    smiles = models.TextField(blank=True, null=True)
+    parent_terms = models.TextField(blank=True, null=True)  # is_a relationships
+    roles = models.TextField(blank=True, null=True)  # Biological/chemical roles
+    obsolete = models.BooleanField(default=False)
+    replacement_term = models.CharField(max_length=255, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = 'cc'
+        ordering = ['name']
+        verbose_name = 'ChEBI Compound'
+        verbose_name_plural = 'ChEBI Compounds'
+
+    def __str__(self):
+        return f"{self.name} ({self.identifier})"
+
+
+class PSIMSOntology(models.Model):
+    """Enhanced PSI-MS ontology terms for mass spectrometry"""
+    identifier = models.CharField(max_length=255, primary_key=True)  # MS:XXXXXXX
+    name = models.CharField(max_length=255)
+    definition = models.TextField(blank=True, null=True)
+    synonyms = models.TextField(blank=True, null=True)
+    parent_terms = models.TextField(blank=True, null=True)  # is_a relationships
+    category = models.CharField(max_length=255, blank=True, null=True)  # instrument, method, etc.
+    obsolete = models.BooleanField(default=False)
+    replacement_term = models.CharField(max_length=255, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = 'cc'
+        ordering = ['name']
+        verbose_name = 'PSI-MS Ontology'
+        verbose_name_plural = 'PSI-MS Ontology Terms'
+
+    def __str__(self):
+        return f"{self.name} ({self.identifier})"

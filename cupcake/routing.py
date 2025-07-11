@@ -1,5 +1,4 @@
 from cupcake.consumers import TimerConsumer, AnnotationConsumer, UserConsumer, SummaryConsumer, WebRTCSignalConsumer, InstrumentJobConsumer, NotificationConsumer
-
 from django.urls import re_path
 
 websocket_urlpatterns = [

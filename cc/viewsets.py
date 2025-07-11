@@ -6,13 +6,14 @@ import json
 import time
 import uuid
 from datetime import datetime, timedelta
+from decimal import Decimal
 from django.core.mail import send_mail
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.signing import TimestampSigner, loads, dumps, BadSignature, SignatureExpired
-from django.db.models import Q, Max, Count
+from django.db.models import Q, Max, Count, Sum
 from django.db.models.expressions import result
 from django.http import HttpResponse
 from django.utils import timezone
@@ -43,8 +44,8 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
     SubcellularLocation, HumanDisease, Tissue, MetadataColumn, MSUniqueVocabularies, Unimod, InstrumentJob, \
     FavouriteMetadataOption, Preset, MetadataTableTemplate, MaintenanceLog, SupportInformation, ExternalContact, \
     ExternalContactDetails, Message, MessageRecipient, MessageAttachment, MessageRecipient, MessageThread, \
-    ReagentSubscription, SiteSettings, BackupLog, DocumentPermission, ImportTracker
-from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission, IsParticipantOrAdmin
+    ReagentSubscription, SiteSettings, BackupLog, DocumentPermission, ImportTracker, ServiceTier, ServicePrice, BillingRecord
+from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission, IsParticipantOrAdmin, IsCoreFacilityPermission
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, dry_run_import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
     import_sdrf_file, validate_sdrf_file, export_excel_template, export_instrument_usage, import_excel, sdrf_validate, export_reagent_actions, import_reagents_from_file, check_instrument_warranty_maintenance
@@ -60,7 +61,8 @@ from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, Anno
     ExternalContactDetailsSerializer, MessageSerializer, MessageRecipientSerializer, MessageAttachmentSerializer, \
     MessageRecipientSerializer, MessageThreadSerializer, MessageThreadDetailSerializer, ReagentSubscriptionSerializer, \
     SiteSettingsSerializer, BackupLogSerializer, DocumentPermissionSerializer, SharedDocumentSerializer, \
-    UserBasicSerializer, ImportTrackerSerializer, ImportTrackerListSerializer, HistoricalRecordSerializer
+    UserBasicSerializer, ImportTrackerSerializer, ImportTrackerListSerializer, HistoricalRecordSerializer, \
+    ServiceTierSerializer, ServicePriceSerializer, BillingRecordSerializer
 from cc.utils import user_metadata, staff_metadata, send_slack_notification
 from cc.utils.user_data_import_revised import ImportReverter
 
@@ -2170,10 +2172,10 @@ class UserViewSet(ModelViewSet, FilterMixin):
     def get_user_lab_groups(self, request):
         user = self.request.user
         lab_groups = user.lab_groups.all()
-        is_professional = request.query_params.get('is_professional', None)
-        is_professional = True if is_professional == "true" else False
-        if is_professional:
-            lab_groups = lab_groups.filter(is_professional=True)
+        can_perform_ms_analysis = request.query_params.get('can_perform_ms_analysis', None)
+        can_perform_ms_analysis = True if can_perform_ms_analysis == "true" else False
+        if can_perform_ms_analysis:
+            lab_groups = lab_groups.filter(can_perform_ms_analysis=True)
         paginator = LimitOffsetPagination()
         paginator.default_limit = 10
         pagination = paginator.paginate_queryset(lab_groups, request)
@@ -2536,7 +2538,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 'id': lab_group.id,
                 'name': lab_group.name,
                 'member_count': lab_group.users.count(),
-                'is_professional': getattr(lab_group, 'is_professional', False),
+                'can_perform_ms_analysis': getattr(lab_group, 'can_perform_ms_analysis', False),
             })
 
         dashboard_data = {
@@ -2785,7 +2787,7 @@ class UserViewSet(ModelViewSet, FilterMixin):
                 'id': group.id,
                 'name': group.name,
                 'description': getattr(group, 'description', ''),
-                'is_professional': getattr(group, 'is_professional', False),
+                'can_perform_ms_analysis': getattr(group, 'can_perform_ms_analysis', False),
                 'member_count': group.users.count(),
                 'members': [{
                     'id': member.id,
@@ -4565,7 +4567,7 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
     def get_queryset(self):
         query = Q()
         stored_reagent_id = self.request.query_params.get('stored_reagent', None)
-        is_professional = self.request.query_params.get('is_professional', None)
+        can_perform_ms_analysis = self.request.query_params.get('can_perform_ms_analysis', None)
         if stored_reagent_id:
             stored_reagent = StoredReagent.objects.get(id=stored_reagent_id)
             return stored_reagent.access_lab_groups.all()
@@ -4573,9 +4575,9 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
         if storage_object_id:
             storage_object = StorageObject.objects.get(id=storage_object_id)
             return storage_object.access_lab_groups.all()
-        if is_professional:
-            is_professional = is_professional == 'true'
-            query &= Q(is_professional=is_professional)
+        if can_perform_ms_analysis:
+            can_perform_ms_analysis = can_perform_ms_analysis == 'true'
+            query &= Q(can_perform_ms_analysis=can_perform_ms_analysis)
         return self.queryset.filter(query)
 
     def get_object(self):
@@ -4587,7 +4589,7 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
         user = self.request.user
         group.name = request.data['name']
         group.description = request.data['description']
-        group.is_professional = request.data['is_professional']
+        group.can_perform_ms_analysis = request.data['can_perform_ms_analysis']
         group.save()
         
         # Add creator as both user and manager
@@ -4613,8 +4615,8 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
             instance.default_storage = StorageObject.objects.get(id=request.data['default_storage'])
         if "service_storage" in request.data:
             instance.service_storage = StorageObject.objects.get(id=request.data['service_storage'])
-        if "is_professional" in request.data:
-            instance.is_professional = request.data['is_professional']
+        if "can_perform_ms_analysis" in request.data:
+            instance.can_perform_ms_analysis = request.data['can_perform_ms_analysis']
         instance.save()
         data = self.get_serializer(instance).data
         return Response(data, status=status.HTTP_200_OK)
@@ -5642,7 +5644,7 @@ class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
         query = Q()
         if get_global != 'true':
             if mode == 'service_lab_group' and lab_group:
-                lab_group = LabGroup.objects.get(id=lab_group, is_professional=True)
+                lab_group = LabGroup.objects.get(id=lab_group, can_perform_ms_analysis=True)
                 query &= Q(service_lab_group=lab_group)
             elif mode == 'lab_group' and lab_group:
                 lab_group = LabGroup.objects.get(id=lab_group)
@@ -5679,7 +5681,7 @@ class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
             preset = Preset.objects.get(id=preset)
         if mode == 'service_lab_group':
 
-            lab_group = LabGroup.objects.get(id=lab_group, is_professional=True)
+            lab_group = LabGroup.objects.get(id=lab_group, can_perform_ms_analysis=True)
             if not lab_group.users.filter(id=user.id).exists():
                 return Response(status=status.HTTP_403_FORBIDDEN)
             else:
@@ -5800,7 +5802,7 @@ class MetadataTableTemplateViewSets(FilterMixin, ModelViewSet):
         elif mode == 'service_lab_group':
             lab_group_id = self.request.query_params.get('lab_group_id', None)
             if lab_group_id:
-                lab_group = LabGroup.objects.get(id=lab_group_id, is_professional=True)
+                lab_group = LabGroup.objects.get(id=lab_group_id, can_perform_ms_analysis=True)
                 query &= Q(service_lab_group=lab_group)
             else:
                 return Response(status=status.HTTP_400_BAD_REQUEST)
@@ -5861,7 +5863,7 @@ class MetadataTableTemplateViewSets(FilterMixin, ModelViewSet):
         if mode == 'service_lab_group':
             lab_group_id = request.data.get('lab_group', None)
             if lab_group_id:
-                lab_group = LabGroup.objects.get(id=lab_group_id, is_professional=True)
+                lab_group = LabGroup.objects.get(id=lab_group_id, can_perform_ms_analysis=True)
                 template.service_lab_group = lab_group
                 template.save()
             else:
@@ -6005,7 +6007,7 @@ class MetadataTableTemplateViewSets(FilterMixin, ModelViewSet):
         if mode == 'service_lab_group':
             lab_group_id = request.data.get('lab_group', None)
             if lab_group_id:
-                lab_group = LabGroup.objects.get(id=lab_group_id, is_professional=True)
+                lab_group = LabGroup.objects.get(id=lab_group_id, can_perform_ms_analysis=True)
                 new_template = MetadataTableTemplate.objects.create(name=template.name, service_lab_group=lab_group, user=request.user)
             else:
                 return Response(status=status.HTTP_400_BAD_REQUEST)
@@ -8945,3 +8947,203 @@ class HistoricalRecordsViewSet(ReadOnlyModelViewSet):
             'timeline': list(timeline_data),
             'period_days': days_back
         })
+
+
+
+class ServiceTierViewSet(ModelViewSet):
+    permission_classes = [IsCoreFacilityPermission]
+    queryset = ServiceTier.objects.all()
+    serializer_class = ServiceTierSerializer
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    search_fields = ['name', 'description']
+    filterset_fields = ['lab_group', 'is_active']
+    
+    def get_queryset(self):
+        # Only show service tiers for core facility lab groups the user belongs to
+        user_core_facility_groups = self.request.user.lab_groups.filter(is_core_facility=True)
+        return ServiceTier.objects.filter(lab_group__in=user_core_facility_groups)
+    
+    def perform_create(self, serializer):
+        # Ensure the service tier is created for a core facility lab group
+        lab_group = serializer.validated_data['lab_group']
+        if not lab_group.is_core_facility:
+            raise ValidationError("Service tiers can only be created for core facility lab groups")
+        
+        # Ensure user has access to this lab group
+        if not self.request.user.lab_groups.filter(id=lab_group.id, is_core_facility=True).exists():
+            raise PermissionDenied("You don't have permission to create service tiers for this lab group")
+        
+        serializer.save()
+
+
+class ServicePriceViewSet(ModelViewSet):
+    permission_classes = [IsCoreFacilityPermission]
+    queryset = ServicePrice.objects.all()
+    serializer_class = ServicePriceSerializer
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    filterset_fields = ['service_tier', 'instrument', 'billing_unit', 'is_active']
+    
+    def get_queryset(self):
+        # Only show service prices for core facility lab groups the user belongs to
+        user_core_facility_groups = self.request.user.lab_groups.filter(is_core_facility=True)
+        return ServicePrice.objects.filter(service_tier__lab_group__in=user_core_facility_groups)
+    
+    def perform_create(self, serializer):
+        # Ensure the service price is created for a core facility lab group
+        service_tier = serializer.validated_data['service_tier']
+        if not service_tier.lab_group.is_core_facility:
+            raise ValidationError("Service prices can only be created for core facility service tiers")
+        
+        # Ensure user has access to this service tier's lab group
+        if not self.request.user.lab_groups.filter(id=service_tier.lab_group.id, is_core_facility=True).exists():
+            raise PermissionDenied("You don't have permission to create service prices for this service tier")
+        
+        serializer.save()
+
+
+class BillingRecordViewSet(ModelViewSet):
+    permission_classes = [IsCoreFacilityPermission]
+    queryset = BillingRecord.objects.all()
+    serializer_class = BillingRecordSerializer
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['status', 'billing_date', 'user', 'service_tier']
+    ordering_fields = ['billing_date', 'total_amount', 'created_at']
+    ordering = ['-billing_date']
+    
+    def get_queryset(self):
+        # Only show billing records for core facility lab groups the user belongs to
+        user_core_facility_groups = self.request.user.lab_groups.filter(is_core_facility=True)
+        return BillingRecord.objects.filter(service_tier__lab_group__in=user_core_facility_groups)
+    
+    def perform_create(self, serializer):
+        # Ensure the billing record is created for a core facility lab group
+        service_tier = serializer.validated_data['service_tier']
+        if not service_tier.lab_group.is_core_facility:
+            raise ValidationError("Billing records can only be created for core facility service tiers")
+        
+        # Ensure user has access to this service tier's lab group
+        if not self.request.user.lab_groups.filter(id=service_tier.lab_group.id, is_core_facility=True).exists():
+            raise PermissionDenied("You don't have permission to create billing records for this service tier")
+        
+        serializer.save()
+    
+    @action(detail=False, methods=['get'])
+    def summary(self, request):
+        """Get billing summary statistics"""
+        queryset = self.get_queryset()
+        
+        # Get query parameters for filtering
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        status = request.query_params.get('status')
+        
+        if start_date:
+            queryset = queryset.filter(billing_date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(billing_date__lte=end_date)
+        if status:
+            queryset = queryset.filter(status=status)
+        
+        summary_data = {
+            'total_records': queryset.count(),
+            'total_amount': queryset.aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00'),
+            'by_status': {},
+            'monthly_totals': {}
+        }
+        
+        # Group by status
+        for status_choice in BillingRecord.STATUS_CHOICES:
+            status_key = status_choice[0]
+            status_queryset = queryset.filter(status=status_key)
+            summary_data['by_status'][status_key] = {
+                'count': status_queryset.count(),
+                'total_amount': status_queryset.aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+            }
+        
+        # Monthly totals for current year
+        current_year = timezone.now().year
+        monthly_data = queryset.filter(
+            billing_date__year=current_year
+        ).extra(
+            select={'month': 'EXTRACT(month FROM billing_date)'}
+        ).values('month').annotate(
+            count=Count('id'),
+            total_amount=Sum('total_amount')
+        ).order_by('month')
+        
+        for month_data in monthly_data:
+            month = int(month_data['month'])
+            summary_data['monthly_totals'][month] = {
+                'count': month_data['count'],
+                'total_amount': month_data['total_amount'] or Decimal('0.00')
+            }
+        
+        return Response(summary_data)
+    
+    @action(detail=False, methods=['post'])
+    def calculate_billing(self, request):
+        """Calculate billing for an instrument job"""
+        job_id = request.data.get('job_id')
+        service_tier_id = request.data.get('service_tier_id')
+        
+        if not job_id or not service_tier_id:
+            return Response({'error': 'job_id and service_tier_id are required'}, status=400)
+        
+        try:
+            job = InstrumentJob.objects.get(id=job_id)
+            service_tier = ServiceTier.objects.get(id=service_tier_id)
+            
+            # Ensure user has access to this service tier
+            if not self.request.user.lab_groups.filter(id=service_tier.lab_group.id, is_core_facility=True).exists():
+                raise PermissionDenied("You don't have permission to calculate billing for this service tier")
+            
+            # Get pricing for this instrument and service tier
+            try:
+                instrument_price = ServicePrice.objects.get(
+                    service_tier=service_tier,
+                    instrument=job.instrument,
+                    billing_unit='per_hour_instrument',
+                    is_active=True
+                )
+            except ServicePrice.DoesNotExist:
+                instrument_price = None
+            
+            try:
+                personnel_price = ServicePrice.objects.get(
+                    service_tier=service_tier,
+                    instrument=job.instrument,
+                    billing_unit='per_hour_personnel',
+                    is_active=True
+                )
+            except ServicePrice.DoesNotExist:
+                personnel_price = None
+            
+            # Calculate costs
+            instrument_cost = Decimal('0.00')
+            personnel_cost = Decimal('0.00')
+            
+            if instrument_price and job.instrument_hours:
+                instrument_cost = Decimal(str(job.instrument_hours)) * instrument_price.price
+            
+            if personnel_price and job.personnel_hours:
+                personnel_cost = Decimal(str(job.personnel_hours)) * personnel_price.price
+            
+            total_amount = instrument_cost + personnel_cost
+            
+            return Response({
+                'instrument_hours': job.instrument_hours,
+                'instrument_rate': instrument_price.price if instrument_price else None,
+                'instrument_cost': instrument_cost,
+                'personnel_hours': job.personnel_hours,
+                'personnel_rate': personnel_price.price if personnel_price else None,
+                'personnel_cost': personnel_cost,
+                'total_amount': total_amount,
+                'currency': instrument_price.currency if instrument_price else (personnel_price.currency if personnel_price else 'USD')
+            })
+            
+        except InstrumentJob.DoesNotExist:
+            return Response({'error': 'Instrument job not found'}, status=404)
+        except ServiceTier.DoesNotExist:
+            return Response({'error': 'Service tier not found'}, status=404)
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)

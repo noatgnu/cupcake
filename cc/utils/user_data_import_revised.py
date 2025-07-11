@@ -466,7 +466,7 @@ class UserDataImporter:
             lab_group = LabGroup.objects.create(
                 name=f"{row['name']}_imported_{self.target_user.username}",
                 description=row['description'],
-                is_professional=bool(row['is_professional']),
+                can_perform_ms_analysis=bool(row['can_perform_ms_analysis']),
                 # Note: default_storage_id and service_storage_id will be set later
             )
             

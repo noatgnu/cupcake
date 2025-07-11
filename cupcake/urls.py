@@ -29,7 +29,7 @@ from cc.viewsets import ProtocolViewSet, SessionViewSet, StepViewSet, Annotation
     MetadataTableTemplateViewSets, SupportInformationViewSet, ExternalContactViewSet, ExternalContactDetailsViewSet, \
     MaintenanceLogViewSet, MessageThreadViewSet, MessageViewSet, MessageRecipientViewSet, MessageAttachmentViewSet, \
     ReagentDocumentViewSet, SiteSettingsViewSet, BackupLogViewSet, SharedDocumentViewSet, DocumentPermissionViewSet, \
-    ImportTrackerViewSet, HistoricalRecordsViewSet
+    ImportTrackerViewSet, HistoricalRecordsViewSet, ServiceTierViewSet, ServicePriceViewSet, BillingRecordViewSet
 
 router = routers.DefaultRouter()
 router.register(r'protocol', ProtocolViewSet)
@@ -78,6 +78,9 @@ router.register(r'shared_documents', SharedDocumentViewSet, basename="shared_doc
 router.register(r'document_permissions', DocumentPermissionViewSet)
 router.register(r'import_tracking', ImportTrackerViewSet)
 router.register(r'history', HistoricalRecordsViewSet)
+router.register(r'service_tiers', ServiceTierViewSet)
+router.register(r'service_prices', ServicePriceViewSet)
+router.register(r'billing_records', BillingRecordViewSet)
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -87,6 +90,8 @@ urlpatterns = [
     path('api/chunked_upload/', DataChunkedUploadView.as_view(), name='chunked_upload'),
     path('api/chunked_upload/<uuid:pk>/', DataChunkedUploadView.as_view(), name='chunkedupload-detail'),
     path("api/set-csrf/", set_csrf, name="set_csrf"),
+    # MCP SDRF endpoints
+    path('api/mcp/', include('cc.mcp_urls')),
     # Health check endpoints
     path('health/', health_check, name='health'),
     path('ready/', ready_check, name='ready'),

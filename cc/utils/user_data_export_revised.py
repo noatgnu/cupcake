@@ -690,7 +690,7 @@ class UserDataExporter:
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 description TEXT,
-                is_professional BOOLEAN DEFAULT 0,
+                can_perform_ms_analysis BOOLEAN DEFAULT 0,
                 created_at TEXT,
                 updated_at TEXT,
                 remote_id INTEGER,
@@ -1428,14 +1428,14 @@ class UserDataExporter:
                 
             cursor.execute('''
                 INSERT INTO export_lab_groups 
-                (id, name, description, is_professional, created_at, updated_at,
+                (id, name, description, can_perform_ms_analysis, created_at, updated_at,
                  remote_id, remote_host_id, default_storage_id, service_storage_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 lab_group.id,
                 lab_group.name,
                 lab_group.description,
-                lab_group.is_professional,
+                lab_group.can_perform_ms_analysis,
                 lab_group.created_at.isoformat() if hasattr(lab_group, 'created_at') and lab_group.created_at else None,
                 lab_group.updated_at.isoformat() if hasattr(lab_group, 'updated_at') and lab_group.updated_at else None,
                 getattr(lab_group, 'remote_id', None),

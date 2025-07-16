@@ -4,16 +4,21 @@ Django views for MCP SDRF functionality.
 These views integrate the MCP SDRF tools directly into the Django REST API.
 """
 
+import json
+import os
+import uuid
+
+from django.http import JsonResponse
+from django.utils.decorators import method_decorator
+from django.views import View
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from django.utils.decorators import method_decorator
-from django.views import View
-import json
+from django_rq import get_queue
 
+from cc.rq_tasks import analyze_protocol_step_task, generate_sdrf_metadata_task
 from mcp_server.tools.protocol_analyzer import ProtocolAnalyzer
 from mcp_server.tools.sdrf_generator import SDRFMetadataGenerator
 from mcp_server.utils.term_matcher import OntologyTermMatcher
@@ -21,23 +26,22 @@ from mcp_server.utils.term_matcher import OntologyTermMatcher
 
 class MCPProtocolAnalysisView(View):
     """Base view for MCP protocol analysis functionality."""
-    
+
     def __init__(self):
         super().__init__()
         # Initialize with default (regex-based) analyzer
         self.protocol_analyzer = ProtocolAnalyzer()
         self.sdrf_generator = SDRFMetadataGenerator()
         self.term_matcher = OntologyTermMatcher()
-    
+
     def get_analyzer(self, request_data):
         """Get appropriate analyzer based on request parameters."""
         use_anthropic = request_data.get('use_anthropic', False)
         anthropic_api_key = request_data.get('anthropic_api_key')
-        
+
         if use_anthropic:
             try:
                 # Use environment variable if no key provided
-                import os
                 api_key = anthropic_api_key or os.getenv('ANTHROPIC_API_KEY')
                 if api_key:
                     return ProtocolAnalyzer(use_anthropic=True, anthropic_api_key=api_key)
@@ -48,7 +52,7 @@ class MCPProtocolAnalysisView(View):
                 # Fall back to default analyzer if Anthropic fails
                 print(f"Anthropic analyzer initialization failed: {e}")
                 return self.protocol_analyzer
-        
+
         return self.protocol_analyzer
 
 
@@ -60,6 +64,7 @@ class AnalyzeProtocolStepView(MCPProtocolAnalysisView):
         try:
             data = json.loads(request.body)
             step_id = data.get('step_id')
+            use_async = data.get('use_async', True)  # Default to async
             
             if not step_id:
                 return JsonResponse({
@@ -67,6 +72,36 @@ class AnalyzeProtocolStepView(MCPProtocolAnalysisView):
                     'error': 'step_id is required'
                 }, status=400)
             
+            # Check if we should use async processing
+            if use_async:
+                # Use RQ task for async processing
+                # Generate unique task ID
+                task_id = str(uuid.uuid4())
+                
+                # Get user ID for WebSocket updates
+                user_id = request.user.id if request.user.is_authenticated else None
+                
+                # Get queue and enqueue task
+                queue = get_queue('mcp')
+                job = queue.enqueue(
+                    analyze_protocol_step_task,
+                    task_id=task_id,
+                    step_id=step_id,
+                    use_anthropic=data.get('use_anthropic', False),
+                    user_id=user_id,
+                    job_timeout='30m'
+                )
+                
+                return JsonResponse({
+                    'success': True,
+                    'task_id': task_id,
+                    'job_id': job.id,
+                    'step_id': step_id,
+                    'status': 'queued',
+                    'message': 'Analysis task queued successfully. Use WebSocket for progress updates.'
+                })
+            
+            # Synchronous processing (fallback)
             # Get user token from request (if authenticated)
             user_token = None
             if request.user.is_authenticated:
@@ -194,6 +229,7 @@ class GenerateSDRFMetadataView(MCPProtocolAnalysisView):
             data = json.loads(request.body)
             step_id = data.get('step_id')
             auto_create = data.get('auto_create', False)
+            use_async = data.get('use_async', True)  # Default to async
             
             if not step_id:
                 return JsonResponse({
@@ -201,6 +237,36 @@ class GenerateSDRFMetadataView(MCPProtocolAnalysisView):
                     'error': 'step_id is required'
                 }, status=400)
             
+            # Check if we should use async processing
+            if use_async:
+                # Use RQ task for async processing
+                # Generate unique task ID
+                task_id = str(uuid.uuid4())
+                
+                # Get user ID for WebSocket updates
+                user_id = request.user.id if request.user.is_authenticated else None
+                
+                # Get queue and enqueue task
+                queue = get_queue('mcp')
+                job = queue.enqueue(
+                    generate_sdrf_metadata_task,
+                    task_id=task_id,
+                    step_id=step_id,
+                    use_anthropic=data.get('use_anthropic', False),
+                    user_id=user_id,
+                    job_timeout='30m'
+                )
+                
+                return JsonResponse({
+                    'success': True,
+                    'task_id': task_id,
+                    'job_id': job.id,
+                    'step_id': step_id,
+                    'status': 'queued',
+                    'message': 'Metadata generation task queued successfully. Use WebSocket for progress updates.'
+                })
+            
+            # Synchronous processing (fallback)
             # Get user token from request
             user_token = None
             if request.user.is_authenticated:
@@ -309,6 +375,62 @@ class ExportSDRFFileView(MCPProtocolAnalysisView):
 
 
 @method_decorator(csrf_exempt, name='dispatch')
+class MCPTaskStatusView(View):
+    """Get status of MCP async tasks."""
+    
+    def get(self, request):
+        task_id = request.GET.get('task_id')
+        job_id = request.GET.get('job_id')
+        
+        if not task_id and not job_id:
+            return JsonResponse({
+                'success': False,
+                'error': 'task_id or job_id is required'
+            }, status=400)
+        
+        try:
+            from django_rq import get_queue
+            from rq.job import Job
+
+            queue = get_queue('mcp')
+            
+            if job_id:
+                try:
+                    job = Job.fetch(job_id, connection=queue.connection)
+                    
+                    return JsonResponse({
+                        'success': True,
+                        'job_id': job.id,
+                        'task_id': task_id,
+                        'status': job.get_status(),
+                        'created_at': job.created_at.isoformat() if job.created_at else None,
+                        'started_at': job.started_at.isoformat() if job.started_at else None,
+                        'ended_at': job.ended_at.isoformat() if job.ended_at else None,
+                        'result': job.result if job.is_finished else None,
+                        'failure_reason': str(job.exc_info) if job.is_failed else None,
+                        'meta': job.meta
+                    })
+                except Exception as e:
+                    return JsonResponse({
+                        'success': False,
+                        'error': f'Job not found: {str(e)}'
+                    }, status=404)
+            
+            # If only task_id is provided, return basic status
+            return JsonResponse({
+                'success': True,
+                'task_id': task_id,
+                'message': 'Use WebSocket connection for real-time progress updates'
+            })
+            
+        except Exception as e:
+            return JsonResponse({
+                'success': False,
+                'error': f'Status check failed: {str(e)}'
+            }, status=500)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
 class AnalyzeFullProtocolView(MCPProtocolAnalysisView):
     """Analyze all steps in a protocol comprehensively."""
     
@@ -316,6 +438,7 @@ class AnalyzeFullProtocolView(MCPProtocolAnalysisView):
         try:
             data = json.loads(request.body)
             protocol_id = data.get('protocol_id')
+            use_async = data.get('use_async', True)  # Default to async
             
             if not protocol_id:
                 return JsonResponse({
@@ -323,6 +446,36 @@ class AnalyzeFullProtocolView(MCPProtocolAnalysisView):
                     'error': 'protocol_id is required'
                 }, status=400)
             
+            # Check if we should use async processing
+            if use_async:
+                # Use RQ task for async processing
+                # Generate unique task ID
+                task_id = str(uuid.uuid4())
+                
+                # Get user ID for WebSocket updates
+                user_id = request.user.id if request.user.is_authenticated else None
+                
+                # Get queue and enqueue task
+                queue = get_queue('mcp')
+                job = queue.enqueue(
+                    analyze_protocol_step_task,
+                    task_id=task_id,
+                    step_id=protocol_id,
+                    use_anthropic=data.get('use_anthropic', False),
+                    user_id=user_id,
+                    job_timeout='60m'
+                )
+                
+                return JsonResponse({
+                    'success': True,
+                    'task_id': task_id,
+                    'job_id': job.id,
+                    'protocol_id': protocol_id,
+                    'status': 'queued',
+                    'message': 'Full protocol analysis task queued successfully. Use WebSocket for progress updates.'
+                })
+            
+            # Synchronous processing (fallback)
             # Get user token from request
             user_token = None
             if request.user.is_authenticated:
@@ -400,19 +553,19 @@ class AnalyzeFullProtocolView(MCPProtocolAnalysisView):
 def analyze_protocol_step_api(request):
     """DRF API view for protocol step analysis."""
     step_id = request.data.get('step_id')
-    
+
     if not step_id:
         return Response({
             'success': False,
             'error': 'step_id is required'
         }, status=status.HTTP_400_BAD_REQUEST)
-    
+
     try:
         analyzer = ProtocolAnalyzer()
         user_token = str(request.user.id)
-        
+
         result = analyzer.get_step_sdrf_suggestions(step_id, user_token)
-        
+
         # Add detailed analysis
         if result.get("success"):
             analysis = analyzer.analyze_protocol_step(step_id, user_token)
@@ -423,9 +576,9 @@ def analyze_protocol_step_api(request):
                     "categorized_matches": analysis.get("categorized_matches", {}),
                     "analysis_metadata": analysis.get("analysis_metadata", {})
                 }
-        
+
         return Response(result)
-        
+
     except Exception as e:
         return Response({
             'success': False,
@@ -439,36 +592,91 @@ def generate_sdrf_metadata_api(request):
     """DRF API view for SDRF metadata generation."""
     step_id = request.data.get('step_id')
     auto_create = request.data.get('auto_create', False)
-    
+
     if not step_id:
         return Response({
             'success': False,
             'error': 'step_id is required'
         }, status=status.HTTP_400_BAD_REQUEST)
-    
+
     try:
         analyzer = ProtocolAnalyzer()
         generator = SDRFMetadataGenerator()
         user_token = str(request.user.id)
-        
+
         # Get SDRF suggestions
         suggestions = analyzer.get_step_sdrf_suggestions(step_id, user_token)
-        
+
         if not suggestions.get("success"):
             return Response(suggestions, status=status.HTTP_400_BAD_REQUEST)
-        
+
         # Generate metadata columns
         result = generator.generate_metadata_columns(
-            step_id, 
+            step_id,
             suggestions.get("sdrf_suggestions", {}),
             user_token,
             auto_create
         )
-        
+
         return Response(result)
-        
+
     except Exception as e:
         return Response({
             'success': False,
             'error': f'Metadata generation failed: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_analysis_task_status(request, task_id):
+    """Get the status of an analysis task."""
+    try:
+        # Get RQ job for this task
+        queue = get_queue('mcp')
+
+        # Find job by task_id in job meta
+        jobs = queue.get_jobs()
+        target_job = None
+
+        for job in jobs:
+            if job.meta.get('task_id') == task_id:
+                target_job = job
+                break
+
+        if not target_job:
+            return Response({
+                'success': False,
+                'error': 'Task not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        # Get job status
+        job_status = target_job.get_status()
+
+        result = {
+            'success': True,
+            'task_id': task_id,
+            'job_id': target_job.id,
+            'status': job_status,
+            'created_at': target_job.created_at.isoformat() if target_job.created_at else None,
+            'started_at': target_job.started_at.isoformat() if target_job.started_at else None,
+            'ended_at': target_job.ended_at.isoformat() if target_job.ended_at else None,
+        }
+
+        # Add result if job is finished
+        if job_status == 'finished':
+            result['result'] = target_job.result
+        elif job_status == 'failed':
+            result['error'] = str(target_job.exc_info) if target_job.exc_info else 'Unknown error'
+
+        # Add progress info if available
+        if hasattr(target_job, 'meta') and target_job.meta:
+            result['meta'] = target_job.meta
+
+        return Response(result)
+
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': f'Failed to get task status: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

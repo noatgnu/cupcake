@@ -9,7 +9,7 @@ default_columns = [{
             {
             "name": "Organism", "type": "Characteristics", "mandatory": True
         }, {
-            "name": "Tissue", "type": "Characteristics", "mandatory": True
+            "name": "Organism part", "type": "Characteristics", "mandatory": True
         }, {
             "name": "Disease", "type": "Characteristics", "mandatory": True
         }, {
@@ -48,7 +48,7 @@ user_metadata = [
             "name": "Disease", "type": "Characteristics", "mandatory": True
         },
             {
-                "name": "Tissue", "type": "Characteristics", "mandatory": True
+                "name": "Organism part", "type": "Characteristics", "mandatory": True
             },
             {
                 "name": "Cell type", "type": "Characteristics", "mandatory": False

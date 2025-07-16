@@ -10,7 +10,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, StepVariation, Se
     HumanDisease, Tissue, SubcellularLocation, MetadataColumn, Species, Unimod, InstrumentJob, FavouriteMetadataOption, \
     Preset, MetadataTableTemplate, ExternalContactDetails, SupportInformation, ExternalContact, MaintenanceLog, \
     MessageRecipient, MessageThread, Message, MessageAttachment, ReagentSubscription, SiteSettings, BackupLog, DocumentPermission, \
-    ImportTracker, ImportedObject, ImportedFile, ImportedRelationship, ServiceTier, ServicePrice, BillingRecord
+    ImportTracker, ImportedObject, ImportedFile, ImportedRelationship, ServiceTier, ServicePrice, BillingRecord, ProtocolStepSuggestionCache
 
 
 class UserBasicSerializer(ModelSerializer):
@@ -824,7 +824,14 @@ class MetadataColumnSerializer(ModelSerializer):
 
     def get_modifiers(self, obj):
         if obj.modifiers:
-            return json.loads(obj.modifiers)
+            try:
+                return json.loads(obj.modifiers)
+            except json.JSONDecodeError:
+                # If JSON is malformed, return empty list and log error
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Invalid JSON in MetadataColumn {obj.id} modifiers field: {obj.modifiers}")
+                return []
         return []
 
     class Meta:
@@ -1025,7 +1032,14 @@ class MetadataTableTemplateSerializer(ModelSerializer):
 
     def get_field_mask_mapping(self, obj):
         if obj.field_mask_mapping:
-            return json.loads(obj.field_mask_mapping)
+            try:
+                return json.loads(obj.field_mask_mapping)
+            except json.JSONDecodeError:
+                # If JSON is malformed, return empty list and log error
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Invalid JSON in MetadataTableTemplate {obj.id} field_mask_mapping field: {obj.field_mask_mapping}")
+                return []
         return []
 
     class Meta:
@@ -1675,3 +1689,29 @@ class BillingRecordSerializer(ModelSerializer):
                 'cost': obj.other_cost
             })
         return breakdown
+
+
+class ProtocolStepSuggestionCacheSerializer(ModelSerializer):
+    """Serializer for cached SDRF suggestions"""
+    suggestions_data = SerializerMethodField()
+    cache_age_hours = SerializerMethodField()
+    
+    def get_suggestions_data(self, obj):
+        """Get the cached suggestions data"""
+        return obj.suggestions_data
+    
+    def get_cache_age_hours(self, obj):
+        """Calculate cache age in hours"""
+        if obj.updated_at:
+            from django.utils import timezone
+            delta = timezone.now() - obj.updated_at
+            return round(delta.total_seconds() / 3600, 1)
+        return None
+    
+    class Meta:
+        model = ProtocolStepSuggestionCache
+        fields = [
+            'id', 'step', 'analyzer_type', 'suggestions_data', 
+            'cache_age_hours', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']

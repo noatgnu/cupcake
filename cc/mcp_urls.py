@@ -15,6 +15,7 @@ urlpatterns = [
     path('validate-compliance/', mcp_views.ValidateSDRFComplianceView.as_view(), name='validate_compliance'),
     path('export-sdrf/', mcp_views.ExportSDRFFileView.as_view(), name='export_sdrf'),
     path('analyze-protocol/', mcp_views.AnalyzeFullProtocolView.as_view(), name='analyze_protocol'),
+    path('task-status/', mcp_views.MCPTaskStatusView.as_view(), name='task_status'),
     
     # DRF API views (authentication required)
     path('api/analyze-step/', mcp_views.analyze_protocol_step_api, name='api_analyze_step'),

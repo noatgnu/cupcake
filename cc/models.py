@@ -3006,3 +3006,138 @@ class PSIMSOntology(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.identifier})"
+
+
+class ProtocolStepSuggestionCache(models.Model):
+    """
+    Cache for SDRF suggestions for protocol steps to improve performance.
+    """
+    step = models.ForeignKey(ProtocolStep, on_delete=models.CASCADE, related_name="suggestion_cache")
+    analyzer_type = models.CharField(max_length=50, choices=[
+        ('standard_nlp', 'Standard NLP'),
+        ('mcp_claude', 'MCP Claude'),
+        ('anthropic_claude', 'Anthropic Claude')
+    ])
+    
+    # Cache content
+    sdrf_suggestions = models.JSONField(default=dict, help_text="Cached SDRF suggestions")
+    analysis_metadata = models.JSONField(default=dict, help_text="Analysis metadata")
+    extracted_terms = models.JSONField(default=list, help_text="Extracted terms")
+    
+    # Cache metadata
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    is_valid = models.BooleanField(default=True, help_text="Whether cache is still valid")
+    
+    # Hash of step content for invalidation
+    step_content_hash = models.CharField(max_length=64, help_text="Hash of step description for cache invalidation")
+    
+    class Meta:
+        app_label = "cc"
+        unique_together = ['step', 'analyzer_type']
+        ordering = ['-updated_at']
+        indexes = [
+            models.Index(fields=['step', 'analyzer_type']),
+            models.Index(fields=['step', 'is_valid']),
+            models.Index(fields=['created_at']),
+        ]
+    
+    def __str__(self):
+        return f"Cache for step {self.step.id} ({self.analyzer_type})"
+    
+    @classmethod
+    def get_cache_key(cls, step_id: int, analyzer_type: str) -> str:
+        """Generate cache key for a step and analyzer type."""
+        return f"step_{step_id}_{analyzer_type}"
+    
+    def get_step_content_hash(self, step_description: str) -> str:
+        """Generate hash of step content for cache invalidation."""
+        return hashlib.sha256(step_description.encode('utf-8')).hexdigest()
+    
+    def is_cache_valid(self) -> bool:
+        """Check if cache is still valid based on step content."""
+        if not self.is_valid:
+            return False
+        
+        current_hash = self.get_step_content_hash(self.step.step_description)
+        return current_hash == self.step_content_hash
+    
+    def invalidate(self):
+        """Mark cache as invalid."""
+        self.is_valid = False
+        self.save(update_fields=['is_valid', 'updated_at'])
+    
+    @classmethod
+    def get_cached_suggestions(cls, step_id: int, analyzer_type: str):
+        """Get cached suggestions for a step and analyzer type."""
+        try:
+            cache_entry = cls.objects.get(
+                step_id=step_id,
+                analyzer_type=analyzer_type,
+                is_valid=True
+            )
+            
+            if cache_entry.is_cache_valid():
+                return {
+                    'success': True,
+                    'step_id': step_id,
+                    'sdrf_suggestions': cache_entry.sdrf_suggestions,
+                    'analysis_metadata': cache_entry.analysis_metadata,
+                    'extracted_terms': cache_entry.extracted_terms,
+                    'cached': True,
+                    'cache_created_at': cache_entry.created_at.isoformat(),
+                    'cache_updated_at': cache_entry.updated_at.isoformat()
+                }
+            else:
+                # Cache is invalid, delete it
+                cache_entry.delete()
+                return None
+                
+        except cls.DoesNotExist:
+            return None
+    
+    @classmethod
+    def cache_suggestions(cls, step_id: int, analyzer_type: str, suggestions_data: dict):
+        """Cache suggestions for a step and analyzer type."""
+        try:
+            step = ProtocolStep.objects.get(id=step_id)
+            step_content_hash = hashlib.sha256(step.step_description.encode('utf-8')).hexdigest()
+            
+            # Update or create cache entry
+            cache_entry, created = cls.objects.update_or_create(
+                step=step,
+                analyzer_type=analyzer_type,
+                defaults={
+                    'sdrf_suggestions': suggestions_data.get('sdrf_suggestions', {}),
+                    'analysis_metadata': suggestions_data.get('analysis_metadata', {}),
+                    'extracted_terms': suggestions_data.get('extracted_terms', []),
+                    'step_content_hash': step_content_hash,
+                    'is_valid': True
+                }
+            )
+            
+            return cache_entry
+            
+        except ProtocolStep.DoesNotExist:
+            return None
+    
+    @classmethod
+    def invalidate_step_cache(cls, step_id: int):
+        """Invalidate all cached suggestions for a step."""
+        cls.objects.filter(step_id=step_id).update(is_valid=False)
+    
+    @classmethod
+    def cleanup_expired_cache(cls, days_old: int = 30):
+        """Clean up old cache entries."""
+        cutoff_date = datetime.now() - timedelta(days=days_old)
+        cls.objects.filter(created_at__lt=cutoff_date).delete()
+
+
+# Signal to invalidate cache when protocol step is updated
+@receiver(post_save, sender=ProtocolStep)
+def invalidate_step_cache_on_update(sender, instance, **kwargs):
+    """Invalidate cache when protocol step is updated."""
+    if kwargs.get('update_fields') and 'step_description' in kwargs['update_fields']:
+        ProtocolStepSuggestionCache.invalidate_step_cache(instance.id)
+    elif not kwargs.get('update_fields'):  # Full save
+        ProtocolStepSuggestionCache.invalidate_step_cache(instance.id)

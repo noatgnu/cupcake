@@ -75,10 +75,11 @@ class OntologyTermMatcher:
                 
                 # Add all searchable terms to cache
                 for term in entry['searchable_terms']:
-                    normalized_term = self._normalize_term(term)
-                    if normalized_term not in cache:
-                        cache[normalized_term] = []
-                    cache[normalized_term].append(entry)
+                    if term is not None and term.strip():  # Skip None and empty terms
+                        normalized_term = self._normalize_term(term)
+                        if normalized_term not in cache:
+                            cache[normalized_term] = []
+                        cache[normalized_term].append(entry)
         
         except Exception as e:
             print(f"Error building cache for {ontology_name}: {e}")
@@ -267,19 +268,22 @@ class OntologyTermMatcher:
             entry['searchable_terms'] = [t.strip() for t in terms if t.strip()]
             
         elif ontology_name == 'ncbi_taxonomy':
+            # Handle None values properly
+            scientific_name = getattr(record, 'scientific_name', '') or ''
+            common_name = getattr(record, 'common_name', '') or ''
+            tax_id = getattr(record, 'tax_id', '') or ''
+            rank = getattr(record, 'rank', '') or ''
+            
             entry.update({
-                'name': getattr(record, 'scientific_name', ''),
-                'common_name': getattr(record, 'common_name', ''),
-                'tax_id': getattr(record, 'tax_id', ''),
-                'rank': getattr(record, 'rank', ''),
-                'accession': str(getattr(record, 'tax_id', ''))
+                'name': scientific_name,
+                'common_name': common_name,
+                'tax_id': tax_id,
+                'rank': rank,
+                'accession': str(tax_id)
             })
             # Add searchable terms
-            terms = [
-                getattr(record, 'scientific_name', ''),
-                getattr(record, 'common_name', '')
-            ]
-            synonyms = getattr(record, 'synonyms', '')
+            terms = [scientific_name, common_name]
+            synonyms = getattr(record, 'synonyms', '') or ''
             if synonyms:
                 terms.extend(synonyms.split(';'))
             entry['searchable_terms'] = [t.strip() for t in terms if t.strip()]
@@ -327,7 +331,7 @@ class OntologyTermMatcher:
     
     def match_terms(self, extracted_terms: List[str], 
                    ontology_types: Optional[List[str]] = None,
-                   min_confidence: float = 0.5) -> List[MatchResult]:
+                   min_confidence: float = 0.5, ai_context: dict = None) -> List[MatchResult]:
         """
         Match extracted terms to ontology terms.
         
@@ -335,6 +339,7 @@ class OntologyTermMatcher:
             extracted_terms: List of terms extracted from protocol steps
             ontology_types: List of ontology types to search (None for all)
             min_confidence: Minimum confidence threshold for matches
+            ai_context: Optional AI analysis context for enhanced scoring
             
         Returns:
             List of MatchResult objects
@@ -345,7 +350,7 @@ class OntologyTermMatcher:
         all_matches = []
         
         for term in extracted_terms:
-            matches = self._match_single_term(term, ontology_types, min_confidence)
+            matches = self._match_single_term(term, ontology_types, min_confidence, ai_context)
             all_matches.extend(matches)
         
         # Sort by confidence and remove low-confidence duplicates
@@ -353,7 +358,7 @@ class OntologyTermMatcher:
         return self._deduplicate_matches(all_matches, min_confidence)
     
     def _match_single_term(self, term: str, ontology_types: List[str], 
-                          min_confidence: float) -> List[MatchResult]:
+                          min_confidence: float, ai_context: dict = None) -> List[MatchResult]:
         """
         Match a single term against specified ontologies.
         
@@ -406,7 +411,7 @@ class OntologyTermMatcher:
             # 2. Partial and fuzzy matches
             else:
                 partial_matches = self._find_partial_matches(
-                    normalized_term, cache, term, ontology_type, min_confidence
+                    normalized_term, cache, term, ontology_type, min_confidence, ai_context
                 )
                 matches.extend(partial_matches)
         
@@ -414,7 +419,7 @@ class OntologyTermMatcher:
     
     def _find_partial_matches(self, normalized_term: str, cache: Dict, 
                             original_term: str, ontology_type: str,
-                            min_confidence: float) -> List[MatchResult]:
+                            min_confidence: float, ai_context: dict = None) -> List[MatchResult]:
         """
         Find partial and fuzzy matches for a term.
         
@@ -435,11 +440,21 @@ class OntologyTermMatcher:
             if abs(len(normalized_term) - len(cached_term)) > max(len(normalized_term), len(cached_term)) * 0.5:
                 continue
             
-            # Calculate similarity
-            similarity = SequenceMatcher(None, normalized_term, cached_term).ratio()
+            # Calculate similarity with biological relevance for modifications
+            similarity = self._calculate_biological_similarity(normalized_term, cached_term, ontology_type, ai_context)
             
+            # Protocols use correct vocabulary - heavily penalize typos
             if similarity >= min_confidence:
-                match_type = 'partial' if similarity >= 0.8 else 'fuzzy'
+                if similarity >= 0.98:
+                    match_type = 'exact'
+                elif similarity >= 0.9:
+                    match_type = 'partial'
+                    # Heavily penalize non-exact matches in protocols
+                    similarity = similarity * 0.7  # Reduce confidence by 30%
+                else:
+                    match_type = 'fuzzy'
+                    # Very heavily penalize fuzzy matches (likely typos)
+                    similarity = similarity * 0.3  # Reduce confidence by 70%
                 
                 for entry in entries:
                     matches.append(MatchResult(
@@ -469,6 +484,252 @@ class OntologyTermMatcher:
                     ))
         
         return matches
+    
+    def _calculate_biological_similarity(self, query_term: str, cached_term: str, ontology_type: str, ai_context: dict = None) -> float:
+        """
+        Calculate cumulative biological relevance similarity using multiple scoring factors.
+        
+        Args:
+            query_term: The term being searched for (normalized)
+            cached_term: The cached ontology term (normalized) 
+            ontology_type: Type of ontology being searched
+            ai_context: Optional AI analysis context with confidence scores
+            
+        Returns:
+            Similarity score between 0.0 and 1.0
+        """
+        # 1. Base string similarity (weight: 0.25 when AI available, 0.3 when not)
+        base_similarity = SequenceMatcher(None, query_term, cached_term).ratio()
+        
+        # For protocols, heavily penalize non-exact matches (likely typos)
+        if base_similarity < 0.98:
+            base_similarity = base_similarity * 0.5  # 50% penalty for any imperfection
+        
+        if ontology_type != 'unimod':
+            return base_similarity
+        
+        # For UniMod modifications, apply cumulative scoring
+        cumulative_score = 0.0
+        
+        # 2. Semantic Analysis: Same biological root (weight: 0.35 when AI available, 0.4 when not)
+        semantic_score = self._calculate_semantic_similarity(query_term, cached_term)
+        
+        # 3. Database Classification: Same modification type (weight: 0.2)
+        classification_score = self._calculate_classification_similarity(query_term, cached_term)
+        
+        # 4. Frequency/Commonality: Prefer common modifications (weight: 0.1)
+        commonality_score = self._calculate_commonality_score(cached_term)
+        
+        # 5. AI Confidence: Use AI's understanding when available (weight: 0.1)
+        ai_score = 0.0
+        if ai_context and isinstance(ai_context, dict):
+            ai_score = self._calculate_ai_confidence_score(query_term, cached_term, ai_context)
+        
+        # Adjust weights based on AI availability
+        if ai_context:
+            # When AI is available, redistribute weights to include AI score
+            cumulative_score = (
+                base_similarity * 0.25 +
+                semantic_score * 0.35 + 
+                classification_score * 0.2 +
+                commonality_score * 0.1 +
+                ai_score * 0.1
+            )
+        else:
+            # Original weights when no AI
+            cumulative_score = (
+                base_similarity * 0.3 +
+                semantic_score * 0.4 + 
+                classification_score * 0.2 +
+                commonality_score * 0.1
+            )
+        
+        # Cap at 0.98 to leave room for exact matches
+        return min(cumulative_score, 0.98)
+    
+    def _calculate_semantic_similarity(self, query_term: str, cached_term: str) -> float:
+        """Calculate semantic similarity based on biological root concepts."""
+        # Extract modification roots
+        query_root = self._extract_modification_root(query_term)
+        cached_root = self._extract_modification_root(cached_term)
+        
+        if not query_root or not cached_root:
+            return 0.0
+            
+        # Same biological root = high semantic similarity
+        if query_root == cached_root:
+            # Prefer shorter/simpler terms within same root
+            # e.g., "phospho" > "phosphoRibosyl" for "phosphorylated" query
+            length_penalty = min(len(cached_term) - len(query_root), 10) / 20.0
+            return max(0.0, 0.9 - length_penalty)
+        
+        # Related roots get medium similarity
+        related_roots = {
+            'phospho': ['phosphoryl', 'phosphat'],
+            'acetyl': ['acetylat', 'ac'],
+            'methyl': ['methylat', 'me'],
+            'ubiquit': ['ub', 'ubiq']
+        }
+        
+        for root, related in related_roots.items():
+            if query_root == root and cached_root in related:
+                return 0.6
+            if cached_root == root and query_root in related:
+                return 0.6
+        
+        return 0.0
+    
+    def _extract_modification_root(self, term: str) -> str:
+        """Extract the core modification type from a term."""
+        # Common modification roots in order of specificity
+        roots = [
+            'phosphoryl', 'phospho', 'phosphat',
+            'acetylat', 'acetyl', 
+            'methylat', 'methyl',
+            'ubiquit', 'ubiq', 'ub',
+            'sumoyl', 'sumo',
+            'glycosyl', 'glyc',
+            'hydroxyl', 'hydroxy',
+            'nitrosyl', 'nitroso',
+            'sulfat', 'sulfo'
+        ]
+        
+        term_lower = term.lower()
+        for root in roots:
+            if root in term_lower:
+                return root
+        
+        return ""
+    
+    def _calculate_classification_similarity(self, query_term: str, cached_term: str) -> float:
+        """Calculate similarity based on UniMod classification data."""
+        # This would ideally use the actual UniMod classification from the database
+        # For now, implement basic classification based on known patterns
+        
+        # Get implied classifications from term patterns
+        query_class = self._infer_modification_class(query_term)
+        cached_class = self._infer_modification_class(cached_term)
+        
+        if query_class == cached_class and query_class != 'unknown':
+            return 0.8
+        elif query_class != 'unknown' and cached_class != 'unknown':
+            return 0.2  # Different but known classes
+        else:
+            return 0.0
+    
+    def _infer_modification_class(self, term: str) -> str:
+        """Infer modification classification from term patterns."""
+        term_lower = term.lower()
+        
+        # Post-translational modifications
+        ptm_indicators = ['phospho', 'acetyl', 'methyl', 'ubiquit', 'sumo', 'nitro', 'hydroxy']
+        if any(indicator in term_lower for indicator in ptm_indicators):
+            return 'post_translational'
+        
+        # Glycosylation
+        glyc_indicators = ['glyc', 'glcnac', 'mannose', 'glucose', 'galactose']
+        if any(indicator in term_lower for indicator in glyc_indicators):
+            return 'glycosylation'
+        
+        # Chemical derivatives
+        chem_indicators = ['biotin', 'label', 'tag', 'cross', 'derivat']
+        if any(indicator in term_lower for indicator in chem_indicators):
+            return 'chemical_derivative'
+        
+        # Cleavage/proteolysis
+        cleav_indicators = ['cleav', 'proteo', 'digest']
+        if any(indicator in term_lower for indicator in cleav_indicators):
+            return 'proteolysis'
+        
+        return 'unknown'
+    
+    def _calculate_commonality_score(self, cached_term: str) -> float:
+        """Calculate score based on how common/well-known a modification is."""
+        # Common modifications that should be preferred
+        very_common = ['phospho', 'acetyl', 'methyl', 'oxidation', 'deamidated', 'carbamidomethyl']
+        common = ['dimethyl', 'trimethyl', 'hydroxyl', 'nitro', 'sulfation', 'ubiquitin']
+        
+        term_lower = cached_term.lower()
+        
+        # Exact match for very common modifications
+        if term_lower in very_common:
+            return 1.0
+        
+        # Partial match for very common
+        if any(common_mod in term_lower for common_mod in very_common):
+            return 0.8
+        
+        # Exact match for common modifications  
+        if term_lower in common:
+            return 0.6
+        
+        # Partial match for common
+        if any(common_mod in term_lower for common_mod in common):
+            return 0.4
+        
+        # Shorter terms tend to be more common/general
+        if len(cached_term) <= 6:
+            return 0.5
+        elif len(cached_term) <= 10:
+            return 0.3
+        else:
+            return 0.1  # Very long/specific terms are usually rare
+    
+    def _calculate_ai_confidence_score(self, query_term: str, cached_term: str, ai_context: dict) -> float:
+        """
+        Calculate AI-powered confidence score when MCP analysis is available.
+        
+        Args:
+            query_term: The term being searched for
+            cached_term: The cached ontology term
+            ai_context: AI analysis context containing confidence and reasoning
+            
+        Returns:
+            AI confidence score between 0.0 and 1.0
+        """
+        if not ai_context:
+            return 0.0
+            
+        # Extract AI confidence for this specific term match
+        extracted_terms = ai_context.get('extracted_terms', [])
+        tools_used = ai_context.get('tools_used', [])
+        
+        # Look for this term in AI's extracted terms
+        term_confidence = 0.0
+        for extracted_term in extracted_terms:
+            extracted_text = extracted_term.get('text', '').lower()
+            if extracted_text in query_term.lower() or query_term.lower() in extracted_text:
+                term_confidence = max(term_confidence, extracted_term.get('confidence', 0.0))
+        
+        # Look for this term in AI's database search results
+        search_confidence = 0.0
+        for tool in tools_used:
+            if tool.get('tool') in ['search_unimod_modifications', 'search_ontology']:
+                tool_results = tool.get('result', [])
+                for result in tool_results:
+                    result_name = result.get('name', '').lower()
+                    result_accession = result.get('accession', '').lower()
+                    cached_lower = cached_term.lower()
+                    
+                    # Check if this result matches our cached term
+                    if (result_name == cached_lower or 
+                        cached_lower in result_name or 
+                        result_name in cached_lower or
+                        result_accession in cached_lower):
+                        search_confidence = max(search_confidence, result.get('confidence', 0.0))
+        
+        # Combine term extraction confidence and search result confidence
+        # Higher weight on search results as they're more specific to the match
+        if search_confidence > 0:
+            return min(0.9, (term_confidence * 0.3 + search_confidence * 0.7))
+        elif term_confidence > 0:
+            return min(0.7, term_confidence)  # Cap at 0.7 when only extraction confidence available
+        else:
+            # If AI called tools but didn't find this specific term, lower confidence
+            if tools_used:
+                return 0.2  # AI was active but didn't find this match
+            else:
+                return 0.0  # No AI analysis available
     
     def _deduplicate_matches(self, matches: List[MatchResult], 
                            min_confidence: float) -> List[MatchResult]:
@@ -549,8 +810,9 @@ class OntologyTermMatcher:
                 if entry.get('term_type') == ms_term_type:
                     similarity = SequenceMatcher(None, normalized_term, cached_term).ratio()
                     
-                    if similarity >= 0.5:
-                        match_type = 'exact' if similarity >= 0.95 else 'partial'
+                    # Protocols use correct vocabulary - penalize typos heavily
+                    if similarity >= 0.85:  # Much stricter threshold
+                        match_type = 'exact' if similarity >= 0.98 else 'partial'
                         matches.append(MatchResult(
                             ontology_type='ms_vocabularies',
                             ontology_id=entry['id'],
@@ -605,6 +867,33 @@ class OntologyTermMatcher:
             suggested_labels.append('iTRAQ')
         
         return list(set(suggested_labels))  # Remove duplicates
+    
+    def _get_delta_mono_mass_from_additional_data(self, unimod_obj) -> float:
+        """
+        Extract delta_mono_mass from UniMod additional_data (following frontend pattern).
+        
+        Args:
+            unimod_obj: UniMod database object
+            
+        Returns:
+            Delta monoisotopic mass as float
+        """
+        if hasattr(unimod_obj, 'additional_data') and unimod_obj.additional_data:
+            for data in unimod_obj.additional_data:
+                if isinstance(data, dict) and data.get('id') == 'delta_mono_mass':
+                    try:
+                        return float(data['description'])
+                    except (ValueError, TypeError):
+                        pass
+        
+        # Fallback: try to find a direct field or return 0
+        if hasattr(unimod_obj, 'delta_mono_mass'):
+            return float(unimod_obj.delta_mono_mass)
+        elif hasattr(unimod_obj, 'mono_mass'):
+            return float(unimod_obj.mono_mass)
+        else:
+            print(f"Warning: Could not find delta_mono_mass for UniMod {getattr(unimod_obj, 'name', 'unknown')}")
+            return 0.0
     
     def get_sdrf_modification_suggestions(self, text: str) -> List[Dict[str, Any]]:
         """
@@ -747,7 +1036,9 @@ class OntologyTermMatcher:
                     aa = data['id'].replace('_mono_mass', '')
                     if aa not in aa_data:
                         aa_data[aa] = {}
-                    aa_data[aa]['mono_mass'] = float(data['description'])
+                    # Get delta_mono_mass from additional_data (like frontend does)
+                    delta_mono_mass = self._get_delta_mono_mass_from_additional_data(unimod_obj)
+                    aa_data[aa]['mono_mass'] = delta_mono_mass
         
         # Create spec for each amino acid
         for aa_key, aa_info in aa_data.items():
@@ -780,7 +1071,9 @@ class OntologyTermMatcher:
                     aa = data['id'].replace('_mono_mass', '')
                     if aa not in aa_data:
                         aa_data[aa] = {}
-                    aa_data[aa]['mono_mass'] = float(data['description'])
+                    # Get delta_mono_mass from additional_data (like frontend does)
+                    delta_mono_mass = self._get_delta_mono_mass_from_additional_data(unimod_obj)
+                    aa_data[aa]['mono_mass'] = delta_mono_mass
         
         # Group amino acids by their monoisotopic mass and other specs
         mass_groups = {}

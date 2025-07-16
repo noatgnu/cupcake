@@ -1,0 +1,3 @@
+- After making modification to the backend code, if you want to test you will have to build the base image again before rebuilding the main container cc
+- Modification Type or MT for Unimod is Fixed, Variable, Annotated
+- For modification Target Amino acid or TA only use common target amino acid 

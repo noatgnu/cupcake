@@ -119,6 +119,11 @@ class AnnotationConsumer(AsyncJsonWebsocketConsumer):
 
 class UserConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self):
+        # Check if user is authenticated
+        if self.scope["user"].is_anonymous:
+            await self.close()
+            return
+
         self.user_id = str(self.scope["user"].id)
         print(self.user_id)
         await self.channel_layer.group_add(
@@ -170,15 +175,64 @@ class UserConsumer(AsyncJsonWebsocketConsumer):
 
 class SummaryConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self):
-        self.user_id = str(self.scope["user"].id)
-        print(self.user_id)
-        await self.channel_layer.group_add(
-            f"user_{self.user_id}_summary",
-            self.channel_name
-        )
+        print("SummaryConsumer: Starting connect method")
 
-        await self.accept()
-        await self.send_json({"message": f"Connected to the summarization channel"})
+        # Check if channel layer exists
+        if not hasattr(self, 'channel_layer') or self.channel_layer is None:
+            print("SummaryConsumer: ERROR - No channel layer available!")
+            await self.close()
+            return
+        print("SummaryConsumer: Channel layer is available")
+
+        # Test Redis connection before proceeding
+        try:
+            print("SummaryConsumer: Testing Redis connection...")
+            # Simple ping test to Redis
+            await self.channel_layer.send("test-channel", {"type": "test.message"})
+            print("SummaryConsumer: Redis connection test passed")
+        except Exception as e:
+            print(f"SummaryConsumer: Redis connection test FAILED: {e}")
+            await self.close()
+            return
+
+        # Check if user is authenticated
+        if self.scope["user"].is_anonymous:
+            print("SummaryConsumer: User is anonymous, closing connection")
+            await self.close()
+            return
+
+        print(f"SummaryConsumer: User authenticated: {self.scope['user']}")
+        self.user_id = str(self.scope["user"].id)
+        print(f"SummaryConsumer: User ID: {self.user_id}")
+
+        # Try to accept connection BEFORE adding to group to isolate the issue
+        print("SummaryConsumer: Accepting connection BEFORE group operations")
+        try:
+            await self.accept()
+            print("SummaryConsumer: Connection accepted successfully")
+        except Exception as e:
+            print(f"SummaryConsumer: ERROR accepting connection: {e}")
+            return
+
+        # Now try group operations after accepting
+        print("SummaryConsumer: Adding to channel layer group")
+        try:
+            await self.channel_layer.group_add(
+                f"user_{self.user_id}_summary",
+                self.channel_name
+            )
+            print("SummaryConsumer: Added to group successfully")
+        except Exception as e:
+            print(f"SummaryConsumer: ERROR adding to group: {e}")
+            # Don't close here since connection is already accepted
+            await self.send_json({"error": f"Failed to join group: {e}"})
+            return
+
+        try:
+            await self.send_json({"message": f"Connected to the summarization channel"})
+            print("SummaryConsumer: Welcome message sent")
+        except Exception as e:
+            print(f"SummaryConsumer: ERROR sending welcome message: {e}")
 
     async def disconnect(self, close_code):
         await self.channel_layer.group_discard(
@@ -422,6 +476,11 @@ class WebRTCSignalConsumer(AsyncJsonWebsocketConsumer):
 
 class InstrumentJobConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self):
+        # Check if user is authenticated
+        if self.scope["user"].is_anonymous:
+            await self.close()
+            return
+
         self.user_id = str(self.scope["user"].id)
         await self.channel_layer.group_add(
             f"user_{self.user_id}_instrument_job",
@@ -457,6 +516,11 @@ class InstrumentJobConsumer(AsyncJsonWebsocketConsumer):
 
 class NotificationConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self):
+        # Check if user is authenticated
+        if self.scope["user"].is_anonymous:
+            await self.close()
+            return
+
         self.user_id = str(self.scope["user"].id)
 
         await self.channel_layer.group_add(
@@ -508,3 +572,45 @@ class NotificationConsumer(AsyncJsonWebsocketConsumer):
             "type": "error",
             "data": content
         })
+
+
+class MCPAnalysisConsumer(AsyncJsonWebsocketConsumer):
+    """WebSocket consumer for MCP analysis task progress updates."""
+    
+    async def connect(self):
+        # Check if user is authenticated
+        if self.scope["user"].is_anonymous:
+            await self.close()
+            return
+        
+        self.user_id = str(self.scope["user"].id)
+        
+        # Add to group for this user's MCP analysis updates
+        await self.channel_layer.group_add(
+            f"user_{self.user_id}_mcp_analysis",
+            self.channel_name
+        )
+        
+        await self.accept()
+        await self.send_json({"message": "Connected to MCP analysis channel"})
+    
+    async def disconnect(self, close_code):
+        # Remove from group
+        await self.channel_layer.group_discard(
+            f"user_{self.user_id}_mcp_analysis",
+            self.channel_name
+        )
+
+    async def receive_json(self, content):
+        # Echo back any received content (for debugging)
+        await self.send_json({"echo": content})
+    
+    async def mcp_analysis_update(self, event):
+        """Handle MCP analysis progress updates."""
+        content = event["message"]
+        await self.send_json({
+            "type": "analysis_update",
+            "data": content
+        })
+
+

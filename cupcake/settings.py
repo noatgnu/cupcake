@@ -255,13 +255,24 @@ CACHES = {
     }
 }
 
-# Channels
+# Channels - Temporary fallback for testing Redis issues
+# Comment out the Redis configuration and use this in-memory one for testing
+# CHANNEL_LAYERS = {
+#     "default": {
+#         "BACKEND": "channels.layers.InMemoryChannelLayer"
+#     },
+# }
+
+# Original Redis configuration
 CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
             "hosts": [REDIS_URL],
-            "symmetric_encryption_keys": [SECRET_KEY]
+            "symmetric_encryption_keys": [SECRET_KEY],
+            # Configuration settings for channels_redis
+            "capacity": 1500,  # Maximum number of messages that a channel can hold
+            "expiry": 60,      # How long to keep messages (in seconds)
         },
     },
 }
@@ -316,6 +327,13 @@ RQ_QUEUES = {
         'DB': REDIS_DB,
         'PASSWORD': REDIS_PASSWORD,
         'DEFAULT_TIMEOUT': 360,
+    },
+    'mcp': {
+        'HOST': REDIS_HOST,
+        'PORT': REDIS_PORT,
+        'DB': REDIS_DB,
+        'PASSWORD': REDIS_PASSWORD,
+        'DEFAULT_TIMEOUT': 1800,  # 30 minutes for complex analysis
     }
 }
 

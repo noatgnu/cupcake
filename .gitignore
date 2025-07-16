@@ -12,3 +12,4 @@ docker-compose.cloudflared.yml
 *.cupcake
 *.sqlite3
 /backups
+*.csv

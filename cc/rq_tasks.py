@@ -37,7 +37,8 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from pytesseract import pytesseract
 from rest_framework.exceptions import ValidationError
 from sdrf_pipelines.sdrf.sdrf import SdrfDataFrame
-
+import time
+from pathlib import Path
 from cc.models import Annotation, ProtocolModel, ProtocolStep, StepVariation, ProtocolSection, Session, \
     AnnotationFolder, Reagent, ProtocolReagent, StepReagent, ProtocolTag, StepTag, Tag, Project, MetadataColumn, \
     InstrumentJob, SubcellularLocation, Species, MSUniqueVocabularies, Unimod, FavouriteMetadataOption, InstrumentUsage, \
@@ -57,10 +58,14 @@ import re
 from docx.shared import Inches, RGBColor
 import re
 
-from cc.utils import user_metadata, staff_metadata, required_metadata_name, identify_barcode_format
 from cc.improved_docx_generator import EnhancedDocxGenerator, DocxGenerationError
+from cc.models import SiteSettings
+from cc.utils import user_metadata, staff_metadata, required_metadata_name, identify_barcode_format
 from cc.utils.user_data_export_revised import export_user_data_revised, export_protocol_data, export_session_data
-from cc.utils.user_data_import_revised import dry_run_import_user_data
+from cc.utils.user_data_import_revised import dry_run_import_user_data, import_user_data_revised
+from mcp_server.tools.protocol_analyzer import ProtocolAnalyzer
+from cc.models import ProtocolStep, ProtocolStepSuggestionCache
+from mcp_server.tools.sdrf_generator import SDRFMetadataGenerator
 
 capture_language = re.compile(r"auto-detected language: (\w+)")
 
@@ -323,7 +328,6 @@ def _create_docx_fallback(protocol, session, user_id, instance_id):
     """
     Fallback DOCX generation using basic approach
     """
-    import logging
     logger = logging.getLogger(__name__)
     
     try:
@@ -480,7 +484,6 @@ def _add_protocol_step(doc, step, step_number, session, logger):
         
         # Handle reagent substitutions
         try:
-            from cc.models import StepReagent
             step_reagents = StepReagent.objects.filter(step=step)
             
             for reagent in step_reagents:
@@ -794,8 +797,6 @@ def _add_translation_safe(doc, translation, logger):
 def _add_reagents_appendix(doc, protocol):
     """Add reagents appendix"""
     try:
-        from cc.models import ProtocolReagent, StepReagent
-        
         protocol_reagents = ProtocolReagent.objects.filter(protocol=protocol)
         step_reagents = StepReagent.objects.filter(step__protocol=protocol)
         
@@ -1423,9 +1424,6 @@ def import_data(user_id: int, archive_file: str, instance_id: str = None, import
     :param storage_object_mappings: Optional dict mapping original storage IDs to nominated storage IDs
     :param bulk_transfer_mode: If True, import everything as-is without user-centric modifications
     """
-    from cc.utils.user_data_import_revised import import_user_data_revised
-    from cc.models import SiteSettings
-    
     user = User.objects.get(id=user_id)
     channel_layer = get_channel_layer()
     
@@ -3886,8 +3884,7 @@ def _cleanup_old_exports(temp_dir: str, max_age_days: int = 7):
         temp_dir: Path to the temp directory containing export files
         max_age_days: Maximum age in days before files are deleted (default: 7)
     """
-    import time
-    from pathlib import Path
+
     
     try:
         current_time = time.time()
@@ -3915,3 +3912,198 @@ def _cleanup_old_exports(temp_dir: str, max_age_days: int = 7):
     except Exception as e:
         print(f"Error during export cleanup: {e}")
         # Don't raise the exception to avoid breaking the export process
+
+
+@job('mcp', timeout='30m')
+def analyze_protocol_step_task(task_id: str, step_id: int, use_anthropic: bool = False, user_id: int = None):
+    """
+    Analyze a protocol step for SDRF suggestions asynchronously.
+    
+    Args:
+        task_id: Unique task identifier for WebSocket updates
+        step_id: Protocol step ID to analyze
+        use_anthropic: Whether to use Anthropic Claude analysis
+        user_id: User ID for WebSocket group
+    """
+
+    
+    channel_layer = get_channel_layer()
+    
+    def send_progress(status: str, message: str, progress: int = 0, data: dict = None):
+        """Send progress update via WebSocket"""
+        if user_id:
+            async_to_sync(channel_layer.group_send)(
+                f"user_{user_id}_mcp_analysis",
+                {
+                    "type": "mcp_analysis_update",
+                    "message": {
+                        "task_id": task_id,
+                        "step_id": step_id,
+                        "status": status,
+                        "message": message,
+                        "progress": progress,
+                        "data": data or {}
+                    }
+                }
+            )
+    
+    try:
+        # Send initial progress
+        send_progress("started", "Starting protocol step analysis...", 10)
+        
+        # Get the protocol step
+        try:
+            step = ProtocolStep.objects.get(id=step_id)
+        except ProtocolStep.DoesNotExist:
+            send_progress("error", f"Protocol step {step_id} not found", 0)
+            return {"success": False, "error": f"Protocol step {step_id} not found"}
+        
+        send_progress("processing", "Checking cache...", 20)
+        
+        # Check cache first
+        analyzer_type = 'mcp_claude' if use_anthropic else 'standard_nlp'
+        cached_result = ProtocolStepSuggestionCache.get_cached_suggestions(step_id, analyzer_type)
+        
+        if cached_result:
+            send_progress("completed", "Analysis completed (cached)", 100, {
+                "cached": True,
+                "result": cached_result
+            })
+            return cached_result
+        
+        send_progress("processing", "Initializing analyzer...", 30)
+        
+        # Initialize analyzer
+        analyzer = ProtocolAnalyzer(use_anthropic=use_anthropic)
+        
+        send_progress("processing", "Analyzing step content...", 50)
+        
+        # Perform analysis
+        result = analyzer.analyze_protocol_step(step.id)
+        
+        send_progress("processing", "Caching results...", 80)
+        
+        # Cache the results
+        if result.get('success'):
+            ProtocolStepSuggestionCache.cache_suggestions(step_id, analyzer_type, result)
+        
+        send_progress("completed", "Analysis completed successfully", 100, {
+            "cached": False,
+            "result": result
+        })
+        
+        return result
+        
+    except Exception as e:
+        error_msg = f"Analysis failed: {str(e)}"
+        send_progress("error", error_msg, 0)
+        return {"success": False, "error": error_msg}
+
+
+@job('mcp', timeout='60m')
+def analyze_full_protocol_task(task_id: str, protocol_id: int, use_anthropic: bool = False, user_id: int = None):
+    """
+    Analyze all steps in a protocol for SDRF suggestions asynchronously.
+    
+    Args:
+        task_id: Unique task identifier for WebSocket updates
+        protocol_id: Protocol ID to analyze
+        use_anthropic: Whether to use Anthropic Claude analysis
+        user_id: User ID for WebSocket group
+    """
+    
+    channel_layer = get_channel_layer()
+    
+    def send_progress(status: str, message: str, progress: int = 0, data: dict = None):
+        """Send progress update via WebSocket"""
+        if user_id:
+            async_to_sync(channel_layer.group_send)(
+                f"user_{user_id}_mcp_analysis",
+                {
+                    "type": "mcp_analysis_update",
+                    "message": {
+                        "task_id": task_id,
+                        "protocol_id": protocol_id,
+                        "status": status,
+                        "message": message,
+                        "progress": progress,
+                        "data": data or {}
+                    }
+                }
+            )
+    
+    try:
+        send_progress("started", "Starting full protocol analysis...", 5)
+        
+        # Get the protocol
+        try:
+            protocol = ProtocolModel.objects.get(id=protocol_id)
+        except ProtocolModel.DoesNotExist:
+            send_progress("error", f"Protocol {protocol_id} not found", 0)
+            return {"success": False, "error": f"Protocol {protocol_id} not found"}
+        
+        # Get all steps
+        steps = protocol.get_step_in_order()
+        total_steps = len(steps)
+        
+        if total_steps == 0:
+            send_progress("error", "No steps found in protocol", 0)
+            return {"success": False, "error": "No steps found in protocol"}
+        
+        send_progress("processing", f"Found {total_steps} steps to analyze", 10)
+        
+        # Initialize analyzer
+        analyzer = ProtocolAnalyzer(use_anthropic=use_anthropic)
+        analyzer_type = 'mcp_claude' if use_anthropic else 'standard_nlp'
+        
+        results = []
+        
+        for i, step in enumerate(steps):
+            current_progress = 10 + (i * 80 // total_steps)
+            send_progress("processing", f"Analyzing step {i+1}/{total_steps}: {step.step_name}", current_progress)
+            
+            try:
+                # Check cache first
+                cached_result = ProtocolStepSuggestionCache.get_cached_suggestions(step.id, analyzer_type)
+                
+                if cached_result:
+                    result = cached_result
+                    result['cached'] = True
+                else:
+                    # Perform analysis
+                    result = analyzer.analyze_protocol_step(step.id)
+                    result['cached'] = False
+                    
+                    # Cache the results
+                    if result.get('success'):
+                        ProtocolStepSuggestionCache.cache_suggestions(step.id, analyzer_type, result)
+                
+                results.append({
+                    'step_id': step.id,
+                    'step_name': step.step_name,
+                    'result': result
+                })
+                
+            except Exception as e:
+                results.append({
+                    'step_id': step.id,
+                    'step_name': step.step_name,
+                    'result': {"success": False, "error": str(e)}
+                })
+        
+        send_progress("completed", f"Analysis completed for all {total_steps} steps", 100, {
+            "results": results
+        })
+        
+        return {
+            "success": True,
+            "protocol_id": protocol_id,
+            "total_steps": total_steps,
+            "results": results
+        }
+        
+    except Exception as e:
+        error_msg = f"Full protocol analysis failed: {str(e)}"
+        send_progress("error", error_msg, 0)
+        return {"success": False, "error": error_msg}
+

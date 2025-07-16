@@ -13,6 +13,7 @@ from mcp_server.utils.django_setup import get_protocol_steps, get_authenticated_
 from mcp_server.utils.nlp_processor import ProtocolStepAnalyzer, ExtractedTerm, TermType
 from mcp_server.utils.term_matcher import OntologyTermMatcher, MatchResult
 from mcp_server.utils.anthropic_analyzer import SyncAnthropicAnalyzer
+from mcp_server.utils.mcp_claude_client import SyncMCPClaudeClient
 
 
 class ProtocolAnalyzer:
@@ -29,21 +30,31 @@ class ProtocolAnalyzer:
             anthropic_api_key: Anthropic API key (if not provided, uses environment variable)
         """
         self.use_anthropic = use_anthropic
-        self.step_analyzer = ProtocolStepAnalyzer()
-        self.term_matcher = OntologyTermMatcher()
         
-        # Initialize Anthropic analyzer if requested
+        # Initialize MCP-enabled Claude analyzer if requested
         self.anthropic_analyzer = None
         if use_anthropic:
             try:
-                print(f"DEBUG: Initializing SyncAnthropicAnalyzer with api_key={anthropic_api_key is not None}")
-                self.anthropic_analyzer = SyncAnthropicAnalyzer(anthropic_api_key)
-                print(f"DEBUG: Successfully initialized Anthropic analyzer")
+                print(f"DEBUG: Initializing MCP Claude Client with database access")
+                self.anthropic_analyzer = SyncMCPClaudeClient(anthropic_api_key)
+                print(f"DEBUG: Successfully initialized MCP Claude analyzer with database tools")
             except Exception as e:
-                print(f"Warning: Could not initialize Anthropic analyzer: {e}")
-                import traceback
-                traceback.print_exc()
-                self.use_anthropic = False
+                print(f"Warning: Could not initialize MCP Claude analyzer: {e}")
+                # Fallback to regular Anthropic analyzer
+                try:
+                    print(f"DEBUG: Falling back to regular Anthropic analyzer")
+                    self.anthropic_analyzer = SyncAnthropicAnalyzer(anthropic_api_key)
+                    print(f"DEBUG: Fallback successful - using regular Claude without database access")
+                except Exception as e2:
+                    print(f"Warning: Could not initialize any Anthropic analyzer: {e2}")
+                    import traceback
+                    traceback.print_exc()
+                    self.use_anthropic = False
+        
+        # Initialize NLP processor with AI client for enhanced term extraction
+        ai_client = self.anthropic_analyzer if use_anthropic else None
+        self.step_analyzer = ProtocolStepAnalyzer(ai_client=ai_client)
+        self.term_matcher = OntologyTermMatcher()
     
     def analyze_protocol_step(self, step_id: int, user_token: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -86,7 +97,7 @@ class ProtocolAnalyzer:
             # Choose analysis method based on configuration
             print(f"DEBUG: self.use_anthropic={self.use_anthropic}, self.anthropic_analyzer={self.anthropic_analyzer is not None}")
             if self.use_anthropic and self.anthropic_analyzer:
-                print("DEBUG: Using enhanced (Anthropic) analysis")
+                print("DEBUG: Using enhanced (Claude) analysis")
                 analysis_result = self._analyze_step_content_enhanced(step)
             else:
                 print("DEBUG: Using standard analysis")
@@ -171,12 +182,13 @@ class ProtocolAnalyzer:
                 'protocol_id': protocol_id
             }
     
-    def _analyze_step_content(self, step) -> Dict[str, Any]:
+    def _analyze_step_content(self, step, ai_context: dict = None) -> Dict[str, Any]:
         """
         Analyze the content of a single protocol step.
         
         Args:
             step: ProtocolStep model instance
+            ai_context: Optional AI analysis context for enhanced scoring
             
         Returns:
             Dict containing analysis results
@@ -192,8 +204,8 @@ class ProtocolAnalyzer:
         # Get term summary
         term_summary = self.step_analyzer.get_term_summary(extracted_terms)
         
-        # Match terms to ontologies
-        ontology_matches = self._match_terms_to_ontologies(extracted_terms)
+        # Match terms to ontologies with AI context
+        ontology_matches = self._match_terms_to_ontologies(extracted_terms, ai_context)
         
         # Categorize matches by ontology type
         categorized_matches = self._categorize_matches(ontology_matches)
@@ -207,6 +219,7 @@ class ProtocolAnalyzer:
             'ontology_matches': [asdict(match) for match in ontology_matches],
             'categorized_matches': categorized_matches,
             'analysis_metadata': {
+                'analyzer_type': 'standard_nlp',
                 'total_terms_extracted': len(extracted_terms),
                 'total_ontology_matches': len(ontology_matches),
                 'high_confidence_matches': len([m for m in ontology_matches if m.confidence >= 0.8])
@@ -238,47 +251,153 @@ class ProtocolAnalyzer:
             context['protocol_title'] = step.protocol.protocol_title
             context['protocol_description'] = step.protocol.protocol_description[:200] if step.protocol.protocol_description else None
         
-        # Get Claude analysis
-        print(f"DEBUG: Calling Claude with step_text length: {len(step_text)}")
-        claude_result = self.anthropic_analyzer.analyze_protocol_step_enhanced(step_text, context)
+        # Get Claude analysis with MCP database access
+        print(f"DEBUG: Calling MCP Claude with step_text length: {len(step_text)}")
+        print(f"DEBUG: Step text preview: {step_text[:200]}...")
+        
+        # Check if we're using MCP client or regular analyzer  
+        # MCP client is SyncMCPClaudeClient, regular is SyncAnthropicAnalyzer
+        if type(self.anthropic_analyzer).__name__ == 'SyncMCPClaudeClient':
+            print(f"DEBUG: Using MCP Claude client with database tools")
+            claude_result = self.anthropic_analyzer.analyze_protocol_step_enhanced(step_text, context)
+        else:
+            print(f"DEBUG: Using regular Claude analyzer (fallback)")
+            claude_result = self.anthropic_analyzer.analyze_protocol_step_enhanced(step_text, context)
+        
         print(f"DEBUG: Claude result success: {claude_result.get('success')}")
+        print(f"DEBUG: Claude result keys: {list(claude_result.keys())}")
+        if claude_result.get('extracted_terms'):
+            print(f"DEBUG: Extracted terms count: {len(claude_result.get('extracted_terms', []))}")
+        if claude_result.get('sdrf_suggestions'):
+            print(f"DEBUG: SDRF suggestions keys: {list(claude_result.get('sdrf_suggestions', {}).keys())}")
+            print(f"DEBUG: SDRF suggestions: {claude_result.get('sdrf_suggestions', {})}")
         
         if not claude_result.get('success'):
             # Fall back to standard analysis if Claude fails
             print(f"DEBUG: Claude analysis failed: {claude_result.get('error', 'Unknown error')}")
             return self._analyze_step_content(step)
         
-        # Convert Claude's enhanced terms to standard format for compatibility
+        # Handle different response formats from MCP vs regular Claude
         extracted_terms = []
-        for enhanced_term in claude_result.get('enhanced_terms', []):
-            claude_term = enhanced_term['claude_term']
-            
-            # Create ExtractedTerm object
-            term = ExtractedTerm(
-                text=claude_term['text'],
-                term_type=TermType(claude_term['term_type']),
-                context=claude_term.get('biological_context', ''),
-                confidence=claude_term['confidence'],
-                start_pos=0,  # Claude doesn't provide exact positions
-                end_pos=len(claude_term['text'])
-            )
-            extracted_terms.append(term)
-        
-        # Extract ontology matches from Claude's enhanced results
         ontology_matches = []
-        for enhanced_term in claude_result.get('enhanced_terms', []):
-            for match in enhanced_term.get('ontology_matches', []):
-                # Create MatchResult object
-                match_result = MatchResult(
-                    ontology_type=match['ontology_type'],
-                    ontology_id=match['ontology_id'],
-                    ontology_name=match['ontology_name'],
-                    accession=match['accession'],
-                    confidence=match['combined_confidence'],
-                    match_type=match['match_type'],
-                    extracted_term=enhanced_term['claude_term']['text']
+        
+        # Determine analyzer type first (needed throughout)
+        analyzer_type = 'mcp_claude' if type(self.anthropic_analyzer).__name__ == 'SyncMCPClaudeClient' else 'anthropic_claude'
+        
+        if type(self.anthropic_analyzer).__name__ == 'SyncMCPClaudeClient':
+            # MCP client format - Claude used database tools directly
+            print(f"DEBUG: Processing MCP Claude response format")
+            
+            # Extract terms from MCP response
+            for term_data in claude_result.get('extracted_terms', []):
+                term = ExtractedTerm(
+                    text=term_data['text'],
+                    term_type=TermType(term_data['term_type']),
+                    context=term_data.get('context', ''),
+                    confidence=term_data['confidence'],
+                    start_pos=term_data.get('start_pos', 0),
+                    end_pos=term_data.get('end_pos', len(term_data['text']))
                 )
-                ontology_matches.append(match_result)
+                extracted_terms.append(term)
+            
+            # Convert MCP tool results to MatchResult objects
+            tools_used = []
+            if 'analysis_metadata' in claude_result and 'tools_used' in claude_result['analysis_metadata']:
+                tools_used = claude_result['analysis_metadata']['tools_used']
+            elif 'tools_used' in claude_result:
+                tools_used = claude_result['tools_used']
+            
+            print(f"DEBUG: Processing {len(tools_used)} tools from MCP")
+            
+            for tool in tools_used:
+                tool_name = tool.get('tool', '')
+                tool_results = tool.get('result', [])
+                
+                print(f"DEBUG: Processing tool {tool_name} with {len(tool_results)} results")
+                
+                if tool_name == 'search_unimod_modifications' and tool_results:
+                    for result in tool_results:
+                        # Create MatchResult object from MCP tool result
+                        match_result = MatchResult(
+                            ontology_type='unimod',
+                            ontology_id=result.get('accession', ''),
+                            ontology_name=result.get('name', ''),
+                            accession=result.get('accession', ''),
+                            confidence=result.get('confidence', 1.0),
+                            match_type=result.get('match_type', 'exact'),
+                            extracted_term=tool.get('input', {}).get('query', 'unknown'),
+                            # Add rich metadata
+                            chemical_formula=result.get('chemical_formula'),
+                            mass_info=result.get('monoisotopic_mass'),
+                            target_info=result.get('target_amino_acids'),
+                            additional_metadata={
+                                'modification_type': result.get('modification_type'),
+                                'position': result.get('position'),
+                                'target_aa': result.get('target_amino_acids'),
+                                'sdrf_format': result.get('sdrf_format')
+                            }
+                        )
+                        ontology_matches.append(match_result)
+                        print(f"DEBUG: Added UniMod match: {result.get('name', '')} ({result.get('accession', '')})")
+                
+                elif tool_name == 'search_ontology' and tool_results:
+                    for result in tool_results:
+                        # Create MatchResult object from ontology search
+                        match_result = MatchResult(
+                            ontology_type=result.get('ontology_type', ''),
+                            ontology_id=result.get('accession', ''),
+                            ontology_name=result.get('ontology_name', ''),
+                            accession=result.get('accession', ''),
+                            confidence=result.get('confidence', 0.5),
+                            match_type=result.get('match_type', 'fuzzy'),
+                            extracted_term=result.get('extracted_term', ''),
+                            definition=result.get('definition'),
+                            chemical_formula=result.get('chemical_formula'),
+                            mass_info=result.get('mass_info')
+                        )
+                        ontology_matches.append(match_result)
+                        print(f"DEBUG: Added ontology match: {result.get('ontology_name', '')} ({result.get('ontology_type', '')})")
+            
+            print(f"DEBUG: Total ontology matches created: {len(ontology_matches)}")
+            
+            # SDRF suggestions start empty - will be generated from ontology matches
+            sdrf_suggestions = claude_result.get('sdrf_suggestions', {})
+            
+        else:
+            # Regular Claude format - needs ontology matching
+            print(f"DEBUG: Processing regular Claude response format")
+            
+            for enhanced_term in claude_result.get('enhanced_terms', []):
+                claude_term = enhanced_term['claude_term']
+                
+                # Create ExtractedTerm object
+                term = ExtractedTerm(
+                    text=claude_term['text'],
+                    term_type=TermType(claude_term['term_type']),
+                    context=claude_term.get('biological_context', ''),
+                    confidence=claude_term['confidence'],
+                    start_pos=0,  # Claude doesn't provide exact positions
+                    end_pos=len(claude_term['text'])
+                )
+                extracted_terms.append(term)
+            
+            # Extract ontology matches from regular Claude results
+            for enhanced_term in claude_result.get('enhanced_terms', []):
+                for match in enhanced_term.get('ontology_matches', []):
+                    # Create MatchResult object
+                    match_result = MatchResult(
+                        ontology_type=match['ontology_type'],
+                        ontology_id=match['ontology_id'],
+                        ontology_name=match['ontology_name'],
+                        accession=match['accession'],
+                        confidence=match['combined_confidence'],
+                        match_type=match['match_type'],
+                        extracted_term=enhanced_term['claude_term']['text']
+                    )
+                    ontology_matches.append(match_result)
+            
+            # Get SDRF suggestions from regular Claude results
+            sdrf_suggestions = claude_result.get('sdrf_suggestions', {})
         
         # Get term summary
         term_summary = self.step_analyzer.get_term_summary(extracted_terms)
@@ -286,13 +405,18 @@ class ProtocolAnalyzer:
         # Categorize matches by ontology type
         categorized_matches = self._categorize_matches(ontology_matches)
         
-        # Ensure claude_analysis is JSON serializable
-        claude_analysis = claude_result.get('claude_analysis', {})
-        serializable_claude_analysis = self._ensure_json_serializable(claude_analysis)
+        # Generate SDRF suggestions from ontology matches if sdrf_suggestions is empty
+        if not sdrf_suggestions and ontology_matches:
+            mock_analysis = {
+                'categorized_matches': categorized_matches,
+                'ontology_matches': ontology_matches
+            }
+            generated_suggestions = self._generate_sdrf_suggestions(mock_analysis)
+            if generated_suggestions:
+                sdrf_suggestions = generated_suggestions
         
-        # Ensure sdrf_suggestions_enhanced is JSON serializable
-        sdrf_suggestions_enhanced = claude_result.get('sdrf_suggestions', {})
-        serializable_sdrf_suggestions = self._ensure_json_serializable(sdrf_suggestions_enhanced)
+        # Ensure SDRF suggestions are JSON serializable
+        serializable_sdrf_suggestions = self._ensure_json_serializable(sdrf_suggestions)
         
         return {
             'step_description': step_text,
@@ -303,15 +427,15 @@ class ProtocolAnalyzer:
             'ontology_matches': [asdict(match) for match in ontology_matches],
             'categorized_matches': categorized_matches,
             'analysis_metadata': {
-                'analyzer_type': 'anthropic_claude',
+                'analyzer_type': analyzer_type,
                 'total_terms_extracted': len(extracted_terms),
                 'total_ontology_matches': len(ontology_matches),
                 'high_confidence_matches': len([m for m in ontology_matches if m.confidence >= 0.8]),
-                'claude_insights': claude_result.get('biological_insights', {}),
-                'quality_assessment': claude_result.get('claude_analysis', {}).get('quality_assessment', {})
+                'tools_used': claude_result.get('analysis_metadata', {}).get('tools_used', []),
+                'database_access': type(self.anthropic_analyzer).__name__ == 'SyncMCPClaudeClient'
             },
-            'claude_analysis': serializable_claude_analysis,
-            'sdrf_suggestions_enhanced': serializable_sdrf_suggestions
+            'claude_analysis': claude_result.get('claude_analysis', {}),
+            'sdrf_suggestions': serializable_sdrf_suggestions
         }
     
     def _ensure_json_serializable(self, obj: Any) -> Any:
@@ -334,12 +458,13 @@ class ProtocolAnalyzer:
             except:
                 return None
     
-    def _match_terms_to_ontologies(self, extracted_terms: List[ExtractedTerm]) -> List[MatchResult]:
+    def _match_terms_to_ontologies(self, extracted_terms: List[ExtractedTerm], ai_context: dict = None) -> List[MatchResult]:
         """
         Match extracted terms to ontology terms.
         
         Args:
             extracted_terms: List of ExtractedTerm objects
+            ai_context: Optional AI analysis context for enhanced scoring
             
         Returns:
             List of MatchResult objects
@@ -356,23 +481,23 @@ class ProtocolAnalyzer:
         # Match each term type to appropriate ontologies
         for term_type, terms in term_groups.items():
             if term_type == TermType.ORGANISM:
-                matches = self.term_matcher.match_terms(terms, ['species'], min_confidence=0.6)
+                matches = self.term_matcher.match_terms(terms, ['species'], min_confidence=0.6, ai_context=ai_context)
                 all_matches.extend(matches)
                 
             elif term_type == TermType.TISSUE:
-                matches = self.term_matcher.match_terms(terms, ['tissue'], min_confidence=0.6)
+                matches = self.term_matcher.match_terms(terms, ['tissue'], min_confidence=0.6, ai_context=ai_context)
                 all_matches.extend(matches)
                 
             elif term_type == TermType.DISEASE:
-                matches = self.term_matcher.match_terms(terms, ['human_disease'], min_confidence=0.6)
+                matches = self.term_matcher.match_terms(terms, ['human_disease'], min_confidence=0.6, ai_context=ai_context)
                 all_matches.extend(matches)
                 
             elif term_type == TermType.CELLULAR_COMPONENT:
-                matches = self.term_matcher.match_terms(terms, ['subcellular_location'], min_confidence=0.6)
+                matches = self.term_matcher.match_terms(terms, ['subcellular_location'], min_confidence=0.6, ai_context=ai_context)
                 all_matches.extend(matches)
                 
             elif term_type == TermType.MODIFICATION:
-                matches = self.term_matcher.match_terms(terms, ['unimod'], min_confidence=0.6)
+                matches = self.term_matcher.match_terms(terms, ['unimod'], min_confidence=0.6, ai_context=ai_context)
                 all_matches.extend(matches)
                 
             elif term_type == TermType.INSTRUMENT:
@@ -447,6 +572,18 @@ class ProtocolAnalyzer:
         Returns:
             Dict containing SDRF metadata suggestions
         """
+        # Determine analyzer type based on configuration
+        analyzer_type = self._get_analyzer_type()
+        
+        # Try to get cached suggestions first
+        cached_result = self._get_cached_suggestions(step_id, analyzer_type)
+        
+        if cached_result:
+            print(f"DEBUG: Using cached suggestions for step {step_id} with analyzer {analyzer_type}")
+            return cached_result
+        
+        print(f"DEBUG: No cache found for step {step_id} with analyzer {analyzer_type}, performing analysis")
+        
         # Analyze the step
         analysis = self.analyze_protocol_step(step_id, user_token)
         
@@ -475,7 +612,7 @@ class ProtocolAnalyzer:
                 sdrf_suggestions['cleavage agent details'] = [{'key_value_format': enzyme, 'confidence': 0.8, 'source': 'text_analysis'} for enzyme in cleavage_suggestions]
             
             # Add demographic and experimental metadata suggestions
-            demographic_columns = ['age', 'sex', 'biological_replicate', 'technical_replicate', 'fraction_identifier']
+            demographic_columns = ['age', 'sex']
             for column in demographic_columns:
                 demo_suggestions = self.term_matcher.get_sdrf_demographic_suggestions(step_text, column)
                 if demo_suggestions:
@@ -499,16 +636,180 @@ class ProtocolAnalyzer:
                     sdrf_suggestions[column] = formatted_suggestions
             
         
-        return {
+        result = {
             'success': True,
             'step_id': step_id,
             'sdrf_suggestions': sdrf_suggestions,
+            'analysis_metadata': analysis.get('analysis_metadata', {}),
+            'extracted_terms': analysis.get('extracted_terms', []),
             'analysis_summary': {
                 'total_matches': len(analysis.get('ontology_matches', [])),
                 'high_confidence_matches': analysis.get('analysis_metadata', {}).get('high_confidence_matches', 0),
                 'sdrf_specific_suggestions': sum(len(suggestions) for suggestions in sdrf_suggestions.values())
             }
         }
+        
+        # Cache the result for future use
+        self._cache_suggestions(step_id, analyzer_type, result)
+        print(f"DEBUG: Cached suggestions for step {step_id} with analyzer {analyzer_type}")
+        
+        return result
+    
+    def analyze_protocol_steps_batch(self, step_ids: List[int], user_token: Optional[str] = None, batch_size: int = 5) -> List[Dict[str, Any]]:
+        """
+        Analyze multiple protocol steps using batch processing for efficiency.
+        
+        Args:
+            step_ids: List of protocol step IDs
+            user_token: Optional authentication token  
+            batch_size: Number of steps to process per batch
+            
+        Returns:
+            List of analysis results for each step
+        """
+        if not self.use_anthropic or not self.anthropic_analyzer:
+            # Fall back to individual processing for standard analysis
+            results = []
+            for step_id in step_ids:
+                result = self.get_step_sdrf_suggestions(step_id, user_token)
+                results.append(result)
+            return results
+        
+        # Get all steps first
+        from cc.models import ProtocolStep
+        steps = []
+        for step_id in step_ids:
+            try:
+                step = ProtocolStep.objects.get(id=step_id)
+                steps.append((step_id, step))
+            except ProtocolStep.DoesNotExist:
+                steps.append((step_id, None))
+        
+        # Prepare batch data for Claude
+        step_texts = []
+        valid_steps = []
+        
+        for step_id, step in steps:
+            if step:
+                step_texts.append(step.step_description)
+                valid_steps.append((step_id, step))
+            else:
+                valid_steps.append((step_id, None))
+        
+        # Use batch analysis if we have MCP Claude client
+        if hasattr(self.anthropic_analyzer, 'analyze_protocol_steps_batch'):
+            print(f"DEBUG: Using batch analysis for {len(step_texts)} steps")
+            batch_results = self.anthropic_analyzer.analyze_protocol_steps_batch(step_texts, batch_size=batch_size)
+        else:
+            # Fallback to individual analysis
+            print(f"DEBUG: Falling back to individual analysis")
+            batch_results = []
+            for step_text in step_texts:
+                result = self.anthropic_analyzer.analyze_protocol_step_enhanced(step_text)
+                batch_results.append(result)
+        
+        # Process results and generate SDRF suggestions
+        final_results = []
+        batch_index = 0
+        
+        for step_id, step in valid_steps:
+            if step is None:
+                # Step not found
+                final_results.append({
+                    'success': False,
+                    'error': f'Protocol step {step_id} not found',
+                    'step_id': step_id
+                })
+            else:
+                # Process batch result
+                if batch_index < len(batch_results):
+                    analysis = batch_results[batch_index]
+                    batch_index += 1
+                    
+                    if analysis.get('success'):
+                        # Generate SDRF suggestions
+                        sdrf_suggestions = self._generate_sdrf_suggestions(analysis)
+                        
+                        # Add SDRF-specific suggestions  
+                        step_text = analysis.get('step_description', step.step_description)
+                        if step_text:
+                            # Add all the demographic/experimental suggestions
+                            demographic_columns = ['age', 'sex']
+                            for column in demographic_columns:
+                                demo_suggestions = self.term_matcher.get_sdrf_demographic_suggestions(step_text, column)
+                                if demo_suggestions:
+                                    formatted_suggestions = []
+                                    for demo_sugg in demo_suggestions:
+                                        formatted_sugg = {
+                                            'ontology_type': column,
+                                            'ontology_id': f'{column}_{demo_sugg["suggested_value"]}',
+                                            'ontology_name': demo_sugg['suggested_value'],
+                                            'accession': '',
+                                            'confidence': demo_sugg['confidence'],
+                                            'extracted_term': demo_sugg['suggested_value'],
+                                            'match_type': 'demographic_suggestion',
+                                            'source': demo_sugg['source'],
+                                            'ontology_source': demo_sugg['ontology_source'],
+                                            'suggested_value': demo_sugg['suggested_value']
+                                        }
+                                        formatted_suggestions.append(formatted_sugg)
+                                    sdrf_suggestions[column] = formatted_suggestions
+                        
+                        final_results.append({
+                            'success': True,
+                            'step_id': step_id,
+                            'sdrf_suggestions': sdrf_suggestions,
+                            'analysis_metadata': analysis.get('analysis_metadata', {}),
+                            'extracted_terms': analysis.get('extracted_terms', []),
+                            'analysis_summary': {
+                                'total_matches': len(analysis.get('ontology_matches', [])),
+                                'high_confidence_matches': analysis.get('analysis_metadata', {}).get('high_confidence_matches', 0),
+                                'sdrf_specific_suggestions': sum(len(suggestions) for suggestions in sdrf_suggestions.values())
+                            }
+                        })
+                    else:
+                        final_results.append({
+                            'success': False,
+                            'error': analysis.get('error', 'Analysis failed'),
+                            'step_id': step_id
+                        })
+                else:
+                    # No batch result available
+                    final_results.append({
+                        'success': False,
+                        'error': 'Batch analysis incomplete',
+                        'step_id': step_id
+                    })
+        
+        return final_results
+    
+    def _get_analyzer_type(self) -> str:
+        """Get the current analyzer type based on configuration."""
+        if self.use_anthropic and self.anthropic_analyzer:
+            if hasattr(self.anthropic_analyzer, 'analyze_protocol_steps_batch'):
+                return 'mcp_claude'
+            else:
+                return 'anthropic_claude'
+        else:
+            return 'standard_nlp'
+    
+    def _get_cached_suggestions(self, step_id: int, analyzer_type: str):
+        """Get cached suggestions for a step."""
+        try:
+            from cc.models import ProtocolStepSuggestionCache
+            return ProtocolStepSuggestionCache.get_cached_suggestions(step_id, analyzer_type)
+        except ImportError:
+            print("DEBUG: Could not import ProtocolStepSuggestionCache")
+            return None
+    
+    def _cache_suggestions(self, step_id: int, analyzer_type: str, suggestions_data: dict):
+        """Cache suggestions for a step."""
+        try:
+            from cc.models import ProtocolStepSuggestionCache
+            return ProtocolStepSuggestionCache.cache_suggestions(step_id, analyzer_type, suggestions_data)
+        except ImportError:
+            print("DEBUG: Could not import ProtocolStepSuggestionCache")
+            return None
     
     def _generate_sdrf_suggestions(self, analysis: Dict) -> Dict[str, List[Dict]]:
         """
@@ -574,19 +875,121 @@ class ProtocolAnalyzer:
                         'AC': match.get('accession', '')       # Accession
                     }
                     
-                    # Add rich metadata if available
-                    if match.get('additional_metadata'):
-                        metadata = match['additional_metadata']
-                        if metadata.get('target_aa'):
-                            key_value_format['TA'] = metadata['target_aa']
-                        if metadata.get('modification_type'):
-                            key_value_format['MT'] = metadata['modification_type']
-                        if metadata.get('position'):
-                            key_value_format['PP'] = metadata['position']
+                    # Add rich metadata - get comprehensive data from UniMod database
+                    try:
+                        from cc.models import Unimod
+                        unimod_record = Unimod.objects.get(accession=match.get('accession'))
+                        
+                        # Parse additional_data for comprehensive metadata
+                        if unimod_record.additional_data:
+                            additional_data = unimod_record.additional_data
+                            metadata_dict = {}
+                            
+                            # Convert list format to dictionary
+                            if isinstance(additional_data, list):
+                                for item in additional_data:
+                                    if isinstance(item, dict) and 'id' in item and 'description' in item:
+                                        metadata_dict[item['id']] = item['description']
+                            
+                            # Extract target amino acids and position from spec fields
+                            target_sites = []
+                            positions = []
+                            classifications = []
+                            
+                            for i in range(1, 10):  # Check spec_1, spec_2, etc.
+                                site_key = f'spec_{i}_site'
+                                pos_key = f'spec_{i}_position'
+                                class_key = f'spec_{i}_classification'
+                                
+                                if site_key in metadata_dict:
+                                    site = metadata_dict[site_key]
+                                    if site and site != 'N-term' and site != 'C-term':
+                                        target_sites.append(site)
+                                
+                                if pos_key in metadata_dict:
+                                    position = metadata_dict[pos_key]
+                                    if position:
+                                        positions.append(position)
+                                
+                                if class_key in metadata_dict:
+                                    classification = metadata_dict[class_key]
+                                    if classification:
+                                        classifications.append(classification)
+                            
+                            # Add target amino acids (filter to common ones)
+                            if target_sites:
+                                valid_sites = [site for site in set(target_sites) if len(site) == 1 and site.isalpha()]
+                                if valid_sites:
+                                    sorted_sites = sorted(valid_sites)
+                                    if len(sorted_sites) > 5:
+                                        # Use common targets for well-known modifications
+                                        common_targets = {
+                                            'Phospho': ['S', 'T', 'Y'],
+                                            'Acetyl': ['K'],
+                                            'Methyl': ['K', 'R'],
+                                            'Oxidation': ['M']
+                                        }
+                                        mod_name = match.get('ontology_name', '')
+                                        if mod_name in common_targets:
+                                            key_value_format['TA'] = ','.join(common_targets[mod_name])
+                                        else:
+                                            key_value_format['TA'] = ','.join(sorted_sites[:5])
+                                    else:
+                                        key_value_format['TA'] = ','.join(sorted_sites)
+                            
+                            # Add modification type (map to SDRF values)
+                            if classifications:
+                                unique_classifications = list(dict.fromkeys(classifications))
+                                classification = unique_classifications[0].lower()
+                                if 'post-translational' in classification or 'ptm' in classification:
+                                    key_value_format['MT'] = "Variable"
+                                elif 'chemical' in classification or 'artifact' in classification:
+                                    key_value_format['MT'] = "Fixed"
+                                else:
+                                    key_value_format['MT'] = "Variable"
+                            
+                            # Add position (remove duplicates)
+                            if positions:
+                                unique_positions = list(dict.fromkeys(positions))
+                                position_value = unique_positions[0]
+                                # Additional check: if the position value itself has comma-separated duplicates
+                                if ',' in position_value:
+                                    position_parts = [p.strip() for p in position_value.split(',')]
+                                    unique_position_parts = list(dict.fromkeys(position_parts))
+                                    position_value = ','.join(unique_position_parts)
+                                key_value_format['PP'] = position_value
+                            else:
+                                # Default position
+                                key_value_format['PP'] = "Anywhere"
+                    
+                    except Exception as e:
+                        # Fallback to basic metadata if comprehensive extraction fails
+                        if match.get('additional_metadata'):
+                            metadata = match['additional_metadata']
+                            if metadata.get('target_aa'):
+                                key_value_format['TA'] = metadata['target_aa']
+                            if metadata.get('modification_type'):
+                                key_value_format['MT'] = metadata['modification_type']
+                            if metadata.get('position'):
+                                key_value_format['PP'] = metadata['position']
                     
                     # Add monoisotopic mass if available
                     if match.get('mass_info'):
                         key_value_format['MM'] = match['mass_info']
+                    
+                    # Create comprehensive SDRF string format
+                    sdrf_parts = []
+                    for key in ['NT', 'AC', 'TA', 'MT', 'PP', 'MM']:
+                        if key in key_value_format and key_value_format[key]:
+                            value = str(key_value_format[key])
+                            # Remove duplicates from comma-separated values
+                            if ',' in value:
+                                parts = [p.strip() for p in value.split(',')]
+                                unique_parts = list(dict.fromkeys(parts))
+                                value = ','.join(unique_parts)
+                            sdrf_parts.append(f"{key}={value}")
+                    
+                    sdrf_format_string = ';'.join(sdrf_parts)
                     
                     # Create suggestion with key-value format
                     unimod_suggestion = {
@@ -598,6 +1001,7 @@ class ProtocolAnalyzer:
                         'extracted_term': match['extracted_term'],
                         'match_type': match['match_type'],
                         'key_value_format': key_value_format,
+                        'sdrf_format': sdrf_format_string,
                         'source': 'standard_analysis',
                         'ontology_source': 'legacy',
                         # Include rich metadata for display

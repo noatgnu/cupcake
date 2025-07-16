@@ -1,4 +1,4 @@
-from cupcake.consumers import TimerConsumer, AnnotationConsumer, UserConsumer, SummaryConsumer, WebRTCSignalConsumer, InstrumentJobConsumer, NotificationConsumer
+from cupcake.consumers import TimerConsumer, AnnotationConsumer, UserConsumer, SummaryConsumer, WebRTCSignalConsumer, InstrumentJobConsumer, NotificationConsumer, MCPAnalysisConsumer
 from django.urls import re_path
 
 websocket_urlpatterns = [
@@ -9,4 +9,5 @@ websocket_urlpatterns = [
     re_path(r'ws/webrtc_signal/(?P<session_id>[\w\-]+)/$', WebRTCSignalConsumer.as_asgi()),
     re_path(r'ws/instrument_job/(?P<session_id>[\w\-]+)/$', InstrumentJobConsumer.as_asgi()),
     re_path(r'ws/notifications/$', NotificationConsumer.as_asgi()),
+    re_path(r'ws/mcp/analysis/$', MCPAnalysisConsumer.as_asgi()),
 ]

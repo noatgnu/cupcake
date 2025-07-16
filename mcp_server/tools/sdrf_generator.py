@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Any, Tuple
 import json
 from datetime import datetime
 
+from cc.models import MetadataColumn, ProtocolStep
 from ..utils.django_setup import get_authenticated_user, validate_user_permissions
 
 
@@ -141,7 +142,7 @@ class SDRFMetadataGenerator:
                 'column_position': position,
                 'value': '',
                 'mandatory': True,
-                'auto_generated': True,
+                'auto_generated': False,
                 'readonly': False,
                 'hidden': False
             })
@@ -167,7 +168,7 @@ class SDRFMetadataGenerator:
                 'column_position': position,
                 'value': sdrf_value,
                 'mandatory': False,
-                'auto_generated': True,
+                'auto_generated': False,
                 'readonly': False,
                 'hidden': False,
                 'ontology_info': {
@@ -219,7 +220,6 @@ class SDRFMetadataGenerator:
         Returns:
             List of created MetadataColumn objects
         """
-        from cc.models import MetadataColumn
         
         created_columns = []
         
@@ -322,9 +322,7 @@ class SDRFMetadataGenerator:
             user = None
             if user_token:
                 user = get_authenticated_user(user_token)
-            
-            # Get the protocol step
-            from cc.models import ProtocolStep
+
             try:
                 step = ProtocolStep.objects.get(id=step_id)
             except ProtocolStep.DoesNotExist:
@@ -342,7 +340,6 @@ class SDRFMetadataGenerator:
                     }
             
             # Get existing metadata columns for the protocol
-            from cc.models import MetadataColumn
             existing_columns = MetadataColumn.objects.filter(protocol=step.protocol)
             
             # Validate SDRF compliance

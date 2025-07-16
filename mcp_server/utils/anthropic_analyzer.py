@@ -193,15 +193,19 @@ class AnthropicProtocolAnalyzer:
         try:
             # Prepare Claude prompt
             prompt = self._build_analysis_prompt(step_text, context)
+            print(f"DEBUG: Claude prompt length: {len(prompt)}")
             
             # Call Claude API
             claude_response = await self._call_claude_api(prompt)
+            print(f"DEBUG: Claude API response received")
             
             # Parse Claude's response
             analysis_result = self._parse_claude_response(claude_response, step_text)
+            print(f"DEBUG: Parsed Claude response, extracted_terms: {len(analysis_result.get('extracted_terms', []))}")
             
             # Enhance with ontology matching
             enhanced_result = await self._enhance_with_ontology_matching(analysis_result)
+            print(f"DEBUG: Enhanced with ontology matching, enhanced_terms: {len(enhanced_result.get('enhanced_terms', []))}")
             
             return {
                 'success': True,
@@ -256,79 +260,59 @@ SDRF-Proteomics Specification Context:
                 context_info += f"Section: {context['section_name']}\n"
         
         prompt = f"""
-You are an expert bioinformatics analyst specializing in proteomics and mass spectrometry protocols. 
-Analyze the following protocol step and extract relevant biological and analytical terms following the SDRF-Proteomics specification.
+You are an SDRF-Proteomics metadata annotation specialist. Your ONLY job is to analyze protocol steps and suggest SDRF-compliant metadata values that can be found in the available ontology databases.
+
+CRITICAL: You must ONLY recommend terms that exist in the provided ontology databases. Do NOT suggest general biological insights or interpretations outside of SDRF metadata scope.
 
 {context_info}
 
 Protocol Step to Analyze:
 "{step_text}"
 
-Available Ontology Databases:
+Available Ontology Databases (ONLY suggest terms from these):
 {ontology_info}
 
 {sdrf_info}
 
-Please provide a detailed analysis in JSON format following SDRF-Proteomics standards with the following structure:
+Your task is to extract ONLY terms that can be mapped to SDRF metadata columns using the available ontologies. Focus on identifying specific entities mentioned in the text that have corresponding entries in the ontology databases.
+
+Return JSON in this exact format:
 
 {{
     "extracted_terms": [
         {{
-            "text": "exact term from text",
-            "term_type": "organism|tissue|disease|instrument|chemical|modification|procedure|cellular_component",
+            "text": "exact term from protocol text",
+            "term_type": "organism|tissue|disease|instrument|chemical|modification|cellular_component",
             "confidence": 0.0-1.0,
-            "reasoning": "why you identified this term",
-            "biological_context": "biological significance",
             "suggested_ontology": "which ontology database to search",
-            "position_info": "approximate location in text"
+            "sdrf_column": "exact SDRF column name"
         }}
     ],
-    "biological_insights": {{
-        "experimental_approach": "description of the experimental approach",
-        "key_reagents": ["list of important reagents"],
-        "instruments": ["list of instruments mentioned"],
-        "expected_outcomes": "what this step is intended to achieve",
-        "potential_artifacts": ["possible issues or artifacts"],
-        "sample_type": "type of biological sample"
-    }},
     "sdrf_relevance": {{
-        "organism": ["organism-related terms"],
-        "organism part": ["tissue/organ terms"],
-        "disease": ["disease-related terms"],
-        "cell type": ["cell type/cell line information"],
-        "subcellular localization": ["subcellular components and locations"],
-        "instrument": ["analytical instruments"],
-        "modification parameters": ["protein modifications with key-value format"],
-        "cleavage agent details": ["enzymes and cleavage agents with key-value format"],
-        "label": ["labeling information (label free, TMT, SILAC, etc.)"],
-        "enrichment process": ["enrichment/purification methods"],
-        "reduction reagent": ["reduction chemicals"],
-        "alkylation reagent": ["alkylation chemicals"],
-        "fractionation method": ["separation methods"],
-        "age": ["age information, age ranges, developmental stage"],
-        "sex": ["gender, sex, male/female information"],
-        "biological replicate": ["biological replicate numbers, sample replicates"],
-        "technical replicate": ["technical replicate numbers, measurement replicates"],
-        "fraction identifier": ["fraction numbers, separation fractions"],
-        "ethnicity": ["ethnicity, race, population groups"],
-        "individual": ["patient ID, subject ID, individual identifiers"]
-    }},
-    "quality_assessment": {{
-        "completeness": 0.0-1.0,
-        "specificity": 0.0-1.0,
-        "clarity": 0.0-1.0,
-        "notes": "any issues or recommendations"
+        "organism": ["specific organism/species names found in text"],
+        "organism part": ["specific tissues/organs/body parts found in text"],
+        "disease": ["specific diseases/conditions found in text"],
+        "cell type": ["specific cell lines/cell types found in text"],
+        "subcellular localization": ["specific cellular components found in text"],
+        "instrument": ["specific instrument models found in text"],
+        "modification parameters": ["specific protein modifications found in text"],
+        "cleavage agent details": ["specific enzymes/proteases found in text"],
+        "label": ["specific labeling methods found in text"],
+        "reduction reagent": ["specific reduction chemicals found in text"],
+        "alkylation reagent": ["specific alkylation chemicals found in text"]
     }}
 }}
 
-Focus on:
-1. Accurate identification of biological entities
-2. Understanding the experimental context
-3. Recognizing implicit information (e.g., human implied from HeLa cells)
-4. Identifying technical terms that map to controlled vocabularies
-5. Understanding the purpose and expected outcomes
+RULES:
+1. ONLY extract terms explicitly mentioned in the protocol text
+2. ONLY suggest terms that exist in the provided ontology databases
+3. Do NOT provide biological interpretations or insights
+4. Do NOT suggest demographic data unless explicitly mentioned
+5. Be conservative - if unsure whether a term exists in ontologies, exclude it
+6. Focus on concrete entities: specific chemicals, instruments, cell lines, organisms
+7. Exclude general procedural terms unless they map to specific ontology entries
 
-Be precise and conservative in your confidence scores. Only assign high confidence (>0.8) to terms you are very certain about.
+Be precise and conservative. Only assign high confidence (>0.8) to terms explicitly mentioned and certain to exist in ontologies.
 """
         return prompt
     
@@ -403,21 +387,19 @@ Be precise and conservative in your confidence scores. Only assign high confiden
                 claude_term = ClaudeExtractedTerm(
                     text=term_text,
                     term_type=term_type,
-                    context=term_data.get('position_info', ''),
+                    context='',
                     confidence=float(term_data.get('confidence', 0.5)),
                     start_pos=max(0, start_pos),
                     end_pos=max(0, end_pos),
-                    claude_reasoning=term_data.get('reasoning', ''),
+                    claude_reasoning='',
                     suggested_ontology=term_data.get('suggested_ontology'),
-                    biological_context=term_data.get('biological_context')
+                    biological_context=''
                 )
                 claude_terms.append(claude_term)
             
             return {
                 'extracted_terms': claude_terms,
-                'biological_insights': parsed_analysis.get('biological_insights', {}),
                 'sdrf_relevance': parsed_analysis.get('sdrf_relevance', {}),
-                'quality_assessment': parsed_analysis.get('quality_assessment', {}),
                 'raw_claude_response': content
             }
             

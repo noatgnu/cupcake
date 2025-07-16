@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import io
 import json
+import os
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -12,8 +13,9 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.conf import settings
 from django.contrib.auth.models import User
-from django.core.signing import TimestampSigner, loads, dumps, BadSignature, SignatureExpired
 from django.db.models import Q, Max, Count, Sum
+from django_rq import get_queue
+from django.core.signing import TimestampSigner, loads, dumps, BadSignature, SignatureExpired
 from django.db.models.expressions import result
 from django.http import HttpResponse
 from django.utils import timezone
@@ -34,6 +36,7 @@ from rest_framework.authentication import TokenAuthentication, SessionAuthentica
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.pagination import LimitOffsetPagination
+from rq.job import Job
 from sdrf_pipelines.sdrf.sdrf import SdrfDataFrame
 
 from cc.filters import UnimodFilter, UnimodSearchFilter, MSUniqueVocabulariesSearchFilter, HumanDiseaseSearchFilter, \
@@ -63,8 +66,10 @@ from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, Anno
     SiteSettingsSerializer, BackupLogSerializer, DocumentPermissionSerializer, SharedDocumentSerializer, \
     UserBasicSerializer, ImportTrackerSerializer, ImportTrackerListSerializer, HistoricalRecordSerializer, \
     ServiceTierSerializer, ServicePriceSerializer, BillingRecordSerializer
+from cc.rq_tasks import analyze_protocol_step_task, analyze_full_protocol_task
 from cc.utils import user_metadata, staff_metadata, send_slack_notification
 from cc.utils.user_data_import_revised import ImportReverter
+from mcp_server.tools.protocol_analyzer import ProtocolAnalyzer
 
 
 class ProtocolViewSet(ModelViewSet, FilterMixin):
@@ -573,6 +578,256 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
 
         return Response(ProtocolModelSerializer(protocol, many=False).data, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['post'])
+    def suggest_sdrf(self, request, pk=None):
+        """
+        Generate SDRF suggestions for all steps in a protocol.
+        
+        Supports both synchronous and asynchronous processing.
+        Uses existing ProtocolAnalyzer logic with optional AI enhancement.
+        
+        Request parameters:
+        - use_anthropic (bool): Enable AI-powered analysis
+        - use_async (bool): Use async processing with RQ (default: True)
+        - anthropic_api_key (str): Optional API key for Anthropic
+        
+        Returns:
+        - Async: task_id and job_id for progress tracking
+        - Sync: Aggregated SDRF suggestions and analysis results for all steps
+        """
+        protocol = self.get_object()
+        use_anthropic = request.data.get('use_anthropic', False)
+        use_async = request.data.get('use_async', True)
+        anthropic_api_key = request.data.get('anthropic_api_key')
+        
+        # Check if we should use async processing
+        if use_async:
+            # Use RQ task for async processing
+            # Generate unique task ID
+            task_id = str(uuid.uuid4())
+            
+            # Get user ID for WebSocket updates
+            user_id = request.user.id if request.user.is_authenticated else None
+            
+            # Enqueue task using delay syntax
+            job = analyze_full_protocol_task.delay(
+                task_id=task_id,
+                protocol_id=protocol.id,
+                use_anthropic=use_anthropic,
+                anthropic_api_key=anthropic_api_key,
+                user_id=user_id
+            )
+            
+            return Response({
+                'success': True,
+                'task_id': task_id,
+                'job_id': job.id,
+                'protocol_id': protocol.id,
+                'status': 'queued',
+                'message': 'Full protocol SDRF analysis task queued successfully. Use WebSocket for progress updates.'
+            }, status=status.HTTP_202_ACCEPTED)
+        
+        # Synchronous processing (fallback)
+        try:
+            # Get user token from request
+            user_token = None
+            if request.user.is_authenticated:
+                user_token = str(request.user.id)
+            
+            # Get API key for AI analysis
+            api_key = None
+            if use_anthropic:
+                api_key = anthropic_api_key or os.getenv('ANTHROPIC_API_KEY')
+                if not api_key:
+                    use_anthropic = False
+            
+            # Initialize protocol analyzer with existing logic
+            analyzer = ProtocolAnalyzer(
+                use_anthropic=use_anthropic,
+                anthropic_api_key=api_key
+            )
+            
+            # Use existing logic similar to management command
+            steps = protocol.get_step_in_order()
+            results = []
+            
+            # Process each step
+            for step_index, step in enumerate(steps, 1):
+                try:
+                    # Get SDRF suggestions for this step
+                    suggestions = analyzer.get_step_sdrf_suggestions(step.id, user_token)
+                    
+                    if suggestions.get('success'):
+                        step_result = {
+                            'step_id': step.id,
+                            'step_order': step_index,
+                            'step_description': step.step_description,
+                            'success': True,
+                            'sdrf_suggestions': suggestions.get('sdrf_suggestions', {}),
+                            'analysis_metadata': suggestions.get('analysis_metadata', {})
+                        }
+                        results.append(step_result)
+                    else:
+                        results.append({
+                            'step_id': step.id,
+                            'step_order': step_index,
+                            'step_description': step.step_description,
+                            'success': False,
+                            'error': suggestions.get('error', 'Unknown error')
+                        })
+                        
+                except Exception as e:
+                    results.append({
+                        'step_id': step.id,
+                        'step_order': step_index,
+                        'step_description': step.step_description,
+                        'success': False,
+                        'error': f'Step processing failed: {str(e)}'
+                    })
+            
+            # Aggregate protocol-level SDRF suggestions
+            protocol_sdrf_suggestions = self._aggregate_protocol_suggestions(results)
+            
+            # Calculate summary statistics
+            successful_steps = [r for r in results if r.get('success')]
+            total_columns = sum(len(r.get('sdrf_suggestions', {})) for r in successful_steps)
+            total_suggestions = sum(
+                sum(len(suggestions_list) for suggestions_list in r.get('sdrf_suggestions', {}).values())
+                for r in successful_steps
+            )
+            
+            result = {
+                'success': True,
+                'protocol_id': protocol.id,
+                'protocol_title': protocol.protocol_title,
+                'total_steps': len(results),
+                'successful_steps': len(successful_steps),
+                'total_sdrf_columns': total_columns,
+                'total_suggestions': total_suggestions,
+                'protocol_sdrf_suggestions': protocol_sdrf_suggestions,
+                'step_results': results
+            }
+            
+            return Response(result, status=status.HTTP_200_OK)
+                
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'Protocol SDRF analysis failed: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    def _aggregate_protocol_suggestions(self, step_results):
+        """Aggregate SDRF suggestions across all protocol steps."""
+        aggregated = {}
+        
+        for step_result in step_results:
+            if not step_result.get('success'):
+                continue
+                
+            suggestions = step_result.get('sdrf_suggestions', {})
+            for sdrf_column, suggestions_list in suggestions.items():
+                if sdrf_column not in aggregated:
+                    aggregated[sdrf_column] = []
+                
+                # Add high-confidence matches
+                for suggestion in suggestions_list:
+                    if suggestion.get("confidence", 0) >= 0.7:
+                        # Check if we already have this ontology term
+                        existing = False
+                        for existing_suggestion in aggregated[sdrf_column]:
+                            if (existing_suggestion.get("ontology_id") == suggestion.get("ontology_id") and 
+                                existing_suggestion.get("ontology_type") == suggestion.get("ontology_type")):
+                                # Update confidence if this one is higher
+                                if suggestion.get("confidence", 0) > existing_suggestion.get("confidence", 0):
+                                    existing_suggestion.update(suggestion)
+                                existing = True
+                                break
+                        
+                        if not existing:
+                            aggregated[sdrf_column].append(suggestion)
+        
+        # Sort each column by confidence
+        for sdrf_column in aggregated:
+            aggregated[sdrf_column].sort(key=lambda x: x.get("confidence", 0), reverse=True)
+        
+        return aggregated
+
+    @action(detail=True, methods=['get'])
+    def cached_sdrf_suggestions(self, request, pk=None):
+        """
+        Get cached SDRF suggestions for all steps in a protocol.
+        
+        Query parameters:
+        - analyzer_type (str): Filter by analyzer type ('standard_nlp' or 'mcp_claude')
+        
+        Returns:
+        - Aggregated cached suggestions data with metadata
+        """
+        from cc.serializers import ProtocolStepSuggestionCacheSerializer
+        protocol = self.get_object()
+        analyzer_type = request.query_params.get('analyzer_type')
+        
+        try:
+            # Get all steps in the protocol
+            steps = protocol.get_step_in_order()
+            step_ids = [step.id for step in steps]
+            
+            # Get cached suggestions for all protocol steps
+            cache_queryset = ProtocolStepSuggestionCache.objects.filter(step_id__in=step_ids)
+            
+            if analyzer_type:
+                cache_queryset = cache_queryset.filter(analyzer_type=analyzer_type)
+            
+            cached_suggestions = cache_queryset.order_by('step_id', '-updated_at')
+            
+            if cached_suggestions.exists():
+                # Group by step for easier processing
+                suggestions_by_step = {}
+                for cache_entry in cached_suggestions:
+                    step_id = cache_entry.step_id
+                    if step_id not in suggestions_by_step:
+                        suggestions_by_step[step_id] = []
+                    suggestions_by_step[step_id].append(cache_entry)
+                
+                # Serialize the cached suggestions
+                all_cached_data = []
+                for step_id, step_cache_entries in suggestions_by_step.items():
+                    step = next((s for s in steps if s.id == step_id), None)
+                    if step:
+                        step_data = {
+                            'step_id': step_id,
+                            'step_description': step.step_description,
+                            'cached_entries': ProtocolStepSuggestionCacheSerializer(step_cache_entries, many=True).data
+                        }
+                        all_cached_data.append(step_data)
+                
+                return Response({
+                    'success': True,
+                    'protocol_id': protocol.id,
+                    'protocol_title': protocol.protocol_title,
+                    'total_steps': len(steps),
+                    'steps_with_cache': len(suggestions_by_step),
+                    'total_cache_entries': cached_suggestions.count(),
+                    'cached_suggestions_by_step': all_cached_data
+                }, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    'success': True,
+                    'protocol_id': protocol.id,
+                    'protocol_title': protocol.protocol_title,
+                    'total_steps': len(steps),
+                    'steps_with_cache': 0,
+                    'total_cache_entries': 0,
+                    'cached_suggestions_by_step': [],
+                    'message': 'No cached suggestions found for any steps in this protocol'
+                }, status=status.HTTP_200_OK)
+                
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'Failed to retrieve cached suggestions: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 class StepViewSet(ModelViewSet, FilterMixin):
     """
     ViewSet for managing protocol steps.
@@ -850,6 +1105,170 @@ class StepViewSet(ModelViewSet, FilterMixin):
         data = request.data
         result = step.convert_to_sdrf_file(data)
         return Response(data=result, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def suggest_sdrf(self, request, pk=None):
+        """
+        Generate SDRF suggestions for a protocol step.
+        
+        Supports both synchronous and asynchronous processing.
+        Uses existing ProtocolAnalyzer logic with optional AI enhancement.
+        
+        Request parameters:
+        - use_anthropic (bool): Enable AI-powered analysis
+        - use_async (bool): Use async processing with RQ (default: True)
+        - anthropic_api_key (str): Optional API key for Anthropic
+        
+        Returns:
+        - Async: task_id and job_id for progress tracking
+        - Sync: SDRF suggestions and analysis results
+        """
+        step = self.get_object()
+        use_anthropic = request.data.get('use_anthropic', False)
+        use_async = request.data.get('use_async', True)
+        anthropic_api_key = request.data.get('anthropic_api_key')
+        
+        # Check if we should use async processing
+        if use_async:
+            # Use RQ task for async processing
+            # Generate unique task ID
+            task_id = str(uuid.uuid4())
+            
+            # Get user ID for WebSocket updates
+            user_id = request.user.id if request.user.is_authenticated else None
+            
+            # Enqueue task using delay syntax
+            job = analyze_protocol_step_task.delay(
+                task_id=task_id,
+                step_id=step.id,
+                use_anthropic=use_anthropic,
+                anthropic_api_key=anthropic_api_key,
+                user_id=user_id
+            )
+            
+            return Response({
+                'success': True,
+                'task_id': task_id,
+                'job_id': job.id,
+                'step_id': step.id,
+                'status': 'queued',
+                'message': 'SDRF analysis task queued successfully. Use WebSocket for progress updates.'
+            }, status=status.HTTP_202_ACCEPTED)
+        
+        # Synchronous processing (fallback)
+        try:
+            # Get user token from request
+            user_token = None
+            if request.user.is_authenticated:
+                user_token = str(request.user.id)
+            
+            # Get API key for AI analysis
+            api_key = None
+            if use_anthropic:
+                api_key = anthropic_api_key or os.getenv('ANTHROPIC_API_KEY')
+                if not api_key:
+                    use_anthropic = False
+            
+            # Initialize protocol analyzer with existing logic
+            analyzer = ProtocolAnalyzer(
+                use_anthropic=use_anthropic,
+                anthropic_api_key=api_key
+            )
+            
+            # Use existing method from management command
+            suggestions = analyzer.get_step_sdrf_suggestions(step.id, user_token)
+            
+            if suggestions.get('success'):
+                # Process the suggestions similar to management command
+                analysis = analyzer.analyze_protocol_step(step.id, user_token)
+                
+                # Build the main result using existing patterns
+                result = {
+                    "success": True,
+                    "step_id": step.id,
+                    "sdrf_suggestions": suggestions.get("sdrf_suggestions", {}),
+                    "analysis_summary": {
+                        "total_matches": len(analysis.get('ontology_matches', [])),
+                        "high_confidence_matches": analysis.get('analysis_metadata', {}).get('high_confidence_matches', 0),
+                        "sdrf_specific_suggestions": sum(len(suggestions_list) for suggestions_list in suggestions.get("sdrf_suggestions", {}).values())
+                    },
+                    "detailed_analysis": {
+                        "extracted_terms": analysis.get("extracted_terms", []),
+                        "ontology_matches": analysis.get("ontology_matches", []),
+                        "categorized_matches": analysis.get("categorized_matches", {}),
+                        "analysis_metadata": analysis.get("analysis_metadata", {})
+                    }
+                }
+                
+                # Extract and preserve important fields from the analysis
+                analysis_metadata = analysis.get("analysis_metadata", {})
+                if "analyzer_type" in analysis_metadata:
+                    result["analyzer_type"] = analysis_metadata["analyzer_type"]
+                
+                # Include Claude analysis if present
+                if "claude_analysis" in analysis:
+                    result["claude_analysis"] = analysis["claude_analysis"]
+                
+                # Include enhanced SDRF suggestions if present
+                if "sdrf_suggestions_enhanced" in analysis:
+                    result["sdrf_suggestions_enhanced"] = analysis["sdrf_suggestions_enhanced"]
+                
+                return Response(result, status=status.HTTP_200_OK)
+            else:
+                return Response(suggestions, status=status.HTTP_400_BAD_REQUEST)
+                
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'SDRF analysis failed: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['get'])
+    def cached_sdrf_suggestions(self, request, pk=None):
+        """
+        Get cached SDRF suggestions for a protocol step.
+        
+        Query parameters:
+        - analyzer_type (str): Filter by analyzer type ('standard_nlp' or 'mcp_claude')
+        
+        Returns:
+        - Cached suggestions data with metadata
+        """
+        from cc.serializers import ProtocolStepSuggestionCacheSerializer
+        step = self.get_object()
+        analyzer_type = request.query_params.get('analyzer_type')
+        
+        try:
+            # Get cached suggestions
+            cache_queryset = ProtocolStepSuggestionCache.objects.filter(step=step)
+            
+            if analyzer_type:
+                cache_queryset = cache_queryset.filter(analyzer_type=analyzer_type)
+            
+            cached_suggestions = cache_queryset.order_by('-updated_at')
+            
+            if cached_suggestions.exists():
+                serializer = ProtocolStepSuggestionCacheSerializer(cached_suggestions, many=True)
+                return Response({
+                    'success': True,
+                    'step_id': step.id,
+                    'cached_suggestions': serializer.data,
+                    'total_cache_entries': cached_suggestions.count()
+                }, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    'success': True,
+                    'step_id': step.id,
+                    'cached_suggestions': [],
+                    'total_cache_entries': 0,
+                    'message': 'No cached suggestions found for this step'
+                }, status=status.HTTP_200_OK)
+                
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'Failed to retrieve cached suggestions: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class AnnotationViewSet(ModelViewSet, FilterMixin):
     """
@@ -1193,7 +1612,6 @@ class AnnotationViewSet(ModelViewSet, FilterMixin):
         user = self.request.user
         
         if annotation.folder and annotation.folder.is_shared_document_folder:
-            from .models import DocumentPermission
             if not DocumentPermission.user_can_access_annotation_with_folder_inheritance(user, annotation, 'can_view'):
                 return Response(status=status.HTTP_401_UNAUTHORIZED)
         
@@ -2096,8 +2514,6 @@ class UserViewSet(ModelViewSet, FilterMixin):
         user = self.request.user
         
         # Get storage objects the user owns or has access to via lab groups
-        from cc.models import StorageObject
-        from django.db.models import Q
         accessible_storage = StorageObject.objects.filter(
             Q(user=user) | Q(access_lab_groups__users=user)
         ).distinct().values(
@@ -5802,13 +6218,19 @@ class MetadataTableTemplateViewSets(FilterMixin, ModelViewSet):
         elif mode == 'service_lab_group':
             lab_group_id = self.request.query_params.get('lab_group_id', None)
             if lab_group_id:
-                lab_group = LabGroup.objects.get(id=lab_group_id, can_perform_ms_analysis=True)
-                query &= Q(service_lab_group=lab_group)
+                try:
+                    lab_group = LabGroup.objects.get(id=lab_group_id, can_perform_ms_analysis=True)
+                    query &= Q(service_lab_group=lab_group)
+                except LabGroup.DoesNotExist:
+                    # Return empty queryset instead of Response
+                    return self.queryset.none()
             else:
-                return Response(status=status.HTTP_400_BAD_REQUEST)
+                # Return empty queryset instead of Response
+                return self.queryset.none()
         else:
             if not user.is_staff:
-                return Response(status=status.HTTP_403_FORBIDDEN)
+                # Return empty queryset instead of Response
+                return self.queryset.none()
         # add filter for only enabled templates that if not enabled will only be accessible by the user who created them
         # query &= (Q(enabled=True)|Q(user=user))
         if self_only and user.is_authenticated:
@@ -5857,7 +6279,7 @@ class MetadataTableTemplateViewSets(FilterMixin, ModelViewSet):
                 "mask": "Protease"
             }
         ]
-        template = MetadataTableTemplate.objects.create(name=name, user=user, field_mask_mapping=default_mask_mapping)
+        template = MetadataTableTemplate.objects.create(name=name, user=user, field_mask_mapping=json.dumps(default_mask_mapping))
         template.user_columns.add(*user_columns)
         template.staff_columns.add(*staff_columns)
         if mode == 'service_lab_group':
@@ -6979,6 +7401,183 @@ class ReagentDocumentViewSet(ModelViewSet):
                 {'error': f'An error occurred: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class JobStatusViewSet(ViewSet):
+    """
+    Universal ViewSet for checking RQ job status.
+    
+    Provides status checking for any RQ job, not limited to MCP tasks.
+    Supports both task_id and job_id based lookups.
+    
+    This replaces the MCPTaskStatusView and provides a universal
+    interface for all async job status checking.
+    """
+    permission_classes = [IsAuthenticated]
+    
+    @action(detail=False, methods=['get'])
+    def status(self, request):
+        """
+        Get status of an RQ job.
+        
+        Query parameters:
+        - task_id (str): Optional task identifier
+        - job_id (str): RQ job identifier
+        - queue (str): Queue name (default: 'default')
+        
+        Returns job status, metadata, and results if completed.
+        """
+        task_id = request.query_params.get('task_id')
+        job_id = request.query_params.get('job_id')
+        queue_name = request.query_params.get('queue', 'default')
+        
+        if not task_id and not job_id:
+            return Response({
+                'success': False,
+                'error': 'Either task_id or job_id is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            queue = get_queue(queue_name)
+            
+            if job_id:
+                try:
+                    job = Job.fetch(job_id, connection=queue.connection)
+                    
+                    job_status = job.get_status()
+                    
+                    result = {
+                        'success': True,
+                        'job_id': job.id,
+                        'task_id': task_id or job.meta.get('task_id'),
+                        'queue': queue_name,
+                        'status': job_status,
+                        'created_at': job.created_at.isoformat() if job.created_at else None,
+                        'started_at': job.started_at.isoformat() if job.started_at else None,
+                        'ended_at': job.ended_at.isoformat() if job.ended_at else None,
+                        'meta': job.meta or {}
+                    }
+                    
+                    # Add result if job is finished
+                    if job_status == 'finished':
+                        result['result'] = job.result
+                    elif job_status == 'failed':
+                        result['error'] = str(job.exc_info) if job.exc_info else 'Job failed with unknown error'
+                        result['failure_reason'] = str(job.exc_info) if job.exc_info else None
+                    
+                    return Response(result, status=status.HTTP_200_OK)
+                    
+                except Exception as e:
+                    return Response({
+                        'success': False,
+                        'error': f'Job not found or invalid: {str(e)}'
+                    }, status=status.HTTP_404_NOT_FOUND)
+            
+            # If only task_id is provided, search for job by task_id in meta
+            if task_id:
+                try:
+                    # Search through jobs to find one with matching task_id
+                    jobs = queue.get_jobs()
+                    target_job = None
+                    
+                    for job in jobs:
+                        if job.meta.get('task_id') == task_id:
+                            target_job = job
+                            break
+                    
+                    if target_job:
+                        job_status = target_job.get_status()
+                        
+                        result = {
+                            'success': True,
+                            'job_id': target_job.id,
+                            'task_id': task_id,
+                            'queue': queue_name,
+                            'status': job_status,
+                            'created_at': target_job.created_at.isoformat() if target_job.created_at else None,
+                            'started_at': target_job.started_at.isoformat() if target_job.started_at else None,
+                            'ended_at': target_job.ended_at.isoformat() if target_job.ended_at else None,
+                            'meta': target_job.meta or {}
+                        }
+                        
+                        # Add result if job is finished
+                        if job_status == 'finished':
+                            result['result'] = target_job.result
+                        elif job_status == 'failed':
+                            result['error'] = str(target_job.exc_info) if target_job.exc_info else 'Job failed with unknown error'
+                            result['failure_reason'] = str(target_job.exc_info) if target_job.exc_info else None
+                        
+                        return Response(result, status=status.HTTP_200_OK)
+                    else:
+                        return Response({
+                            'success': False,
+                            'error': f'No job found with task_id: {task_id}'
+                        }, status=status.HTTP_404_NOT_FOUND)
+                        
+                except Exception as e:
+                    return Response({
+                        'success': False,
+                        'error': f'Error searching for task: {str(e)}'
+                    }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'Job status check failed: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['get'])
+    def list_jobs(self, request):
+        """
+        List jobs in a queue with optional filtering.
+        
+        Query parameters:
+        - queue (str): Queue name (default: 'default')
+        - status (str): Filter by job status
+        - limit (int): Maximum number of jobs to return (default: 50)
+        
+        Returns list of jobs with basic information.
+        """
+        queue_name = request.query_params.get('queue', 'default')
+        status_filter = request.query_params.get('status')
+        limit = int(request.query_params.get('limit', 50))
+        
+        try:
+            queue = get_queue(queue_name)
+            jobs = queue.get_jobs()
+            
+            # Filter by status if provided
+            if status_filter:
+                jobs = [job for job in jobs if job.get_status() == status_filter]
+            
+            # Limit results
+            jobs = jobs[:limit]
+            
+            job_list = []
+            for job in jobs:
+                job_info = {
+                    'job_id': job.id,
+                    'task_id': job.meta.get('task_id'),
+                    'status': job.get_status(),
+                    'created_at': job.created_at.isoformat() if job.created_at else None,
+                    'started_at': job.started_at.isoformat() if job.started_at else None,
+                    'ended_at': job.ended_at.isoformat() if job.ended_at else None,
+                    'func_name': job.func_name if hasattr(job, 'func_name') else None
+                }
+                job_list.append(job_info)
+            
+            return Response({
+                'success': True,
+                'queue': queue_name,
+                'total_jobs': len(job_list),
+                'jobs': job_list
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'Failed to list jobs: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['get'])
     def get_download_token(self, request, pk=None):

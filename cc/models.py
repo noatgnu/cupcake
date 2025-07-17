@@ -598,7 +598,13 @@ class ProtocolStep(models.Model):
                     else:
                         row.append(column['value'])
                 else:
-                    row.append("not available")
+                    # Handle null values with proper SDRF standards
+                    from cc.utils import required_metadata_name
+                    column_name = column['name'].lower()
+                    if column_name in required_metadata_name or column_name == "tissue" or column_name == "organism part":
+                        row.append("not applicable")
+                    else:
+                        row.append("not available")
 
         data = [column_names] + [row]
         return data
@@ -2282,7 +2288,18 @@ class SiteSettings(models.Model):
     # Advanced import settings
     staff_only_import_override = models.BooleanField(default=False, help_text="Only staff users can override import restrictions")
     import_archive_size_limit_mb = models.PositiveIntegerField(default=500, help_text="Maximum size of import archive in MB (0 = no limit)")
+
+    enable_ai_sdrf_suggestions = models.BooleanField(default=False, help_text="Enable AI-based SDRF suggestions")
+    enable_billing_module = models.BooleanField(default=True, help_text="Enable billing module for instrument usage")
+    enable_documents_module = models.BooleanField(default=True, help_text="Enable document management module")
+    enable_instruments_module = models.BooleanField(default=True, help_text="Enable instruments management module")
+    enable_lab_notebook_module =  models.BooleanField(default=True, help_text="Enable lab notebook module")
+    enable_storage_module = models.BooleanField(default=True, help_text="Enable storage management module")
     
+    # Backup module settings
+    enable_backup_module = models.BooleanField(default=True, help_text="Enable backup management module")
+    backup_frequency_days = models.PositiveIntegerField(default=7, help_text="Frequency of automatic backups in days")
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -2597,7 +2614,7 @@ class BackupLog(models.Model):
     
     backup_type = models.CharField(max_length=20, choices=BACKUP_TYPE_CHOICES)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='running')
-    started_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     duration_seconds = models.PositiveIntegerField(null=True, blank=True, help_text="Backup duration in seconds")
     
@@ -2615,14 +2632,14 @@ class BackupLog(models.Model):
     
     class Meta:
         app_label = "cc"
-        ordering = ['-started_at']
+        ordering = ['-created_at']
         indexes = [
             models.Index(fields=['backup_type', 'status']),
-            models.Index(fields=['started_at']),
+            models.Index(fields=['created_at']),
         ]
     
     def __str__(self):
-        return f"{self.get_backup_type_display()} - {self.get_status_display()} at {self.started_at}"
+        return f"{self.get_backup_type_display()} - {self.get_status_display()} at {self.created_at}"
     
     @property
     def file_size_mb(self):
@@ -2636,8 +2653,8 @@ class BackupLog(models.Model):
         from django.utils import timezone
         self.status = 'completed'
         self.completed_at = timezone.now()
-        if self.started_at:
-            duration = self.completed_at - self.started_at
+        if self.created_at:
+            duration = self.completed_at - self.created_at
             self.duration_seconds = int(duration.total_seconds())
         if file_path:
             self.backup_file_path = file_path
@@ -2652,8 +2669,8 @@ class BackupLog(models.Model):
         from django.utils import timezone
         self.status = 'failed'
         self.completed_at = timezone.now()
-        if self.started_at:
-            duration = self.completed_at - self.started_at
+        if self.created_at:
+            duration = self.completed_at - self.created_at
             self.duration_seconds = int(duration.total_seconds())
         self.error_message = error_message
         self.save()

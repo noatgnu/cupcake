@@ -28,9 +28,9 @@ from cc.viewsets import ProtocolViewSet, SessionViewSet, StepViewSet, Annotation
     UnimodViewSets, InstrumentJobViewSets, FavouriteMetadataOptionViewSets, PresetViewSet, \
     MetadataTableTemplateViewSets, SupportInformationViewSet, ExternalContactViewSet, ExternalContactDetailsViewSet, \
     MaintenanceLogViewSet, MessageThreadViewSet, MessageViewSet, MessageRecipientViewSet, MessageAttachmentViewSet, \
-    ReagentDocumentViewSet, SiteSettingsViewSet, BackupLogViewSet, SharedDocumentViewSet, DocumentPermissionViewSet, \
+    ReagentDocumentViewSet, SiteSettingsViewSet, SharedDocumentViewSet, DocumentPermissionViewSet, \
     ImportTrackerViewSet, HistoricalRecordsViewSet, ServiceTierViewSet, ServicePriceViewSet, BillingRecordViewSet, \
-    JobStatusViewSet
+    JobStatusViewSet, PublicPricingViewSet, BillingManagementViewSet, BackupViewSet
 
 router = routers.DefaultRouter()
 router.register(r'protocol', ProtocolViewSet)
@@ -74,7 +74,7 @@ router.register(r'message_recipients', MessageRecipientViewSet)
 router.register(r'message_attachments', MessageAttachmentViewSet)
 router.register(r'reagent_documents', ReagentDocumentViewSet, basename="reagent_documents")
 router.register(r'site_settings', SiteSettingsViewSet)
-router.register(r'backup_logs', BackupLogViewSet)
+router.register(r'backups', BackupViewSet)
 router.register(r'shared_documents', SharedDocumentViewSet, basename="shared_documents")
 router.register(r'document_permissions', DocumentPermissionViewSet)
 router.register(r'import_tracking', ImportTrackerViewSet)
@@ -83,6 +83,8 @@ router.register(r'service_tiers', ServiceTierViewSet)
 router.register(r'service_prices', ServicePriceViewSet)
 router.register(r'billing_records', BillingRecordViewSet)
 router.register(r'job-status', JobStatusViewSet, basename='job-status')
+router.register(r'public_pricing', PublicPricingViewSet, basename='public_pricing')
+router.register(r'billing_management', BillingManagementViewSet, basename='billing_management')
 
 urlpatterns = [
     path('admin/', admin.site.urls),

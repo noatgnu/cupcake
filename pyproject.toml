@@ -40,6 +40,7 @@ django-simple-history = "^3.8.0"
 mcp = "^1.11.0"
 aiohttp = "^3.12.14"
 pydantic = "^2.11.7"
+sympy = "^1.14.0"
 
 [tool.poetry.group.dev.dependencies]
 testcontainers = "^4.10.0"

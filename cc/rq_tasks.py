@@ -2028,10 +2028,13 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
         m.value = metadata_cache[m.name][m.value]
         if m.modifiers:
             m.modifiers = json.loads(m.modifiers)
-            for n, mod in enumerate(m.modifiers):
-                if mod["value"] not in metadata_cache[m.name]:
-                    metadata_cache[m.name][mod["value"]] = convert_metadata_column_value_to_sdrf(m.name.lower(), mod["value"])
-                m.modifiers[n]["value"] = metadata_cache[m.name][mod["value"]]
+            if m.modifiers:
+                for n, mod in enumerate(m.modifiers):
+                    if mod["value"] not in metadata_cache[m.name]:
+                        metadata_cache[m.name][mod["value"]] = convert_metadata_column_value_to_sdrf(m.name.lower(), mod["value"])
+                    m.modifiers[n]["value"] = metadata_cache[m.name][mod["value"]]
+            else:
+                m.modifiers = []
         else:
             m.modifiers = []
         if m.type != "Factor value":
@@ -2268,6 +2271,28 @@ def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
                 data[j][last_comment] = m.value
         id_metadata_column_map[m.id] = {"column": last_comment, "name": headers[-1], "type": "factor value", "hidden": m.hidden}
         last_comment += 1
+    
+    # Final cleanup: ensure all empty/null values are properly converted to SDRF standards
+    for i in range(len(data)):
+        for j in range(len(data[i])):
+            if data[i][j] == "" or data[i][j] is None:
+                # Get the column name from headers
+                if j < len(headers):
+                    column_name = headers[j].lower()
+                    # Remove SDRF column type prefixes to get the actual column name
+                    if column_name.startswith('characteristics[') and column_name.endswith(']'):
+                        column_name = column_name[14:-1]  # Remove 'characteristics[' and ']'
+                    elif column_name.startswith('comment[') and column_name.endswith(']'):
+                        column_name = column_name[8:-1]  # Remove 'comment[' and ']'
+                    elif column_name.startswith('factor value[') and column_name.endswith(']'):
+                        column_name = column_name[13:-1]  # Remove 'factor value[' and ']'
+                    
+                    # Apply proper null value based on whether the column is mandatory
+                    if column_name in required_metadata_name or column_name == "tissue" or column_name == "organism part":
+                        data[i][j] = "not applicable"
+                    else:
+                        data[i][j] = "not available"
+    
     return [headers, *data], id_metadata_column_map
 
 def parse_sample_indices_from_modifier_string(samples: str):
@@ -2293,8 +2318,12 @@ def convert_metadata_column_value_to_sdrf(column_name: str, value: str):
     :param value:
     :return:
     """
-    if value == "" and column_name in required_metadata_name:
-        return "not applicable"
+    # Handle null/empty values according to SDRF standards
+    if value == "" or value is None:
+        if column_name in required_metadata_name or column_name == "tissue" or column_name == "organism part":
+            return "not applicable"
+        else:
+            return "not available"
 
     if column_name == "subcellular location":
         if value:
@@ -2793,6 +2822,7 @@ def validate_sdrf_file(metadata_column_ids: list[int], sample_number: int, user_
 
     metadata_column = MetadataColumn.objects.filter(id__in=metadata_column_ids)
     result, _ = sort_metadata(metadata_column, sample_number)
+    print(result)
     # check if there is NoneType in the result
     errors = sdrf_validate(result)
     channel_layer = get_channel_layer()

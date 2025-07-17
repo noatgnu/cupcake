@@ -32,7 +32,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--source',
             type=str,
-            default='all',
+            default='cl',
             choices=['all', 'cl', 'cellosaurus', 'manual'],
             help='Data source to use'
         )

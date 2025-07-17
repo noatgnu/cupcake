@@ -47,7 +47,8 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
     SubcellularLocation, HumanDisease, Tissue, MetadataColumn, MSUniqueVocabularies, Unimod, InstrumentJob, \
     FavouriteMetadataOption, Preset, MetadataTableTemplate, MaintenanceLog, SupportInformation, ExternalContact, \
     ExternalContactDetails, Message, MessageRecipient, MessageAttachment, MessageRecipient, MessageThread, \
-    ReagentSubscription, SiteSettings, BackupLog, DocumentPermission, ImportTracker, ServiceTier, ServicePrice, BillingRecord
+    ReagentSubscription, SiteSettings, BackupLog, DocumentPermission, ImportTracker, ServiceTier, ServicePrice, \
+    BillingRecord, ProtocolStepSuggestionCache
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission, IsParticipantOrAdmin, IsCoreFacilityPermission
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, dry_run_import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
@@ -4984,6 +4985,10 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
         query = Q()
         stored_reagent_id = self.request.query_params.get('stored_reagent', None)
         can_perform_ms_analysis = self.request.query_params.get('can_perform_ms_analysis', None)
+        is_core_facility = self.request.query_params.get('is_core_facility', None)
+        if is_core_facility:
+            is_core_facility = is_core_facility == 'true'
+            query &= Q(is_core_facility=is_core_facility)
         if stored_reagent_id:
             stored_reagent = StoredReagent.objects.get(id=stored_reagent_id)
             return stored_reagent.access_lab_groups.all()
@@ -5033,6 +5038,9 @@ class LabGroupViewSet(ModelViewSet, FilterMixin):
             instance.service_storage = StorageObject.objects.get(id=request.data['service_storage'])
         if "can_perform_ms_analysis" in request.data:
             instance.can_perform_ms_analysis = request.data['can_perform_ms_analysis']
+        if self.request.user.is_staff:
+            if "is_core_facility" in request.data:
+                instance.is_core_facility = request.data['is_core_facility']
         instance.save()
         data = self.get_serializer(instance).data
         return Response(data, status=status.HTTP_200_OK)
@@ -7403,7 +7411,7 @@ class ReagentDocumentViewSet(ModelViewSet):
             )
 
 
-class JobStatusViewSet(ViewSet):
+class JobStatusViewSet(ModelViewSet, FilterMixin):
     """
     Universal ViewSet for checking RQ job status.
     
@@ -7688,6 +7696,16 @@ class SiteSettingsViewSet(ModelViewSet):
             'primary_color': current_settings.primary_color,
             'secondary_color': current_settings.secondary_color,
             'footer_text': current_settings.footer_text,
+            # Module availability settings
+            'enable_documents_module': current_settings.enable_documents_module,
+            'enable_lab_notebook_module': current_settings.enable_lab_notebook_module,
+            'enable_instruments_module': current_settings.enable_instruments_module,
+            'enable_storage_module': current_settings.enable_storage_module,
+            'enable_billing_module': current_settings.enable_billing_module,
+            'enable_ai_sdrf_suggestions': current_settings.enable_ai_sdrf_suggestions,
+            'enable_backup_module': current_settings.enable_backup_module,
+            # Backup configuration
+            'backup_frequency_days': current_settings.backup_frequency_days,
 
         }
         return Response(public_data)
@@ -7812,60 +7830,6 @@ class SiteSettingsViewSet(ModelViewSet):
         })
 
 
-
-class BackupLogViewSet(ModelViewSet, FilterMixin):
-    """ViewSet for managing backup logs"""
-    queryset = BackupLog.objects.all()
-    serializer_class = BackupLogSerializer
-    permission_classes = [IsAuthenticated]
-    authentication_classes = [TokenAuthentication, SessionAuthentication]
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    filterset_fields = ["backup_type", "status", "triggered_by"]
-    search_fields = ["backup_file_path", "error_message", "success_message"]
-    ordering_fields = ["started_at", "completed_at", "duration_seconds", "file_size_bytes"]
-    ordering = ["-started_at"]
-    pagination_class = LimitOffsetPagination
-
-    def get_permissions(self):
-        """Only staff users can view backup logs"""
-        if self.action in ["list", "retrieve"]:
-            return [IsAuthenticated(), IsAdminUser()]
-        else:
-            # Backup logs should be read-only via API
-            return [IsAdminUser()]
-
-    @action(detail=False, methods=["get"])
-    def backup_status(self, request):
-        """Get summary of recent backup status"""
-        # Get backup status from last 30 days
-        thirty_days_ago = timezone.now() - timedelta(days=30)
-        recent_backups = BackupLog.objects.filter(started_at__gte=thirty_days_ago)
-
-        # Count by status
-        status_counts = {}
-        for status_choice in BackupLog.STATUS_CHOICES:
-            status_key = status_choice[0]
-            status_counts[status_key] = recent_backups.filter(status=status_key).count()
-
-        # Get latest backup for each type
-        latest_backups = {}
-        for backup_type in ["database", "media"]:
-            latest = recent_backups.filter(backup_type=backup_type).first()
-            if latest:
-                latest_backups[backup_type] = BackupLogSerializer(latest).data
-
-        # Calculate success rate
-        total_backups = recent_backups.count()
-        successful_backups = recent_backups.filter(status="completed").count()
-        success_rate = (successful_backups / total_backups * 100) if total_backups > 0 else 0
-
-        return Response({
-            "period_days": 30,
-            "total_backups": total_backups,
-            "success_rate": round(success_rate, 1),
-            "status_counts": status_counts,
-            "latest_backups": latest_backups,
-        })
 
 
 class SharedDocumentViewSet(ModelViewSet, FilterMixin):
@@ -9619,7 +9583,7 @@ class BillingRecordViewSet(ModelViewSet):
         service_tier = serializer.validated_data['service_tier']
         if not service_tier.lab_group.is_core_facility:
             raise ValidationError("Billing records can only be created for core facility service tiers")
-        
+
         # Ensure user has access to this service tier's lab group
         if not self.request.user.lab_groups.filter(id=service_tier.lab_group.id, is_core_facility=True).exists():
             raise PermissionDenied("You don't have permission to create billing records for this service tier")
@@ -9746,3 +9710,657 @@ class BillingRecordViewSet(ModelViewSet):
             return Response({'error': 'Service tier not found'}, status=404)
         except Exception as e:
             return Response({'error': str(e)}, status=500)
+
+
+class PublicPricingViewSet(ReadOnlyModelViewSet):
+    """
+    Public pricing display viewset for showing pricing information to users
+    """
+    permission_classes = [AllowAny]
+    
+    def get_queryset(self):
+        # This viewset doesn't use a standard queryset
+        return LabGroup.objects.filter(is_core_facility=True)
+    
+    @action(detail=False, methods=['get'])
+    def pricing_display(self, request):
+        """
+        Get public pricing display for all or specific lab groups
+        """
+        from cc.billing_services import PublicPricingService
+        
+        lab_group_id = request.query_params.get('lab_group_id')
+        
+        try:
+            if lab_group_id:
+                lab_group = LabGroup.objects.get(id=lab_group_id, is_core_facility=True)
+                pricing_service = PublicPricingService(lab_group)
+                pricing_display = pricing_service.get_public_pricing_display()
+            else:
+                # Show all core facility pricing
+                pricing_service = PublicPricingService()
+                pricing_display = pricing_service.get_public_pricing_display()
+            
+            return Response({
+                'success': True,
+                'pricing_display': pricing_display
+            })
+            
+        except LabGroup.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Lab group not found'
+            }, status=404)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'Failed to get pricing display: {str(e)}'
+            }, status=500)
+    
+    @action(detail=False, methods=['get'])
+    def quote_form_config(self, request):
+        """
+        Get configuration for quote request form
+        """
+        from cc.billing_services import PublicPricingService
+        
+        lab_group_id = request.query_params.get('lab_group_id')
+        
+        try:
+            if lab_group_id:
+                lab_group = LabGroup.objects.get(id=lab_group_id, is_core_facility=True)
+                pricing_service = PublicPricingService(lab_group)
+            else:
+                pricing_service = PublicPricingService()
+            
+            form_config = pricing_service.generate_quote_form_config()
+            
+            return Response({
+                'success': True,
+                'form_config': form_config
+            })
+            
+        except LabGroup.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Lab group not found'
+            }, status=404)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'Failed to get form config: {str(e)}'
+            }, status=500)
+    
+    @action(detail=False, methods=['post'])
+    def generate_quote(self, request):
+        """
+        Generate a quote based on the request parameters
+        """
+        from cc.billing_services import QuoteCalculator
+        
+        service_tier_id = request.data.get('service_tier_id')
+        
+        if not service_tier_id:
+            return Response({
+                'success': False,
+                'error': 'service_tier_id is required'
+            }, status=400)
+        
+        try:
+            service_tier = ServiceTier.objects.get(id=service_tier_id, is_active=True)
+            calculator = QuoteCalculator(service_tier)
+            quote_result = calculator.calculate_quote(request.data)
+            
+            return Response(quote_result)
+            
+        except ServiceTier.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Service tier not found'
+            }, status=404)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'Failed to generate quote: {str(e)}'
+            }, status=500)
+    
+    @action(detail=False, methods=['get'])
+    def pricing_options(self, request):
+        """
+        Get pricing options for a specific instrument and service tier
+        """
+        from cc.billing_services import QuoteCalculator
+        
+        instrument_id = request.query_params.get('instrument_id')
+        service_tier_id = request.query_params.get('service_tier_id')
+        
+        if not instrument_id or not service_tier_id:
+            return Response({
+                'success': False,
+                'error': 'instrument_id and service_tier_id are required'
+            }, status=400)
+        
+        try:
+            instrument = Instrument.objects.get(id=instrument_id, enabled=True)
+            service_tier = ServiceTier.objects.get(id=service_tier_id, is_active=True)
+            
+            calculator = QuoteCalculator(service_tier)
+            pricing_options = calculator.get_pricing_options(instrument)
+            
+            return Response({
+                'success': True,
+                'pricing_options': pricing_options
+            })
+            
+        except (Instrument.DoesNotExist, ServiceTier.DoesNotExist):
+            return Response({
+                'success': False,
+                'error': 'Instrument or service tier not found'
+            }, status=404)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'Failed to get pricing options: {str(e)}'
+            }, status=500)
+
+
+class BillingManagementViewSet(ModelViewSet):
+    """
+    Billing management viewset for core facility administrators
+    """
+    permission_classes = [IsCoreFacilityPermission]
+    
+    def get_queryset(self):
+        # This viewset doesn't use a standard queryset
+        return ServiceTier.objects.filter(
+            lab_group__in=self.request.user.lab_groups.filter(is_core_facility=True)
+        )
+    
+    @action(detail=False, methods=['get'])
+    def pricing_summary(self, request):
+        """
+        Get pricing summary for lab groups user has access to
+        """
+        from cc.billing_services import PricingManager
+        
+        lab_group_id = request.query_params.get('lab_group_id')
+        
+        try:
+            if lab_group_id:
+                lab_group = LabGroup.objects.get(
+                    id=lab_group_id, 
+                    is_core_facility=True,
+                    id__in=self.request.user.lab_groups.filter(is_core_facility=True)
+                )
+                manager = PricingManager(lab_group)
+                summary = manager.get_pricing_summary()
+            else:
+                # Get summary for all accessible lab groups
+                user_lab_groups = self.request.user.lab_groups.filter(is_core_facility=True)
+                summaries = []
+                
+                for lab_group in user_lab_groups:
+                    manager = PricingManager(lab_group)
+                    summary = manager.get_pricing_summary()
+                    summaries.append(summary)
+                
+                summary = {'lab_groups': summaries}
+            
+            return Response({
+                'success': True,
+                'pricing_summary': summary
+            })
+            
+        except LabGroup.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Lab group not found or access denied'
+            }, status=404)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'Failed to get pricing summary: {str(e)}'
+            }, status=500)
+    
+    @action(detail=False, methods=['post'])
+    def create_service_tier(self, request):
+        """
+        Create a new service tier
+        """
+        from cc.billing_services import PricingManager
+        
+        lab_group_id = request.data.get('lab_group_id')
+        name = request.data.get('name')
+        description = request.data.get('description', '')
+        
+        if not lab_group_id or not name:
+            return Response({
+                'success': False,
+                'error': 'lab_group_id and name are required'
+            }, status=400)
+        
+        try:
+            lab_group = LabGroup.objects.get(
+                id=lab_group_id,
+                is_core_facility=True,
+                id__in=self.request.user.lab_groups.filter(is_core_facility=True)
+            )
+            
+            manager = PricingManager(lab_group)
+            service_tier = manager.create_service_tier(name, description)
+            
+            return Response({
+                'success': True,
+                'service_tier': {
+                    'id': service_tier.id,
+                    'name': service_tier.name,
+                    'description': service_tier.description,
+                    'lab_group': service_tier.lab_group.name,
+                    'is_active': service_tier.is_active
+                }
+            })
+            
+        except LabGroup.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Lab group not found or access denied'
+            }, status=404)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'Failed to create service tier: {str(e)}'
+            }, status=500)
+    
+    @action(detail=False, methods=['post'])
+    def bulk_update_prices(self, request):
+        """
+        Bulk update multiple service prices
+        """
+        from cc.billing_services import PricingManager
+        
+        lab_group_id = request.data.get('lab_group_id')
+        price_updates = request.data.get('price_updates', [])
+        
+        if not lab_group_id or not price_updates:
+            return Response({
+                'success': False,
+                'error': 'lab_group_id and price_updates are required'
+            }, status=400)
+        
+        try:
+            lab_group = LabGroup.objects.get(
+                id=lab_group_id,
+                is_core_facility=True,
+                id__in=self.request.user.lab_groups.filter(is_core_facility=True)
+            )
+            
+            manager = PricingManager(lab_group)
+            updated_prices = manager.bulk_update_prices(price_updates)
+            
+            return Response({
+                'success': True,
+                'updated_count': len(updated_prices),
+                'updated_prices': [
+                    {
+                        'id': price.id,
+                        'service_tier': price.service_tier.name,
+                        'instrument': price.instrument.instrument_name,
+                        'billing_unit': price.billing_unit,
+                        'price': price.price,
+                        'currency': price.currency
+                    }
+                    for price in updated_prices
+                ]
+            })
+            
+        except LabGroup.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Lab group not found or access denied'
+            }, status=404)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'Failed to bulk update prices: {str(e)}'
+            }, status=500)
+    
+    @action(detail=False, methods=['post'])
+    def create_service_price(self, request):
+        """
+        Create a new service price
+        """
+        from cc.billing_services import PricingManager
+        from decimal import Decimal
+        
+        lab_group_id = request.data.get('lab_group_id')
+        service_tier_id = request.data.get('service_tier_id')
+        instrument_id = request.data.get('instrument_id')
+        price = request.data.get('price')
+        billing_unit = request.data.get('billing_unit')
+        
+        if not all([lab_group_id, service_tier_id, instrument_id, price, billing_unit]):
+            return Response({
+                'success': False,
+                'error': 'lab_group_id, service_tier_id, instrument_id, price, and billing_unit are required'
+            }, status=400)
+        
+        try:
+            lab_group = LabGroup.objects.get(
+                id=lab_group_id,
+                is_core_facility=True,
+                id__in=self.request.user.lab_groups.filter(is_core_facility=True)
+            )
+            
+            service_tier = ServiceTier.objects.get(id=service_tier_id, lab_group=lab_group)
+            instrument = Instrument.objects.get(id=instrument_id, enabled=True)
+            
+            manager = PricingManager(lab_group)
+            service_price = manager.create_service_price(
+                service_tier=service_tier,
+                instrument=instrument,
+                price=Decimal(str(price)),
+                billing_unit=billing_unit,
+                currency=request.data.get('currency', 'USD'),
+                effective_date=request.data.get('effective_date', timezone.now().date()),
+                expiry_date=request.data.get('expiry_date')
+            )
+            
+            return Response({
+                'success': True,
+                'service_price': {
+                    'id': service_price.id,
+                    'service_tier': service_price.service_tier.name,
+                    'instrument': service_price.instrument.instrument_name,
+                    'billing_unit': service_price.billing_unit,
+                    'price': service_price.price,
+                    'currency': service_price.currency,
+                    'effective_date': service_price.effective_date,
+                    'expiry_date': service_price.expiry_date,
+                    'is_active': service_price.is_active
+                }
+            })
+            
+        except (LabGroup.DoesNotExist, ServiceTier.DoesNotExist, Instrument.DoesNotExist):
+            return Response({
+                'success': False,
+                'error': 'Lab group, service tier, or instrument not found'
+            }, status=404)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'Failed to create service price: {str(e)}'
+            }, status=500)
+
+
+class BackupViewSet(ModelViewSet):
+    """
+    ViewSet for backup operations and status monitoring
+    """
+    queryset = BackupLog.objects.all()
+    serializer_class = BackupLogSerializer
+    permission_classes = [IsAdminUser]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_fields = ['backup_type', 'status', 'triggered_by']
+    ordering_fields = ['created_at', 'completed_at']
+    ordering = ['-created_at']
+
+    @action(detail=False, methods=['post'], permission_classes=[IsAuthenticated])
+    def trigger(self, request):
+        """
+        Trigger a manual backup
+        """
+        # Check if user has permission to trigger backups
+        if not request.user.is_staff:
+            return Response({
+                'error': 'Only staff members can trigger backups'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        # Check if backup module is enabled
+        try:
+            settings_obj = SiteSettings.get_or_create_default()
+            if not getattr(settings_obj, 'enable_backup_module', True):
+                return Response({
+                    'error': 'Backup module is disabled'
+                }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({
+                'error': f'Failed to check backup settings: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Check if there's already a backup in progress
+        active_backup = BackupLog.objects.filter(
+            status__in=['created', 'in_progress']
+        ).first()
+        
+        if active_backup:
+            return Response({
+                'error': 'A backup is already in progress',
+                'active_backup_id': active_backup.id
+            }, status=status.HTTP_409_CONFLICT)
+
+        try:
+            triggered_by = request.data.get('triggered_by', 'manual')
+            
+            # Start the backup using the auto_backup command with --force
+            from django.core.management import call_command
+            from io import StringIO
+            import threading
+            
+            # Create a backup log entry
+            backup_log = BackupLog.objects.create(
+                backup_type='database',
+                triggered_by=triggered_by,
+                status='created'
+            )
+            
+            def run_backup():
+                try:
+                    backup_log.status = 'in_progress'
+                    backup_log.save()
+                    
+                    # Call the auto_backup command with force flag and user info
+                    output = StringIO()
+                    call_command('auto_backup', '--force', 
+                               '--user-id', str(request.user.id),
+                               '--backup-id', str(backup_log.id),
+                               stdout=output)
+                    
+                    # The auto_backup command will create its own backup logs
+                    # We can delete this temporary one
+                    backup_log.delete()
+                    
+                except Exception as e:
+                    backup_log.mark_failed(f'Manual backup failed: {str(e)}')
+            
+            # Run backup in a separate thread
+            backup_thread = threading.Thread(target=run_backup)
+            backup_thread.daemon = True
+            backup_thread.start()
+            
+            return Response({
+                'success': True,
+                'message': 'Backup started successfully',
+                'backup_id': backup_log.id
+            }, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            return Response({
+                'error': f'Failed to start backup: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['get'])
+    def status(self, request):
+        """
+        Get current backup status
+        """
+        if not request.user.is_staff:
+            return Response({
+                'error': 'Only staff members can view backup status'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            # Get the most recent backup
+            recent_backup = BackupLog.objects.order_by('-created_at').first()
+            
+            if not recent_backup:
+                return Response({
+                    'status': 'idle',
+                    'message': 'No backups found',
+                    'details': 'No backup history available'
+                })
+            
+            # Check for active backups
+            active_backup = BackupLog.objects.filter(
+                status__in=['created', 'in_progress']
+            ).order_by('-created_at').first()
+            
+            if active_backup:
+                # Calculate progress based on time elapsed
+                elapsed = (timezone.now() - active_backup.created_at).total_seconds()
+                # Estimate 2-5 minutes for a typical backup
+                estimated_duration = 300  # 5 minutes
+                progress = min(int((elapsed / estimated_duration) * 100), 95)
+                
+                return Response({
+                    'status': 'in_progress',
+                    'message': 'Backup in progress',
+                    'details': f'Started {int(elapsed // 60)} minutes ago',
+                    'progress': progress,
+                    'backup_id': active_backup.id
+                })
+            
+            # Return status of most recent backup
+            if recent_backup.status == 'completed':
+                time_ago = timezone.now() - recent_backup.completed_at
+                if time_ago.days > 0:
+                    time_str = f'{time_ago.days} days ago'
+                elif time_ago.seconds > 3600:
+                    time_str = f'{time_ago.seconds // 3600} hours ago'
+                else:
+                    time_str = f'{time_ago.seconds // 60} minutes ago'
+                
+                return Response({
+                    'status': 'completed',
+                    'message': f'Last backup completed {time_str}',
+                    'details': f'Size: {recent_backup.file_size_mb:.1f} MB' if recent_backup.file_size_mb else 'Size unknown'
+                })
+            elif recent_backup.status == 'failed':
+                return Response({
+                    'status': 'failed',
+                    'message': 'Last backup failed',
+                    'details': recent_backup.error_message[:100] if recent_backup.error_message else 'Unknown error'
+                })
+            else:
+                return Response({
+                    'status': 'idle',
+                    'message': 'Ready for backup',
+                    'details': 'No recent backup activity'
+                })
+                
+        except Exception as e:
+            return Response({
+                'status': 'error',
+                'message': 'Failed to get backup status',
+                'details': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['get'])
+    def history(self, request):
+        """
+        Get backup history
+        """
+        if not request.user.is_staff:
+            return Response({
+                'error': 'Only staff members can view backup history'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            days = int(request.query_params.get('days', 30))
+            limit = int(request.query_params.get('limit', 50))
+            
+            start_date = timezone.now() - timedelta(days=days)
+            backups = BackupLog.objects.filter(
+                created_at__gte=start_date
+            ).order_by('-created_at')[:limit]
+            
+            backup_history = []
+            for backup in backups:
+                backup_data = {
+                    'id': backup.id,
+                    'backup_type': backup.backup_type,
+                    'status': backup.status,
+                    'triggered_by': backup.triggered_by,
+                    'created_at': backup.created_at,
+                    'completed_at': backup.completed_at,
+                    'file_size_mb': backup.file_size_mb,
+                    'error_message': backup.error_message
+                }
+                
+                if backup.completed_at and backup.created_at:
+                    duration = (backup.completed_at - backup.created_at).total_seconds()
+                    backup_data['duration_seconds'] = int(duration)
+                
+                backup_history.append(backup_data)
+            
+            return Response({
+                'backups': backup_history,
+                'total_count': BackupLog.objects.filter(created_at__gte=start_date).count(),
+                'period_days': days
+            })
+            
+        except Exception as e:
+            return Response({
+                'error': f'Failed to get backup history: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['get'])
+    def progress(self, request, pk=None):
+        """
+        Get progress of a specific backup
+        """
+        if not request.user.is_staff:
+            return Response({
+                'error': 'Only staff members can view backup progress'
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            backup = self.get_object()
+            
+            if backup.status == 'completed':
+                return Response({
+                    'status': 'completed',
+                    'message': 'Backup completed successfully',
+                    'progress': 100,
+                    'file_size_mb': backup.file_size_mb
+                })
+            elif backup.status == 'failed':
+                return Response({
+                    'status': 'failed',
+                    'message': 'Backup failed',
+                    'progress': 0,
+                    'error': backup.error_message
+                })
+            elif backup.status in ['created', 'in_progress']:
+                # Calculate estimated progress
+                elapsed = (timezone.now() - backup.created_at).total_seconds()
+                estimated_duration = 300  # 5 minutes
+                progress = min(int((elapsed / estimated_duration) * 100), 95)
+                
+                return Response({
+                    'status': 'in_progress',
+                    'message': 'Backup in progress',
+                    'progress': progress,
+                    'elapsed_seconds': int(elapsed)
+                })
+            else:
+                return Response({
+                    'status': backup.status,
+                    'message': f'Backup status: {backup.status}',
+                    'progress': 0
+                })
+                
+        except Exception as e:
+            return Response({
+                'error': f'Failed to get backup progress: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

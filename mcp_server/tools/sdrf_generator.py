@@ -503,6 +503,9 @@ class SDRFMetadataGenerator:
         Returns:
             Dict containing SDRF headers and data
         """
+        # Import required metadata list
+        from cc.utils import required_metadata_name
+        
         # Build SDRF headers
         headers = []
         for column in metadata_columns:
@@ -517,7 +520,17 @@ class SDRFMetadataGenerator:
             # Create a sample row with values
             sample_row = []
             for column in metadata_columns:
-                value = column.value if column.value else 'not applicable'
+                if column.value:
+                    # Apply the same conversion logic as the import process
+                    from cc.rq_tasks import convert_metadata_column_value_to_sdrf
+                    value = convert_metadata_column_value_to_sdrf(column.name.lower(), column.value)
+                else:
+                    # Handle null values with proper SDRF standards
+                    column_name = column.name.lower()
+                    if column_name in required_metadata_name or column_name == "tissue" or column_name == "organism part":
+                        value = "not applicable"
+                    else:
+                        value = "not available"
                 sample_row.append(value)
             sample_data.append(sample_row)
         

@@ -1,5 +1,8 @@
-# Database and media backups weekly on Sunday at midnight with logging
-0 0 * * 0 python /app/manage.py tracked_backup --triggered-by=cron
+# Check for automatic backups based on site settings frequency (runs daily to check)
+0 2 * * * python /app/manage.py auto_backup
+
+# Legacy backup entry (now handled by auto_backup command above)
+# 0 0 * * 0 python /app/manage.py tracked_backup --triggered-by=cron
 
 # Check reagent stock levels daily at 8:00 AM
 0 8 * * * python /app/manage.py check_low_stock

@@ -1226,7 +1226,14 @@ class SiteSettingsSerializer(ModelSerializer):
             'allow_import_projects', 'allow_import_reagents', 'allow_import_instruments',
             'allow_import_lab_groups', 'allow_import_messaging', 'allow_import_support_models',
             'staff_only_import_override', 'import_archive_size_limit_mb',
-            'created_at', 'updated_at', 'updated_by'
+            'created_at', 'updated_at', 'updated_by', 'enable_ai_sdrf_suggestions',
+      'enable_billing_module',
+      'enable_documents_module',
+      'enable_instruments_module',
+      'enable_lab_notebook_module',
+      'enable_storage_module',
+      'enable_backup_module',
+      'backup_frequency_days',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'updated_by']
         
@@ -1255,11 +1262,11 @@ class BackupLogSerializer(ModelSerializer):
         model = BackupLog
         fields = [
             'id', 'backup_type', 'backup_type_display', 'status', 'status_display',
-            'started_at', 'completed_at', 'duration_seconds', 'backup_file_path',
+            'created_at', 'completed_at', 'duration_seconds', 'backup_file_path',
             'file_size_bytes', 'file_size_mb', 'error_message', 'success_message',
             'triggered_by', 'container_id'
         ]
-        read_only_fields = ['id', 'started_at']
+        read_only_fields = ['id', 'created_at']
 
 
 class DocumentPermissionSerializer(ModelSerializer):

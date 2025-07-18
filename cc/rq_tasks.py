@@ -42,7 +42,7 @@ from pathlib import Path
 from cc.models import Annotation, ProtocolModel, ProtocolStep, StepVariation, ProtocolSection, Session, \
     AnnotationFolder, Reagent, ProtocolReagent, StepReagent, ProtocolTag, StepTag, Tag, Project, MetadataColumn, \
     InstrumentJob, SubcellularLocation, Species, MSUniqueVocabularies, Unimod, FavouriteMetadataOption, InstrumentUsage, \
-    LabGroup, Tissue, StorageObject, ReagentAction, StoredReagent, Instrument, SiteSettings
+    LabGroup, Tissue, StorageObject, ReagentAction, StoredReagent, Instrument, SiteSettings, SamplePool
 from django.conf import settings
 import numpy as np
 import subprocess
@@ -1940,7 +1940,17 @@ def export_instrument_job_metadata(instrument_job_id: int, data_type: str, user_
         metadata = instrument_job.staff_metadata.all()
     else:
         metadata = list(instrument_job.user_metadata.all()) + list(instrument_job.staff_metadata.all())
+    
+    # Get reference pools for this instrument job (only reference pools appear in SDRF)
+    from cc.models import SamplePool
+    pools = SamplePool.objects.filter(instrument_job=instrument_job, is_reference=True)
+    
     result, _ = sort_metadata(metadata, instrument_job.sample_number)
+    
+    # Add reference pool rows to the result if they exist
+    if pools.exists():
+        result = add_pool_rows_to_sdrf(result, pools, data_type)
+    
     # create tsv file from result
     filename = str(uuid.uuid4())
     tsv_filepath = os.path.join(settings.MEDIA_ROOT, "temp", f"{filename}.tsv")
@@ -1964,6 +1974,83 @@ def export_instrument_job_metadata(instrument_job_id: int, data_type: str, user_
     )
     return value
 
+
+def add_pool_rows_to_sdrf(result, pools, data_type):
+    """Add pool rows to SDRF export data"""
+    headers = result[0]
+    data_rows = result[1:]
+    
+    # Find column indices
+    source_name_col = None
+    pooled_sample_col = None
+    
+    for i, header in enumerate(headers):
+        header_lower = header.lower()
+        if header_lower == "source name":
+            source_name_col = i
+        elif "pooled sample" in header_lower or "pooled_sample" in header_lower:
+            pooled_sample_col = i
+    
+    # If no pooled sample column exists, add it
+    if pooled_sample_col is None:
+        headers.append("characteristics[pooled sample]")
+        pooled_sample_col = len(headers) - 1
+        # Add empty values to existing rows
+        for row in data_rows:
+            row.append("not pooled")
+    
+    # Add pool rows
+    for pool in pools:
+        pool_row = ["" for _ in headers]
+        
+        # Get pool metadata
+        if data_type == "user_metadata":
+            pool_metadata = pool.user_metadata.all()
+        elif data_type == "staff_metadata":
+            pool_metadata = pool.staff_metadata.all()
+        else:
+            pool_metadata = list(pool.user_metadata.all()) + list(pool.staff_metadata.all())
+        
+        # Fill pool row with metadata values
+        for metadata_column in pool_metadata:
+            column_name = metadata_column.name.lower()
+            
+            # Find matching header
+            for i, header in enumerate(headers):
+                header_lower = header.lower()
+                
+                # Match various header formats
+                if (header_lower == column_name or 
+                    header_lower == f"characteristics[{column_name}]" or
+                    header_lower == f"comment[{column_name}]" or
+                    header_lower.replace("[", "").replace("]", "") == column_name):
+                    
+                    pool_row[i] = metadata_column.value
+                    break
+        
+        # Ensure source name is set to pool name
+        if source_name_col is not None:
+            pool_row[source_name_col] = pool.pool_name
+        
+        # Ensure pooled sample column has the SDRF value
+        if pooled_sample_col is not None:
+            pool_row[pooled_sample_col] = pool.sdrf_value
+        
+        data_rows.append(pool_row)
+    
+    # Update pooled sample values for regular samples
+    for pool in pools:
+        # Mark pooled_only_samples as "pooled"
+        for sample_index in pool.pooled_only_samples:
+            if sample_index - 1 < len(data_rows) and pooled_sample_col is not None:
+                data_rows[sample_index - 1][pooled_sample_col] = "pooled"
+        
+        # Mark pooled_and_independent_samples as "not pooled" (they remain independent)
+        for sample_index in pool.pooled_and_independent_samples:
+            if sample_index - 1 < len(data_rows) and pooled_sample_col is not None:
+                data_rows[sample_index - 1][pooled_sample_col] = "not pooled"
+    
+    return [headers] + data_rows
 
 
 def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
@@ -2649,6 +2736,126 @@ def convert_sdrf_to_metadata(name: str, value: str):
     return value
 
 @job('import-data', timeout='3h')
+def _synchronize_pools_with_import_data(instrument_job, import_pools_data, metadata_columns, 
+                                      pooled_sample_column_index, source_name_column_index,
+                                      user, data_type, user_metadata_field_map, staff_metadata_field_map):
+    """
+    Synchronize pools with import data:
+    - Update existing pools with same name
+    - Create new pools from import data  
+    - Delete pools that don't exist in import data
+    """
+    from cc.models import SamplePool, MetadataColumn
+    
+    # Get existing pools for this instrument job
+    existing_pools = SamplePool.objects.filter(instrument_job=instrument_job)
+    existing_pool_names = {pool.pool_name: pool for pool in existing_pools}
+    
+    # Track pools found in import data
+    import_pool_names = {pool_data['pool_name'] for pool_data in import_pools_data}
+    
+    # Process each pool from import data
+    for pool_data in import_pools_data:
+        pool_name = pool_data['pool_name']
+        
+        if pool_name in existing_pool_names:
+            # Update existing pool
+            existing_pool = existing_pool_names[pool_name]
+            
+            # Update pool properties
+            existing_pool.pooled_only_samples = pool_data['pooled_only_samples']
+            existing_pool.pooled_and_independent_samples = pool_data['pooled_and_independent_samples']
+            existing_pool.is_reference = pool_data['is_reference']
+            existing_pool.save()
+            
+            # Clear existing metadata and recreate
+            existing_pool.user_metadata.clear()
+            existing_pool.staff_metadata.clear()
+            
+            # Create new metadata for the updated pool
+            _create_pool_metadata_from_import(existing_pool, pool_data, metadata_columns,
+                                            pooled_sample_column_index, source_name_column_index,
+                                            data_type, user_metadata_field_map, staff_metadata_field_map)
+        else:
+            # Create new pool
+            new_pool = SamplePool.objects.create(
+                pool_name=pool_name,
+                pooled_only_samples=pool_data['pooled_only_samples'],
+                pooled_and_independent_samples=pool_data['pooled_and_independent_samples'],
+                is_reference=pool_data['is_reference'],
+                instrument_job=instrument_job,
+                created_by=user
+            )
+            
+            # Create metadata for the new pool
+            _create_pool_metadata_from_import(new_pool, pool_data, metadata_columns,
+                                            pooled_sample_column_index, source_name_column_index,
+                                            data_type, user_metadata_field_map, staff_metadata_field_map)
+    
+    # Delete pools that are not in import data
+    pools_to_delete = [pool for pool_name, pool in existing_pool_names.items() 
+                      if pool_name not in import_pool_names]
+    
+    for pool in pools_to_delete:
+        # This will trigger the pool deletion metadata update logic
+        pool.delete()
+
+def _create_pool_metadata_from_import(pool, pool_data, metadata_columns,
+                                    pooled_sample_column_index, source_name_column_index,
+                                    data_type, user_metadata_field_map, staff_metadata_field_map):
+    """Create metadata for a pool from import data"""
+    from cc.models import MetadataColumn
+    
+    row = pool_data['metadata_row']
+    pool_name = pool_data['pool_name']
+    sn_value = pool_data['sn_value']
+    
+    for col_index, metadata_column in enumerate(metadata_columns):
+        if col_index == pooled_sample_column_index:
+            # Create pooled sample column with SN= value
+            pool_metadata_column = MetadataColumn.objects.create(
+                name=metadata_column.name,
+                type=metadata_column.type,
+                value=sn_value,
+                mandatory=metadata_column.mandatory,
+                hidden=metadata_column.hidden,
+                readonly=metadata_column.readonly
+            )
+        elif col_index == source_name_column_index:
+            # Create source name column with pool name
+            pool_metadata_column = MetadataColumn.objects.create(
+                name=metadata_column.name,
+                type=metadata_column.type,
+                value=pool_name,
+                mandatory=metadata_column.mandatory,
+                hidden=metadata_column.hidden,
+                readonly=metadata_column.readonly
+            )
+        else:
+            # Create other metadata columns from the row
+            pool_metadata_column = MetadataColumn.objects.create(
+                name=metadata_column.name,
+                type=metadata_column.type,
+                value=row[col_index] if col_index < len(row) else "",
+                mandatory=metadata_column.mandatory,
+                hidden=metadata_column.hidden,
+                readonly=metadata_column.readonly
+            )
+        
+        # Add to pool's metadata based on data type and field mapping
+        if data_type == "user_metadata":
+            pool.user_metadata.add(pool_metadata_column)
+        elif data_type == "staff_metadata":
+            pool.staff_metadata.add(pool_metadata_column)
+        else:
+            if metadata_column.type in user_metadata_field_map:
+                if metadata_column.name in user_metadata_field_map[metadata_column.type]:
+                    pool.user_metadata.add(pool_metadata_column)
+                else:
+                    pool.staff_metadata.add(pool_metadata_column)
+            else:
+                pool.staff_metadata.add(pool_metadata_column)
+
 def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, instance_id: str = None, data_type: str = "user_metadata"):
     """
     Import SDRF file
@@ -2673,6 +2880,26 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
             staff_metadata_field_map[i['type']] = {}
         staff_metadata_field_map[i['type']][i['name']] = i
 
+    # Check for pooled sample column and identify pool data
+    pooled_sample_column_index = None
+    pooled_rows = []
+    sn_rows = []
+    
+    for i, header in enumerate(headers):
+        header_lower = header.lower()
+        if "pooled sample" in header_lower or "pooled_sample" in header_lower:
+            pooled_sample_column_index = i
+            break
+    
+    # If we found a pooled sample column, process the data
+    if pooled_sample_column_index is not None:
+        for row_index, row in enumerate(data):
+            pooled_value = row[pooled_sample_column_index].strip()
+            if pooled_value.startswith("SN="):
+                sn_rows.append(row_index)
+            elif pooled_value.lower() == "pooled":
+                pooled_rows.append(row_index)
+    
     for header in headers:
         metadata_column = MetadataColumn()
         header = header.lower()
@@ -2688,6 +2915,14 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
         metadata_column.name = name.capitalize().replace("Ms1", "MS1").replace("Ms2", "MS2")
         metadata_column.type = type.capitalize()
         metadata_columns.append(metadata_column)
+    # Remove SN= rows from data before general processing
+    if pooled_sample_column_index is not None and sn_rows:
+        # Store SN= rows for later pool creation
+        sn_data = []
+        for row_index in sorted(sn_rows, reverse=True):  # Reverse order to maintain indices
+            sn_data.append(data[row_index])
+            del data[row_index]
+    
     if len(data) != instrument_job.sample_number:
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(
@@ -2796,6 +3031,97 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
             else:
                 instrument_job.staff_metadata.add(metadata_columns[i])
 
+    # Create pools from SDRF data if pooled samples were found
+    if pooled_sample_column_index is not None:
+        from cc.models import SamplePool, User
+        user = User.objects.get(id=user_id)
+        
+        # Get the source name column index
+        source_name_column_index = None
+        for i, header in enumerate(headers):
+            header_lower = header.lower()
+            if "source name" in header_lower or "source_name" in header_lower:
+                source_name_column_index = i
+                break
+        
+        # Pool synchronization: track pools from import data
+        import_pools_data = []
+        
+        if sn_rows and 'sn_data' in locals():
+            # Case 1: There are rows with SN= values - create pools from them
+            for pool_index, row in enumerate(sn_data):
+                sn_value = row[pooled_sample_column_index].strip()
+                
+                # Extract source names from SN= value
+                if sn_value.startswith("SN="):
+                    source_names = sn_value[3:].split(",")
+                    source_names = [name.strip() for name in source_names]
+                    
+                    # Get pool name from source name column or use default
+                    pool_name = row[source_name_column_index] if source_name_column_index is not None else f"Pool {pool_index + 1}"
+                    
+                    # Find sample indices that match these source names
+                    pooled_only_samples = []
+                    pooled_and_independent_samples = []
+                    
+                    for sample_index, sample_row in enumerate(data):
+                        if source_name_column_index is not None:
+                            sample_source_name = sample_row[source_name_column_index].strip()
+                            if sample_source_name in source_names:
+                                # Check if this sample is also marked as "not pooled" or independent
+                                sample_pooled_value = sample_row[pooled_sample_column_index].strip().lower() if pooled_sample_column_index < len(sample_row) else ""
+                                
+                                if sample_pooled_value == "not pooled" or sample_pooled_value == "" or sample_pooled_value == "independent":
+                                    # Sample exists both in pool and as independent
+                                    pooled_and_independent_samples.append(sample_index + 1)
+                                else:
+                                    # Sample is only in pool
+                                    pooled_only_samples.append(sample_index + 1)
+                    
+                    # Store pool data for synchronization
+                    import_pools_data.append({
+                        'pool_name': pool_name,
+                        'pooled_only_samples': pooled_only_samples,
+                        'pooled_and_independent_samples': pooled_and_independent_samples,
+                        'is_reference': True,  # SN= pools are reference pools
+                        'metadata_row': row,
+                        'sn_value': sn_value
+                    })
+                    
+        elif pooled_rows:
+            # Case 2: No SN= rows but there are "pooled" rows - create a pool from them
+            # Get source names of all pooled samples
+            pooled_source_names = []
+            pooled_only_samples = []
+            
+            for row_index in pooled_rows:
+                if source_name_column_index is not None:
+                    source_name = data[row_index][source_name_column_index].strip()
+                    if source_name:
+                        pooled_source_names.append(source_name)
+                        pooled_only_samples.append(row_index + 1)
+            
+            if pooled_source_names:
+                # Create SN= value from source names
+                sn_value = "SN=" + ",".join(pooled_source_names)
+                pool_name = "Pool 1"
+                template_row = data[pooled_rows[0]]
+                
+                # Store pool data for synchronization
+                import_pools_data.append({
+                    'pool_name': pool_name,
+                    'pooled_only_samples': pooled_only_samples,
+                    'pooled_and_independent_samples': [],
+                    'is_reference': False,  # Pooled rows are not reference pools by default
+                    'metadata_row': template_row,
+                    'sn_value': sn_value
+                })
+        
+        # Synchronize pools: update existing, create new, delete missing
+        _synchronize_pools_with_import_data(instrument_job, import_pools_data, metadata_columns, 
+                                          pooled_sample_column_index, source_name_column_index, 
+                                          user, data_type, user_metadata_field_map, staff_metadata_field_map)
+
     channel_layer = get_channel_layer()
     #notify user through channels that it has completed
     async_to_sync(channel_layer.group_send)(
@@ -2900,6 +3226,43 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
     id_map_hidden = {}
     if hidden_metadata:
         result_hidden, id_map_hidden = sort_metadata(hidden_metadata, instrument_job.sample_number)
+    
+    # Check for pools and prepare pool data
+    pools = list(SamplePool.objects.filter(instrument_job=instrument_job))
+    has_pools = len(pools) > 0
+    pool_result_main, pool_id_map_main = [], {}
+    pool_result_hidden, pool_id_map_hidden = [], {}
+    
+    if has_pools:
+        # Get all pool metadata (only reference pools for export)
+        reference_pools = [pool for pool in pools if pool.is_reference]
+        if reference_pools:
+            # Combine all pool metadata
+            all_pool_metadata = []
+            for pool in reference_pools:
+                if export_type == "user_metadata":
+                    all_pool_metadata.extend(list(pool.user_metadata.all()))
+                elif export_type == "staff_metadata":
+                    all_pool_metadata.extend(list(pool.staff_metadata.all()))
+                else:
+                    all_pool_metadata.extend(list(pool.user_metadata.all()) + list(pool.staff_metadata.all()))
+            
+            # Remove duplicates based on name and type
+            unique_pool_metadata = []
+            seen_metadata = set()
+            for m in all_pool_metadata:
+                key = (m.name, m.type)
+                if key not in seen_metadata:
+                    unique_pool_metadata.append(m)
+                    seen_metadata.add(key)
+            
+            pool_main_metadata = [m for m in unique_pool_metadata if not m.hidden]
+            pool_hidden_metadata = [m for m in unique_pool_metadata if m.hidden]
+            
+            if pool_main_metadata:
+                pool_result_main, pool_id_map_main = sort_metadata(pool_main_metadata, len(reference_pools))
+            if pool_hidden_metadata:
+                pool_result_hidden, pool_id_map_hidden = sort_metadata(pool_hidden_metadata, len(reference_pools))
 
     # get favourites for each metadata column
     favourites = {}
@@ -2927,6 +3290,16 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
     main_ws.title = "main"
     hidden_ws = wb.create_sheet(title="hidden")
     id_metadata_column_map_ws = wb.create_sheet(title="id_metadata_column_map")
+    
+    # Create pool sheets if pools exist
+    pool_main_ws = None
+    pool_hidden_ws = None
+    pool_id_metadata_column_map_ws = None
+    
+    if has_pools and reference_pools:
+        pool_main_ws = wb.create_sheet(title="pool_main")
+        pool_hidden_ws = wb.create_sheet(title="pool_hidden") 
+        pool_id_metadata_column_map_ws = wb.create_sheet(title="pool_id_metadata_column_map")
     # fill in the id_metadata_column_map_ws with 3 columns: id, name, type
     id_metadata_column_map_ws.append(["id", "column", "name", "type", "hidden"])
 
@@ -2934,6 +3307,14 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
         id_metadata_column_map_ws.append([k, v["column"], v["name"], v["type"], v["hidden"]])
     for k, v in id_map_hidden.items():
         id_metadata_column_map_ws.append([k, v["column"], v["name"], v["type"], v["hidden"]])
+    
+    # Fill pool ID mapping if pools exist
+    if has_pools and reference_pools and pool_id_metadata_column_map_ws:
+        pool_id_metadata_column_map_ws.append(["id", "column", "name", "type", "hidden"])
+        for k, v in pool_id_map_main.items():
+            pool_id_metadata_column_map_ws.append([k, v["column"], v["name"], v["type"], v["hidden"]])
+        for k, v in pool_id_map_hidden.items():
+            pool_id_metadata_column_map_ws.append([k, v["column"], v["name"], v["type"], v["hidden"]])
 
     fill = PatternFill(start_color="FFFF99", end_color="FFFF99", fill_type="solid")
     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'),
@@ -3002,6 +3383,73 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
                 adjusted_width = (max_length + 2)
                 hidden_ws.column_dimensions[column].width = adjusted_width
 
+    # Populate pool worksheets if pools exist
+    if has_pools and reference_pools and pool_main_ws and len(pool_result_main) > 0:
+        # Pool main worksheet
+        pool_main_ws.append(pool_result_main[0])
+        pool_main_work_area = f"A1:{get_column_letter(len(pool_result_main[0]))}{len(reference_pools) + 1}"
+        
+        for row in pool_result_main[1:]:
+            pool_main_ws.append(row)
+            
+        for row in pool_main_ws[pool_main_work_area]:
+            for cell in row:
+                cell.fill = fill
+                cell.border = thin_border
+                
+        for col in pool_main_ws.columns:
+            max_length = 0
+            column = col[0].column_letter
+            for cell in col:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(cell.value)
+                except:
+                    pass
+            adjusted_width = (max_length + 2)
+            pool_main_ws.column_dimensions[column].width = adjusted_width
+            
+        # Add notes for pool main worksheet
+        pool_note_texts = [
+            "Note: Pool metadata for reference pools only.",
+            "[*] User-specific favourite options.",
+            "[**] Facility-recommended options.", 
+            "[***] Global recommendations."
+        ]
+        
+        pool_start_row = len(reference_pools) + 2
+        for i, note_text in enumerate(pool_note_texts):
+            pool_main_ws.merge_cells(start_row=pool_start_row + i, start_column=1, 
+                                   end_row=pool_start_row + i, end_column=len(pool_result_main[0]))
+            note_cell = pool_main_ws.cell(row=pool_start_row + i, column=1)
+            note_cell.value = note_text
+            note_cell.alignment = Alignment(horizontal='left', vertical='center')
+            
+        # Pool hidden worksheet
+        if len(pool_result_hidden) > 0:
+            pool_hidden_work_area = f"A1:{get_column_letter(len(pool_result_hidden[0]))}{len(reference_pools) + 1}"
+            if len(pool_result_hidden) > 1:
+                pool_hidden_ws.append(pool_result_hidden[0])
+                for row in pool_result_hidden[1:]:
+                    pool_hidden_ws.append(row)
+                    
+                for row in pool_hidden_ws[pool_hidden_work_area]:
+                    for cell in row:
+                        cell.fill = fill
+                        cell.border = thin_border
+                        
+                for col in pool_hidden_ws.columns:
+                    max_length = 0
+                    column = col[0].column_letter
+                    for cell in col:
+                        try:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(cell.value)
+                        except:
+                            pass
+                    adjusted_width = (max_length + 2)
+                    pool_hidden_ws.column_dimensions[column].width = adjusted_width
+
     for i, header in enumerate(result_main[0]):
         name_splitted = result_main[0][i].split("[")
         required_column = False
@@ -3068,6 +3516,77 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
             hidden_ws.add_data_validation(dv)
             dv.add(f"{col_letter}2:{col_letter}{instrument_job.sample_number + 1}")
 
+    # Add dropdown validation for pool worksheets
+    if has_pools and reference_pools and pool_main_ws and len(pool_result_main) > 0:
+        # Pool main worksheet dropdowns
+        for i, header in enumerate(pool_result_main[0]):
+            name_splitted = pool_result_main[0][i].split("[")
+            required_column = False
+            if len(name_splitted) > 1:
+                name = name_splitted[1].replace("]", "")
+            else:
+                name = name_splitted[0]
+            if name in required_metadata_name:
+                required_column = True
+            name_capitalized = name.capitalize().replace("Ms1", "MS1").replace("Ms2", "MS2")
+            if name_capitalized in field_mask_map:
+                name = field_mask_map[name_capitalized]
+                if len(name_splitted) > 1:
+                    pool_main_ws.cell(row=1, column=i + 1).value = pool_result_main[0][i].replace(name_splitted[1].rstrip("]"), name.lower())
+                else:
+                    pool_main_ws.cell(row=1, column=i + 1).value = name.lower()
+            option_list = []
+            if required_column:
+                option_list.append(f"not applicable")
+            else:
+                option_list.append("not available")
+
+            if name.lower() in favourites:
+                option_list = option_list + favourites[name.lower()]
+            dv = DataValidation(
+                type="list",
+                formula1=f'"{",".join(option_list)}"',
+                showDropDown=False
+            )
+            col_letter = get_column_letter(i + 1)
+            pool_main_ws.add_data_validation(dv)
+            dv.add(f"{col_letter}2:{col_letter}{len(reference_pools) + 1}")
+            
+        # Pool hidden worksheet dropdowns
+        if len(pool_result_hidden) > 1:
+            for i, header in enumerate(pool_result_hidden[0]):
+                name_splitted = pool_result_hidden[0][i].split("[")
+                if len(name_splitted) > 1:
+                    name = name_splitted[1].replace("]", "")
+                else:
+                    name = name_splitted[0]
+                required_column = False
+                if name in required_metadata_name:
+                    required_column = True
+                name_capitalized = name.capitalize().replace("Ms1", "MS1").replace("Ms2", "MS2")
+                if name_capitalized in field_mask_map:
+                    name = field_mask_map[name_capitalized]
+                    if len(name_splitted) > 1:
+                        pool_hidden_ws.cell(row=1, column=i + 1).value = pool_result_hidden[0][i].replace(name_splitted[1].rstrip("]"), name.lower())
+                    else:
+                        pool_hidden_ws.cell(row=1, column=i + 1).value = name.lower()
+
+                option_list = []
+                if required_column:
+                    option_list.append(f"not applicable")
+                else:
+                    option_list.append("not available")
+                if name.lower() in favourites:
+                    option_list = option_list + favourites[name.lower()]
+                dv = DataValidation(
+                    type="list",
+                    formula1=f'"{",".join(option_list)}"',
+                    showDropDown=False
+                )
+                col_letter = get_column_letter(i + 1)
+                pool_hidden_ws.add_data_validation(dv)
+                dv.add(f"{col_letter}2:{col_letter}{len(reference_pools) + 1}")
+
     # save the file
     filename = str(uuid.uuid4())
     xlsx_filepath = os.path.join(settings.MEDIA_ROOT, "temp", f"{filename}.xlsx")
@@ -3087,6 +3606,56 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
             },
         }
     )
+
+def _validate_header_consistency(main_headers, pool_main_headers, hidden_headers=None, pool_hidden_headers=None):
+    """
+    Validate that pool and main data headers are consistent for Excel import.
+    
+    Args:
+        main_headers: List of headers from main sheet
+        pool_main_headers: List of headers from pool_main sheet
+        hidden_headers: List of headers from hidden sheet (optional)
+        pool_hidden_headers: List of headers from pool_hidden sheet (optional)
+    
+    Raises:
+        ValueError: If headers are inconsistent
+    """
+    
+    # Remove None values and convert to lowercase for comparison
+    main_headers_clean = [h.lower().strip() if h else '' for h in main_headers if h is not None]
+    pool_main_headers_clean = [h.lower().strip() if h else '' for h in pool_main_headers if h is not None]
+    
+    # Check main headers consistency
+    if main_headers_clean != pool_main_headers_clean:
+        # Find specific differences
+        main_only = set(main_headers_clean) - set(pool_main_headers_clean)
+        pool_only = set(pool_main_headers_clean) - set(main_headers_clean)
+        
+        error_parts = []
+        if main_only:
+            error_parts.append(f"Main data has columns not in pool data: {', '.join(sorted(main_only))}")
+        if pool_only:
+            error_parts.append(f"Pool data has columns not in main data: {', '.join(sorted(pool_only))}")
+        
+        raise ValueError(f"Header inconsistency between main and pool data. {' | '.join(error_parts)}")
+    
+    # Check hidden headers consistency if both exist
+    if hidden_headers and pool_hidden_headers:
+        hidden_headers_clean = [h.lower().strip() if h else '' for h in hidden_headers if h is not None]
+        pool_hidden_headers_clean = [h.lower().strip() if h else '' for h in pool_hidden_headers if h is not None]
+        
+        if hidden_headers_clean != pool_hidden_headers_clean:
+            # Find specific differences
+            hidden_main_only = set(hidden_headers_clean) - set(pool_hidden_headers_clean)
+            hidden_pool_only = set(pool_hidden_headers_clean) - set(hidden_headers_clean)
+            
+            error_parts = []
+            if hidden_main_only:
+                error_parts.append(f"Main hidden data has columns not in pool hidden data: {', '.join(sorted(hidden_main_only))}")
+            if hidden_pool_only:
+                error_parts.append(f"Pool hidden data has columns not in main hidden data: {', '.join(sorted(hidden_pool_only))}")
+            
+            raise ValueError(f"Header inconsistency between main and pool hidden data. {' | '.join(error_parts)}")
 
 @job('import-data', timeout='3h')
 def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, instance_id: str = None, data_type: str = "user_metadata"):
@@ -3120,7 +3689,59 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
             hidden_headers = [cell.value for cell in hidden_ws[1]]
             hidden_data = [list(row) for row in hidden_ws.iter_rows(min_row=2, values_only=True)]
 
+    # Check for pool sheets
+    pool_main_ws = None
+    pool_hidden_ws = None
+    pool_id_metadata_column_map_ws = None
+    pool_main_headers = []
+    pool_main_data = []
+    pool_hidden_headers = []
+    pool_hidden_data = []
+    pool_id_metadata_column_map_list = []
+    pool_id_metadata_column_map = {}
+    
+    if "pool_main" in wb.sheetnames:
+        pool_main_ws = wb["pool_main"]
+        if pool_main_ws.max_row > 1:
+            pool_main_headers = [cell.value for cell in pool_main_ws[1]]
+            pool_main_data = [list(row) for row in pool_main_ws.iter_rows(min_row=2, values_only=True)]
+            
+    if "pool_hidden" in wb.sheetnames:
+        pool_hidden_ws = wb["pool_hidden"]
+        if pool_hidden_ws.max_row > 1:
+            pool_hidden_headers = [cell.value for cell in pool_hidden_ws[1]]
+            pool_hidden_data = [list(row) for row in pool_hidden_ws.iter_rows(min_row=2, values_only=True)]
+            
+    if "pool_id_metadata_column_map" in wb.sheetnames:
+        pool_id_metadata_column_map_ws = wb["pool_id_metadata_column_map"]
+        pool_id_metadata_column_map_list = [list(row) for row in pool_id_metadata_column_map_ws.iter_rows(min_row=2, values_only=True)]
+        pool_id_metadata_column_map = {}
+        for row in pool_id_metadata_column_map_list:
+            if row[0] is not None:  # Check for valid ID
+                pool_id_metadata_column_map[int(row[0])] = {"column": row[1], "name": row[2], "type": row[3], "hidden": row[4]}
+
     instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
+    
+    # Validate header consistency between main and pool data if pool data exists
+    try:
+        if pool_main_headers and main_headers:
+            _validate_header_consistency(main_headers, pool_main_headers, hidden_headers, pool_hidden_headers)
+    except ValueError as e:
+        # Send error notification to user
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f"user_{user_id}_instrument_job",
+            {
+                "type": "instrument_job_message",
+                "message": {
+                    "instance_id": instance_id,
+                    "status": "error",
+                    "message": f"Import failed: {str(e)}"
+                },
+            }
+        )
+        return
+    
     metadata_columns = []
 
     user_metadata_field_map = {}
@@ -3398,6 +4019,13 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
             for i in staff_metadata_field_map[d_type][name]:
                 i.delete()
 
+    # Import pool data if pool sheets exist
+    if pool_main_headers and pool_main_data:
+        _import_pool_data_from_excel(instrument_job, pool_main_headers, pool_main_data, 
+                                   pool_hidden_headers, pool_hidden_data,
+                                   pool_id_metadata_column_map, data_type, 
+                                   field_mask_map, user_id)
+
     channel_layer = get_channel_layer()
     # notify user through channels that it has completed
     async_to_sync(channel_layer.group_send)(
@@ -3412,6 +4040,219 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
         }
     )
 
+
+def _import_pool_data_from_excel(instrument_job, pool_main_headers, pool_main_data,
+                               pool_hidden_headers, pool_hidden_data,
+                               pool_id_metadata_column_map, data_type, 
+                               field_mask_map, user_id):
+    """
+    Import pool data from Excel sheets
+    """
+    from cc.models import SamplePool, MetadataColumn, User, FavouriteMetadataOption
+    
+    user = User.objects.get(id=user_id)
+    
+    # Combine pool headers and data
+    pool_headers = pool_main_headers + pool_hidden_headers
+    if len(pool_hidden_data) > 0:
+        pool_data = [main_row + hidden_row for main_row, hidden_row in zip(pool_main_data, pool_hidden_data)]
+    else:
+        pool_data = pool_main_data
+    
+    # Build pool metadata columns from headers and ID mapping
+    pool_metadata_columns = []
+    
+    for n, header in enumerate(pool_headers):
+        id_from_map = 0
+        # Find ID from mapping
+        for map_id, row_data in pool_id_metadata_column_map.items():
+            if row_data["column"] == n:
+                id_from_map = map_id
+                break
+                
+        # Try to get existing metadata column or create new one
+        metadata_column = MetadataColumn.objects.filter(id=id_from_map).first()
+        if not metadata_column:
+            metadata_column = MetadataColumn()
+            header = header.lower() if header else ""
+            if "[" in header:
+                type_part = header.split("[")[0]
+                name = header.split("[")[1].replace("]", "")
+            else:
+                type_part = ""
+                name = header
+            
+            name_capitalized = name.capitalize().replace("Ms1", "MS1").replace("Ms2", "MS2")
+            if name_capitalized in field_mask_map:
+                name = field_mask_map[name_capitalized]
+                
+            metadata_column.name = name
+            metadata_column.type = type_part.capitalize()
+            metadata_column.hidden = n >= len(pool_main_headers)  # Hidden if in hidden section
+            metadata_column.readonly = False
+            
+        pool_metadata_columns.append(metadata_column)
+    
+    # Extract pool information and create/update pools
+    pools_to_import = []
+    
+    for row_index, row in enumerate(pool_data):
+        pool_info = {
+            'pool_name': None,
+            'pooled_only_samples': [],
+            'pooled_and_independent_samples': [],
+            'is_reference': True,  # Pool sheets only contain reference pools
+            'metadata': {}
+        }
+        
+        # Extract metadata from row
+        for col_index, value in enumerate(row):
+            if col_index < len(pool_metadata_columns):
+                column = pool_metadata_columns[col_index]
+                
+                # Handle special columns
+                if column.name.lower() == 'source name':
+                    pool_info['pool_name'] = value if value else f"Pool {row_index + 1}"
+                elif column.name.lower() == 'pooled sample' and value and value.startswith('SN='):
+                    # Extract sample information from SN= value
+                    source_names = value[3:].split(',')
+                    source_names = [name.strip() for name in source_names if name.strip()]
+                    
+                    # Map source names to sample indices (this requires finding samples by source name)
+                    for source_name in source_names:
+                        sample_index = _find_sample_index_by_source_name(instrument_job, source_name)
+                        if sample_index:
+                            pool_info['pooled_only_samples'].append(sample_index)
+                
+                # Store metadata value
+                if value is not None and value != "":
+                    # Process favourite values like main import
+                    if isinstance(value, str):
+                        if value.endswith("[*]"):
+                            processed_value = value.replace("[*]", "")
+                            value_query = FavouriteMetadataOption.objects.filter(
+                                user_id=user_id, name=column.name.lower(), 
+                                display_value=processed_value, service_lab_group__isnull=True, 
+                                lab_group__isnull=True
+                            )
+                            if value_query.exists():
+                                processed_value = value_query.first().value
+                            pool_info['metadata'][col_index] = processed_value
+                        elif value.endswith("[**]"):
+                            processed_value = value.replace("[**]", "")
+                            value_query = FavouriteMetadataOption.objects.filter(
+                                name=column.name.lower(), 
+                                service_lab_group=instrument_job.service_lab_group, 
+                                display_value=processed_value
+                            )
+                            if value_query.exists():
+                                processed_value = value_query.first().value
+                            pool_info['metadata'][col_index] = processed_value
+                        elif value.endswith("[***]"):
+                            processed_value = value.replace("[***]", "")
+                            value_query = FavouriteMetadataOption.objects.filter(
+                                name=column.name.lower(), is_global=True, 
+                                display_value=processed_value
+                            )
+                            if value_query.exists():
+                                processed_value = value_query.first().value
+                            pool_info['metadata'][col_index] = processed_value
+                        else:
+                            pool_info['metadata'][col_index] = value
+                    else:
+                        pool_info['metadata'][col_index] = value
+        
+        # Set default pool name if not found
+        if not pool_info['pool_name']:
+            pool_info['pool_name'] = f"Pool {row_index + 1}"
+            
+        pools_to_import.append(pool_info)
+    
+    # Use the existing synchronization logic to update pools
+    import_pools_data = []
+    for pool_info in pools_to_import:
+        import_pools_data.append({
+            'pool_name': pool_info['pool_name'],
+            'pooled_only_samples': pool_info['pooled_only_samples'],
+            'pooled_and_independent_samples': pool_info['pooled_and_independent_samples'],
+            'is_reference': pool_info['is_reference'],
+            'metadata_row': [pool_info['metadata'].get(i, "") for i in range(len(pool_metadata_columns))],
+            'sn_value': _generate_sn_value_from_samples(instrument_job, pool_info['pooled_only_samples'])
+        })
+    
+    # Use existing synchronization function
+    _synchronize_pools_with_import_data(instrument_job, import_pools_data, pool_metadata_columns,
+                                       None, None, user, data_type, {}, {})
+
+def _find_sample_index_by_source_name(instrument_job, source_name):
+    """Find sample index by source name from instrument job metadata"""
+    # This would need to look through the instrument job's metadata to find the sample
+    # For now, we'll implement a basic version that extracts from source name if it contains sample number
+    import re
+    
+    # Try to extract sample number from source name
+    match = re.search(r'sample[_\s]*(\d+)', source_name.lower())
+    if match:
+        sample_index = int(match.group(1))
+        if 1 <= sample_index <= instrument_job.sample_number:
+            return sample_index
+    
+    # Fallback: try to find by checking source name column in metadata
+    source_name_columns = instrument_job.user_metadata.filter(name__icontains='source').first() or \
+                         instrument_job.staff_metadata.filter(name__icontains='source').first()
+    
+    if source_name_columns and source_name_columns.modifiers:
+        import json
+        modifiers = json.loads(source_name_columns.modifiers) if isinstance(source_name_columns.modifiers, str) else source_name_columns.modifiers
+        for modifier in modifiers:
+            if modifier.get('value') == source_name:
+                # Parse sample range from modifier
+                samples_str = modifier.get('samples', '')
+                if samples_str:
+                    # Parse ranges like "1-3,5"
+                    sample_indices = []
+                    for part in samples_str.split(','):
+                        if '-' in part:
+                            start, end = part.split('-')
+                            sample_indices.extend(range(int(start), int(end) + 1))
+                        else:
+                            sample_indices.append(int(part))
+                    return sample_indices[0] if sample_indices else None
+    
+    return None
+
+def _generate_sn_value_from_samples(instrument_job, sample_indices):
+    """Generate SN= value from sample indices"""
+    if not sample_indices:
+        return "not pooled"
+    
+    # Get source names for the samples
+    source_names = []
+    for sample_index in sample_indices:
+        # Try to get actual source name from metadata
+        source_name = f"Sample {sample_index}"  # Default fallback
+        
+        # Look for source name in metadata
+        source_name_column = instrument_job.user_metadata.filter(name__icontains='source').first() or \
+                           instrument_job.staff_metadata.filter(name__icontains='source').first()
+        
+        if source_name_column:
+            # Check if there are modifiers for this sample
+            if source_name_column.modifiers:
+                import json
+                modifiers = json.loads(source_name_column.modifiers) if isinstance(source_name_column.modifiers, str) else source_name_column.modifiers
+                for modifier in modifiers:
+                    samples_str = modifier.get('samples', '')
+                    if str(sample_index) in samples_str.split(','):
+                        source_name = modifier.get('value', source_name)
+                        break
+            else:
+                # Use default value if no modifiers
+                source_name = source_name_column.value or source_name
+        
+        source_names.append(source_name)
+    
+    return f"SN={','.join(source_names)}"
 
 def check_metadata_column_create_then_remove_from_map(i, instrument_job, metadata_columns, metadata_field_map, field_type):
     if metadata_columns[i].type in metadata_field_map:
@@ -4136,4 +4977,221 @@ def analyze_full_protocol_task(task_id: str, protocol_id: int, use_anthropic: bo
         error_msg = f"Full protocol analysis failed: {str(e)}"
         send_progress("error", error_msg, 0)
         return {"success": False, "error": error_msg}
+
+
+def generate_pooled_sample_metadata(instrument_job_id):
+    """
+    Generate pooled sample metadata columns based on pool configuration.
+    
+    This function creates/updates the 'characteristics[pooled sample]' metadata column
+    with appropriate modifiers for pooled samples according to SDRF standards.
+    
+    Args:
+        instrument_job_id (int): The ID of the instrument job
+    """
+    try:
+        instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
+        pools = SamplePool.objects.filter(instrument_job=instrument_job)
+        
+        # Check if pooled sample column already exists for this instrument
+        pooled_column = MetadataColumn.objects.filter(
+            instrument=instrument_job.instrument,
+            name="Pooled sample",
+            type="Characteristics"
+        ).first()
+        
+        if not pooled_column:
+            # Create the pooled sample metadata column
+            pooled_column = MetadataColumn.objects.create(
+                instrument=instrument_job.instrument,
+                name="Pooled sample",
+                type="Characteristics",
+                value="not pooled",  # Default value for non-pooled samples
+                mandatory=False
+            )
+        
+        # Generate modifiers for pooled samples
+        modifiers = []
+        
+        for pool in pools:
+            # Only create modifiers for pooled-only samples
+            # Pooled+independent samples will use the default "not pooled" value
+            if pool.pooled_only_samples:
+                modifier = {
+                    "samples": ",".join([str(i) for i in pool.pooled_only_samples]),
+                    "value": pool.sdrf_value
+                }
+                modifiers.append(modifier)
+        
+        # Update the metadata column with modifiers
+        pooled_column.modifiers = json.dumps(modifiers) if modifiers else None
+        pooled_column.save()
+        
+        # Log the update
+        print(f"Updated pooled sample metadata for instrument job {instrument_job_id}")
+        print(f"Created {len(modifiers)} modifiers for {len(pools)} pools")
+        
+        return {
+            "success": True,
+            "column_id": pooled_column.id,
+            "modifiers_count": len(modifiers),
+            "pools_count": len(pools)
+        }
+        
+    except InstrumentJob.DoesNotExist:
+        error_msg = f"Instrument job {instrument_job_id} not found"
+        print(f"Error: {error_msg}")
+        return {"success": False, "error": error_msg}
+    
+    except Exception as e:
+        error_msg = f"Failed to generate pooled sample metadata: {str(e)}"
+        print(f"Error: {error_msg}")
+        return {"success": False, "error": error_msg}
+
+
+def get_sample_pooling_status(instrument_job_id, sample_index):
+    """
+    Get the pooling status of a specific sample.
+    
+    Args:
+        instrument_job_id (int): The ID of the instrument job
+        sample_index (int): The sample index (1-based)
+    
+    Returns:
+        dict: Status information for the sample
+    """
+    try:
+        instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
+        pools = SamplePool.objects.filter(instrument_job=instrument_job)
+        
+        sample_pools = []
+        is_pooled_only = False
+        is_pooled_and_independent = False
+        
+        for pool in pools:
+            if sample_index in pool.pooled_only_samples:
+                sample_pools.append({
+                    'pool_name': pool.pool_name,
+                    'status': 'pooled_only',
+                    'sdrf_value': pool.sdrf_value
+                })
+                is_pooled_only = True
+            elif sample_index in pool.pooled_and_independent_samples:
+                sample_pools.append({
+                    'pool_name': pool.pool_name,
+                    'status': 'pooled_and_independent',
+                    'sdrf_value': 'not pooled'  # Independent samples get "not pooled"
+                })
+                is_pooled_and_independent = True
+        
+        # Determine overall status
+        if is_pooled_only and not is_pooled_and_independent:
+            status = "Pooled Only"
+            sdrf_value = sample_pools[0]['sdrf_value'] if sample_pools else "not pooled"
+        elif is_pooled_and_independent and not is_pooled_only:
+            status = "Mixed"
+            sdrf_value = "not pooled"
+        elif is_pooled_only and is_pooled_and_independent:
+            status = "Mixed"
+            sdrf_value = "not pooled"
+        else:
+            status = "Independent"
+            sdrf_value = "not pooled"
+        
+        return {
+            "sample_index": sample_index,
+            "status": status,
+            "sdrf_value": sdrf_value,
+            "pools": sample_pools
+        }
+        
+    except InstrumentJob.DoesNotExist:
+        return {
+            "sample_index": sample_index,
+            "status": "Error",
+            "sdrf_value": "not pooled",
+            "pools": [],
+            "error": f"Instrument job {instrument_job_id} not found"
+        }
+    
+    except Exception as e:
+        return {
+            "sample_index": sample_index,
+            "status": "Error",
+            "sdrf_value": "not pooled",
+            "pools": [],
+            "error": str(e)
+        }
+
+
+def validate_sample_pools(instrument_job_id):
+    """
+    Validate all sample pools for an instrument job.
+    
+    Args:
+        instrument_job_id (int): The ID of the instrument job
+    
+    Returns:
+        dict: Validation results
+    """
+    try:
+        instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
+        pools = SamplePool.objects.filter(instrument_job=instrument_job)
+        
+        validation_results = {
+            "valid": True,
+            "errors": [],
+            "warnings": [],
+            "pools_validated": len(pools)
+        }
+        
+        for pool in pools:
+            # Validate sample indices are within range
+            all_samples = pool.all_pooled_samples
+            max_sample = instrument_job.sample_number
+            
+            invalid_samples = [s for s in all_samples if s < 1 or s > max_sample]
+            if invalid_samples:
+                validation_results["valid"] = False
+                validation_results["errors"].append(
+                    f"Pool '{pool.pool_name}' contains invalid sample indices: {invalid_samples}. "
+                    f"Valid range is 1-{max_sample}"
+                )
+            
+            # Check for empty pools
+            if not all_samples:
+                validation_results["warnings"].append(
+                    f"Pool '{pool.pool_name}' is empty"
+                )
+        
+        # Check for overlapping pooled-only samples across pools
+        pooled_only_samples = {}
+        for pool in pools:
+            for sample in pool.pooled_only_samples:
+                if sample in pooled_only_samples:
+                    validation_results["valid"] = False
+                    validation_results["errors"].append(
+                        f"Sample {sample} is marked as 'pooled only' in both "
+                        f"'{pooled_only_samples[sample]}' and '{pool.pool_name}' pools"
+                    )
+                else:
+                    pooled_only_samples[sample] = pool.pool_name
+        
+        return validation_results
+        
+    except InstrumentJob.DoesNotExist:
+        return {
+            "valid": False,
+            "errors": [f"Instrument job {instrument_job_id} not found"],
+            "warnings": [],
+            "pools_validated": 0
+        }
+    
+    except Exception as e:
+        return {
+            "valid": False,
+            "errors": [f"Validation failed: {str(e)}"],
+            "warnings": [],
+            "pools_validated": 0
+        }
 

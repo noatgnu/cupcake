@@ -2676,6 +2676,207 @@ class BackupLog(models.Model):
         self.save()
 
 
+class SamplePool(models.Model):
+    """Represents a pool of samples for SDRF compliance"""
+    instrument_job = models.ForeignKey('InstrumentJob', on_delete=models.CASCADE, related_name="sample_pools")
+    pool_name = models.CharField(max_length=255, help_text="Name of the sample pool")
+    pool_description = models.TextField(blank=True, null=True, help_text="Optional description of the pool")
+    
+    # List of sample indices that are ONLY in the pool (not independent)
+    pooled_only_samples = models.JSONField(
+        default=list, 
+        help_text="Sample indices that exist only in this pool"
+    )
+    
+    # List of sample indices that are in the pool AND also exist independently
+    pooled_and_independent_samples = models.JSONField(
+        default=list, 
+        help_text="Sample indices that are both pooled and independent"
+    )
+    
+    # Optional template sample to copy metadata from
+    template_sample = models.IntegerField(
+        blank=True, 
+        null=True,
+        help_text="Sample index to copy metadata from when creating this pool"
+    )
+    
+    # Reference pool indicator (for SDRF compliance)
+    is_reference = models.BooleanField(
+        default=False,
+        help_text="Whether this pool is a reference pool for channel normalization (appears in SDRF export with SN= format)"
+    )
+    
+    # Metadata relationships (similar to InstrumentJob)
+    user_metadata = models.ManyToManyField(MetadataColumn, related_name='sample_pools', blank=True)
+    staff_metadata = models.ManyToManyField(MetadataColumn, related_name='assigned_sample_pools', blank=True)
+    
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        app_label = "cc"
+        unique_together = ['instrument_job', 'pool_name']
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['instrument_job', 'pool_name']),
+            models.Index(fields=['created_at']),
+        ]
+    
+    def __str__(self):
+        return f"{self.pool_name} - Job {self.instrument_job.id}"
+    
+    def clean(self):
+        """Validate that no sample appears in both lists"""
+        from django.core.exceptions import ValidationError
+        
+        pooled_only_set = set(self.pooled_only_samples)
+        pooled_and_independent_set = set(self.pooled_and_independent_samples)
+        
+        if pooled_only_set & pooled_and_independent_set:
+            raise ValidationError(
+                "A sample cannot be both 'pooled only' and 'pooled and independent'"
+            )
+        
+        # Validate sample indices are within instrument job sample range
+        if hasattr(self, 'instrument_job') and self.instrument_job:
+            max_sample = self.instrument_job.sample_number
+            all_samples = pooled_only_set | pooled_and_independent_set
+            
+            invalid_samples = [s for s in all_samples if s < 1 or s > max_sample]
+            if invalid_samples:
+                raise ValidationError(
+                    f"Sample indices {invalid_samples} are invalid. "
+                    f"Must be between 1 and {max_sample}"
+                )
+    
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)
+    
+    @property
+    def all_pooled_samples(self):
+        """Get all samples in this pool (both pooled-only and pooled+independent)"""
+        return sorted(set(self.pooled_only_samples + self.pooled_and_independent_samples))
+    
+    @property
+    def sdrf_value(self):
+        """Generate SDRF-compliant value for this pool using source names"""
+        all_samples = self.all_pooled_samples
+        if not all_samples:
+            return "not pooled"
+        
+        # Get source names from metadata
+        source_names = self._get_source_names_for_samples()
+        sample_names = []
+        
+        for i in all_samples:
+            source_name = source_names.get(i, f"sample {i}")
+            sample_names.append(source_name)
+        
+        return f"SN={','.join(sample_names)}"
+    
+    @property
+    def total_samples_count(self):
+        """Get total number of samples in this pool"""
+        return len(self.all_pooled_samples)
+    
+    def get_sample_status(self, sample_index):
+        """Get the status of a specific sample in this pool"""
+        if sample_index in self.pooled_only_samples:
+            return 'pooled_only'
+        elif sample_index in self.pooled_and_independent_samples:
+            return 'pooled_and_independent'
+        else:
+            return 'not_in_pool'
+    
+    def add_sample(self, sample_index, status='pooled_only'):
+        """Add a sample to the pool with specified status"""
+        self.remove_sample(sample_index)  # Remove from any existing list first
+        
+        if status == 'pooled_only':
+            self.pooled_only_samples.append(sample_index)
+            self.pooled_only_samples.sort()
+        elif status == 'pooled_and_independent':
+            self.pooled_and_independent_samples.append(sample_index)
+            self.pooled_and_independent_samples.sort()
+    
+    def remove_sample(self, sample_index):
+        """Remove a sample from the pool"""
+        if sample_index in self.pooled_only_samples:
+            self.pooled_only_samples.remove(sample_index)
+        if sample_index in self.pooled_and_independent_samples:
+            self.pooled_and_independent_samples.remove(sample_index)
+
+    def _get_source_names_for_samples(self):
+        """Get source names for all samples from metadata"""
+        import json
+        
+        # Get the Source name metadata column
+        source_name_column = None
+        for metadata_column in list(self.instrument_job.user_metadata.all()) + list(self.instrument_job.staff_metadata.all()):
+            if metadata_column.name == "Source name":
+                source_name_column = metadata_column
+                break
+        
+        if not source_name_column:
+            # No source name metadata found, return empty dict to use fallback
+            return {}
+        
+        source_names = {}
+        
+        # Set default value for all samples
+        if source_name_column.value:
+            for i in range(1, self.instrument_job.sample_number + 1):
+                source_names[i] = source_name_column.value
+        
+        # Override with modifier values if they exist
+        if source_name_column.modifiers:
+            try:
+                modifiers = json.loads(source_name_column.modifiers) if isinstance(source_name_column.modifiers, str) else source_name_column.modifiers
+                for modifier in modifiers:
+                    samples_str = modifier.get("samples", "")
+                    value = modifier.get("value", "")
+                    
+                    # Parse sample indices from the modifier string
+                    sample_indices = self._parse_sample_indices_from_modifier_string(samples_str)
+                    for sample_index in sample_indices:
+                        if 1 <= sample_index <= self.instrument_job.sample_number:
+                            source_names[sample_index] = value
+            except (json.JSONDecodeError, ValueError):
+                pass
+        
+        return source_names
+    
+    def _parse_sample_indices_from_modifier_string(self, samples_str):
+        """Parse sample indices from modifier string like '1,2,3' or '1-3,5'"""
+        indices = []
+        if not samples_str:
+            return indices
+            
+        parts = samples_str.split(',')
+        for part in parts:
+            part = part.strip()
+            if '-' in part:
+                # Handle range like "1-3"
+                try:
+                    start, end = part.split('-', 1)
+                    start_idx = int(start.strip())
+                    end_idx = int(end.strip())
+                    indices.extend(range(start_idx, end_idx + 1))
+                except ValueError:
+                    pass
+            else:
+                # Handle single number
+                try:
+                    indices.append(int(part))
+                except ValueError:
+                    pass
+        
+        return indices
+
+
 @receiver(post_save, sender=settings.AUTH_USER_MODEL)
 def create_auth_token(sender, instance=None, created=False, **kwargs):
     if created:

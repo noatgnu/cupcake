@@ -10,7 +10,8 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, StepVariation, Se
     HumanDisease, Tissue, SubcellularLocation, MetadataColumn, Species, Unimod, InstrumentJob, FavouriteMetadataOption, \
     Preset, MetadataTableTemplate, ExternalContactDetails, SupportInformation, ExternalContact, MaintenanceLog, \
     MessageRecipient, MessageThread, Message, MessageAttachment, ReagentSubscription, SiteSettings, BackupLog, DocumentPermission, \
-    ImportTracker, ImportedObject, ImportedFile, ImportedRelationship, ServiceTier, ServicePrice, BillingRecord, ProtocolStepSuggestionCache
+    ImportTracker, ImportedObject, ImportedFile, ImportedRelationship, ServiceTier, ServicePrice, BillingRecord, ProtocolStepSuggestionCache, \
+    SamplePool
 
 
 class UserBasicSerializer(ModelSerializer):
@@ -1267,6 +1268,74 @@ class BackupLogSerializer(ModelSerializer):
             'triggered_by', 'container_id'
         ]
         read_only_fields = ['id', 'created_at']
+
+
+class SamplePoolSerializer(ModelSerializer):
+    """Serializer for sample pool management"""
+    all_pooled_samples = ReadOnlyField()
+    sdrf_value = ReadOnlyField()
+    total_samples_count = ReadOnlyField()
+    created_by = UserBasicSerializer(read_only=True)
+    user_metadata = SerializerMethodField()
+    staff_metadata = SerializerMethodField()
+    
+    class Meta:
+        model = SamplePool
+        fields = [
+            'id', 'pool_name', 'pool_description', 
+            'pooled_only_samples', 'pooled_and_independent_samples',
+            'template_sample', 'is_reference', 'all_pooled_samples', 'sdrf_value', 'total_samples_count',
+            'created_by', 'created_at', 'updated_at', 'user_metadata', 'staff_metadata'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+    
+    def get_user_metadata(self, obj):
+        """Get user metadata for this pool"""
+        return MetadataColumnSerializer(obj.user_metadata.all(), many=True).data
+    
+    def get_staff_metadata(self, obj):
+        """Get staff metadata for this pool"""
+        return MetadataColumnSerializer(obj.staff_metadata.all(), many=True).data
+    
+    def validate(self, data):
+        """Validate that no sample appears in both lists"""
+        pooled_only = set(data.get('pooled_only_samples', []))
+        pooled_and_independent = set(data.get('pooled_and_independent_samples', []))
+        
+        # Check for overlapping samples
+        if pooled_only & pooled_and_independent:
+            raise serializers.ValidationError(
+                "A sample cannot be both 'pooled only' and 'pooled and independent'"
+            )
+        
+        # Validate sample indices are positive integers
+        all_samples = pooled_only | pooled_and_independent
+        invalid_samples = [s for s in all_samples if not isinstance(s, int) or s < 1]
+        if invalid_samples:
+            raise serializers.ValidationError(
+                f"Sample indices must be positive integers: {invalid_samples}"
+            )
+        
+        return data
+    
+    def validate_pool_name(self, value):
+        """Validate pool name is unique within the instrument job"""
+        if self.instance:
+            # For updates, exclude current instance
+            queryset = SamplePool.objects.filter(
+                instrument_job=self.instance.instrument_job,
+                pool_name=value
+            ).exclude(id=self.instance.id)
+        else:
+            # For creation, we'll validate in the viewset since we don't have instrument_job here
+            return value
+        
+        if queryset.exists():
+            raise serializers.ValidationError(
+                f"A pool with name '{value}' already exists for this instrument job"
+            )
+        
+        return value
 
 
 class DocumentPermissionSerializer(ModelSerializer):

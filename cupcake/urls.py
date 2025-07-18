@@ -30,7 +30,7 @@ from cc.viewsets import ProtocolViewSet, SessionViewSet, StepViewSet, Annotation
     MaintenanceLogViewSet, MessageThreadViewSet, MessageViewSet, MessageRecipientViewSet, MessageAttachmentViewSet, \
     ReagentDocumentViewSet, SiteSettingsViewSet, SharedDocumentViewSet, DocumentPermissionViewSet, \
     ImportTrackerViewSet, HistoricalRecordsViewSet, ServiceTierViewSet, ServicePriceViewSet, BillingRecordViewSet, \
-    JobStatusViewSet, PublicPricingViewSet, BillingManagementViewSet, BackupViewSet
+    JobStatusViewSet, PublicPricingViewSet, BillingManagementViewSet, BackupViewSet, SamplePoolViewSet
 
 router = routers.DefaultRouter()
 router.register(r'protocol', ProtocolViewSet)
@@ -85,6 +85,7 @@ router.register(r'billing_records', BillingRecordViewSet)
 router.register(r'job-status', JobStatusViewSet, basename='job-status')
 router.register(r'public_pricing', PublicPricingViewSet, basename='public_pricing')
 router.register(r'billing_management', BillingManagementViewSet, basename='billing_management')
+router.register(r'sample_pools', SamplePoolViewSet)
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -94,6 +95,8 @@ urlpatterns = [
     path('api/chunked_upload/', DataChunkedUploadView.as_view(), name='chunked_upload'),
     path('api/chunked_upload/<uuid:pk>/', DataChunkedUploadView.as_view(), name='chunkedupload-detail'),
     path("api/set-csrf/", set_csrf, name="set_csrf"),
+    
+    
     # Health check endpoints
     path('health/', health_check, name='health'),
     path('ready/', ready_check, name='ready'),

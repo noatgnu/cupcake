@@ -48,7 +48,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
     FavouriteMetadataOption, Preset, MetadataTableTemplate, MaintenanceLog, SupportInformation, ExternalContact, \
     ExternalContactDetails, Message, MessageRecipient, MessageAttachment, MessageRecipient, MessageThread, \
     ReagentSubscription, SiteSettings, BackupLog, DocumentPermission, ImportTracker, ServiceTier, ServicePrice, \
-    BillingRecord, ProtocolStepSuggestionCache
+    BillingRecord, ProtocolStepSuggestionCache, SamplePool
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission, IsParticipantOrAdmin, IsCoreFacilityPermission
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, dry_run_import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
@@ -66,7 +66,7 @@ from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, Anno
     MessageRecipientSerializer, MessageThreadSerializer, MessageThreadDetailSerializer, ReagentSubscriptionSerializer, \
     SiteSettingsSerializer, BackupLogSerializer, DocumentPermissionSerializer, SharedDocumentSerializer, \
     UserBasicSerializer, ImportTrackerSerializer, ImportTrackerListSerializer, HistoricalRecordSerializer, \
-    ServiceTierSerializer, ServicePriceSerializer, BillingRecordSerializer
+    ServiceTierSerializer, ServicePriceSerializer, BillingRecordSerializer, SamplePoolSerializer
 from cc.rq_tasks import analyze_protocol_step_task, analyze_full_protocol_task
 from cc.utils import user_metadata, staff_metadata, send_slack_notification
 from cc.utils.user_data_import_revised import ImportReverter
@@ -3579,6 +3579,102 @@ class ProjectViewSet(ModelViewSet, FilterMixin):
         data = self.get_serializer(instance).data
         return Response(data, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['get'])
+    def step_metadata(self, request, pk=None):
+        """
+        Retrieve annotated metadata information for all protocol steps within this project.
+        
+        Query Parameters:
+        - metadata_name (str): Filter by metadata column name (optional)
+        - annotation_type (str): Filter by annotation type (optional)
+        - step_id (int): Filter by specific step ID (optional)
+        
+        Returns:
+        - List of protocol steps with their associated metadata annotations
+        """
+        project = self.get_object()
+        
+        # Get all protocol steps associated with this project through instrument jobs
+        instrument_jobs = project.instrument_jobs.all()
+        protocol_ids = instrument_jobs.values_list('protocol_id', flat=True).distinct()
+        
+        # Get all steps from protocols used in this project
+        steps = ProtocolStep.objects.filter(
+            protocol_id__in=protocol_ids
+        ).select_related('protocol').prefetch_related(
+            'annotations__metadata_columns'
+        )
+        
+        # Apply filters
+        metadata_name = request.query_params.get('metadata_name')
+        annotation_type = request.query_params.get('annotation_type')
+        step_id = request.query_params.get('step_id')
+        
+        if step_id:
+            steps = steps.filter(id=step_id)
+        
+        if annotation_type:
+            steps = steps.filter(annotations__annotation_type=annotation_type)
+        
+        # Build response data
+        result = []
+        for step in steps:
+            step_data = {
+                'step_id': step.id,
+                'step_description': step.step_description,
+                'protocol_id': step.protocol.id,
+                'protocol_title': step.protocol.protocol_title,
+                'annotations': []
+            }
+            
+            # Get annotations with metadata
+            annotations = step.annotations.filter(annotation_type='metadata')
+            
+            for annotation in annotations:
+                metadata_columns = annotation.metadata_columns.all()
+                
+                # Filter by metadata name if specified
+                if metadata_name:
+                    metadata_columns = metadata_columns.filter(name__icontains=metadata_name)
+                
+                if metadata_columns.exists():
+                    annotation_data = {
+                        'annotation_id': annotation.id,
+                        'annotation_name': annotation.annotation_name,
+                        'annotation_type': annotation.annotation_type,
+                        'created_at': annotation.created_at,
+                        'updated_at': annotation.updated_at,
+                        'metadata_columns': []
+                    }
+                    
+                    for metadata_column in metadata_columns:
+                        metadata_data = {
+                            'id': metadata_column.id,
+                            'name': metadata_column.name,
+                            'type': metadata_column.type,
+                            'value': metadata_column.value,
+                            'column_position': metadata_column.column_position,
+                            'mandatory': metadata_column.mandatory,
+                            'hidden': metadata_column.hidden,
+                            'readonly': metadata_column.readonly,
+                            'created_at': metadata_column.created_at,
+                            'updated_at': metadata_column.updated_at
+                        }
+                        annotation_data['metadata_columns'].append(metadata_data)
+                    
+                    step_data['annotations'].append(annotation_data)
+            
+            # Only include steps that have metadata annotations
+            if step_data['annotations']:
+                result.append(step_data)
+        
+        return Response({
+            'project_id': project.id,
+            'project_name': project.project_name,
+            'steps_with_metadata': result,
+            'total_steps': len(result)
+        }, status=status.HTTP_200_OK)
+
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         instance.delete()
@@ -5314,6 +5410,30 @@ class MetadataColumnViewSet(FilterMixin, ModelViewSet):
 
         metadata_column_data["column_position"] = position
         metadata_column = MetadataColumn.objects.create(**metadata_column_data)
+        
+        # If this is an instrument metadata column, also add it to all existing pools
+        if metadata_column.instrument:
+            instrument_jobs = InstrumentJob.objects.filter(instrument=metadata_column.instrument)
+            for job in instrument_jobs:
+                # Add the new column to the job's metadata first
+                job.user_metadata.add(metadata_column)
+                
+                pools = SamplePool.objects.filter(instrument_job=job)
+                for pool in pools:
+                    # Create a new metadata column for this pool with the same properties
+                    pool_metadata_column = MetadataColumn.objects.create(
+                        name=metadata_column.name,
+                        type=metadata_column.type,
+                        value=metadata_column.value,
+                        mandatory=metadata_column.mandatory,
+                        hidden=metadata_column.hidden,
+                        readonly=metadata_column.readonly,
+                        modifiers=metadata_column.modifiers
+                    )
+                    
+                    # Add to pool's user metadata (most new columns are user metadata)
+                    pool.user_metadata.add(pool_metadata_column)
+        
         return Response(MetadataColumnSerializer(metadata_column).data, status=status.HTTP_201_CREATED)
 
 
@@ -5340,6 +5460,47 @@ class MetadataColumnViewSet(FilterMixin, ModelViewSet):
                     return Response(status=status.HTTP_403_FORBIDDEN)
                 if not instrument_permission.first().can_manage:
                     return Response(status=status.HTTP_403_FORBIDDEN)
+                    
+            # When deleting a metadata column from an instrument, also remove corresponding columns from all pools
+            # that are using this instrument
+            instrument_jobs = InstrumentJob.objects.filter(instrument=metadata_column.instrument)
+            for job in instrument_jobs:
+                # Find the index of the column being deleted in the job's metadata arrays
+                user_metadata_list = list(job.user_metadata.all())
+                staff_metadata_list = list(job.staff_metadata.all())
+                
+                column_index = None
+                is_user_metadata = False
+                is_staff_metadata = False
+                
+                # Check if it's in user_metadata and get its index
+                if metadata_column in user_metadata_list:
+                    column_index = user_metadata_list.index(metadata_column)
+                    is_user_metadata = True
+                
+                # Check if it's in staff_metadata and get its index
+                if metadata_column in staff_metadata_list:
+                    column_index = staff_metadata_list.index(metadata_column)
+                    is_staff_metadata = True
+                
+                # If we found the column and its index, remove it from all pools at the same index
+                if column_index is not None:
+                    pools = SamplePool.objects.filter(instrument_job=job)
+                    for pool in pools:
+                        if is_user_metadata:
+                            pool_user_metadata_list = list(pool.user_metadata.all())
+                            if column_index < len(pool_user_metadata_list):
+                                col_to_remove = pool_user_metadata_list[column_index]
+                                pool.user_metadata.remove(col_to_remove)
+                                col_to_remove.delete()
+                        
+                        if is_staff_metadata:
+                            pool_staff_metadata_list = list(pool.staff_metadata.all())
+                            if column_index < len(pool_staff_metadata_list):
+                                col_to_remove = pool_staff_metadata_list[column_index]
+                                pool.staff_metadata.remove(col_to_remove)
+                                col_to_remove.delete()
+                    
         elif metadata_column.annotation:
             if metadata_column.annotation.user != request.user:
                 if not request.user.is_staff:
@@ -6046,6 +6207,460 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                     instrument_job.staff_metadata.add(metadata_column)
 
         return Response(InstrumentJobSerializer(instrument_job).data, status=status.HTTP_200_OK)
+
+    def _check_instrument_job_permissions(self, instrument_job, user, action='read'):
+        """
+        Check if user has permission to perform action on instrument job
+        Returns (has_permission, is_staff_user)
+        """
+        # System admin always has access
+        if user.is_staff:
+            return True, True
+        
+        # Job owner has read access only
+        if instrument_job.user == user:
+            return action == 'read', False
+        
+        # Check staff assignment
+        staff_users = instrument_job.staff.all()
+        if staff_users.count() > 0:
+            if user in staff_users:
+                return True, True
+        else:
+            # No specific staff assigned, check service lab group
+            if instrument_job.service_lab_group:
+                service_staff = instrument_job.service_lab_group.users.all()
+                if user in service_staff:
+                    return True, True
+        
+        return False, False
+
+    @action(detail=True, methods=['get'])
+    def sample_pools(self, request, pk=None):
+        """List all sample pools for this instrument job"""
+        instrument_job = self.get_object()
+        
+        # Check permissions
+        has_permission, _ = self._check_instrument_job_permissions(instrument_job, request.user, 'read')
+        if not has_permission:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        
+        pools = SamplePool.objects.filter(instrument_job=instrument_job)
+        serializer = SamplePoolSerializer(pools, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    def create_sample_pool(self, request, pk=None):
+        """Create a new sample pool for this instrument job"""
+        instrument_job = self.get_object()
+        
+        # Check write permissions (only staff can create pools)
+        has_permission, is_staff_user = self._check_instrument_job_permissions(instrument_job, request.user, 'write')
+        if not has_permission or not is_staff_user:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        
+        # Add instrument_job to the data
+        pool_data = request.data.copy()
+        pool_data['instrument_job'] = instrument_job.id
+        
+        serializer = SamplePoolSerializer(data=pool_data)
+        if serializer.is_valid():
+            pool = serializer.save(
+                instrument_job=instrument_job,
+                created_by=request.user
+            )
+            
+            # Copy metadata from template sample if provided
+            if pool.template_sample:
+                self._copy_metadata_from_template_sample(pool, instrument_job)
+            else:
+                # Create a basic pooled sample column for pools without template
+                self._create_basic_pool_metadata(pool, instrument_job)
+            
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['get'])
+    def sample_pool_overview(self, request, pk=None):
+        """Get sample pool status overview for this instrument job"""
+        instrument_job = self.get_object()
+        
+        # Check permissions
+        has_permission, _ = self._check_instrument_job_permissions(instrument_job, request.user, 'read')
+        if not has_permission:
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        
+        # Get all pools for this instrument job
+        pools = SamplePool.objects.filter(instrument_job=instrument_job)
+        
+        # Get source names for all samples
+        source_names = self._get_source_names_for_samples(instrument_job)
+        
+        # Generate sample status overview
+        sample_overview = []
+        for sample_index in range(1, instrument_job.sample_number + 1):
+            sample_pools = []
+            sample_status = "Independent"
+            sdrf_value = "not pooled"
+            
+            for pool in pools:
+                if sample_index in pool.pooled_only_samples:
+                    sample_pools.append(pool.pool_name)
+                    sample_status = "Pooled Only"
+                    sdrf_value = pool.sdrf_value
+                elif sample_index in pool.pooled_and_independent_samples:
+                    sample_pools.append(pool.pool_name)
+                    if sample_status == "Pooled Only":
+                        sample_status = "Mixed"
+                    elif sample_status == "Independent":
+                        sample_status = "Mixed"
+                    # For independent samples, SDRF value remains "not pooled"
+            
+            # Get source name or fallback to sample index
+            source_name = source_names.get(sample_index, f'Sample {sample_index}')
+            
+            sample_overview.append({
+                "sample_index": sample_index,
+                "sample_name": source_name,
+                "status": sample_status,
+                "pool_names": sample_pools,
+                "sdrf_value": sdrf_value
+            })
+        
+        overview = {
+            "total_samples": instrument_job.sample_number,
+            "pooled_samples": len([s for s in sample_overview if s["status"] != "Independent"]),
+            "independent_samples": len([s for s in sample_overview if s["status"] == "Independent"]),
+            "pools": SamplePoolSerializer(pools, many=True).data,
+            "sample_overview": sample_overview
+        }
+        
+        return Response(overview, status=status.HTTP_200_OK)
+
+    def _update_pooled_sample_metadata(self, instrument_job):
+        """Update pooled sample metadata for an instrument job"""
+        import json
+        
+        pools = SamplePool.objects.filter(instrument_job=instrument_job)
+        
+        # Check if there's already a pooled sample column in staff_metadata
+        existing_pooled_column = instrument_job.staff_metadata.filter(
+            name="Pooled sample",
+            type="Characteristics"
+        ).first()
+        
+        if existing_pooled_column:
+            pooled_column = existing_pooled_column
+            created = False
+        else:
+            # Create a new pooled sample metadata column
+            pooled_column = MetadataColumn.objects.create(
+                instrument=instrument_job.instrument,
+                name="Pooled sample",
+                type="Characteristics",
+                value="not pooled",
+                mandatory=False
+            )
+            created = True
+        
+        # Add to staff_metadata if it's a new column
+        if created:
+            instrument_job.staff_metadata.add(pooled_column)
+        else:
+            # Check if it's already in staff_metadata, if not add it
+            if not instrument_job.staff_metadata.filter(id=pooled_column.id).exists():
+                instrument_job.staff_metadata.add(pooled_column)
+        
+        # Generate modifiers for pooled samples
+        modifiers = []
+        for pool in pools:
+            if pool.pooled_only_samples:
+                modifier = {
+                    "samples": ",".join([str(i) for i in pool.pooled_only_samples]),
+                    "value": "pooled"
+                }
+                modifiers.append(modifier)
+        
+        # Update the metadata column with modifiers
+        pooled_column.modifiers = json.dumps(modifiers) if modifiers else None
+        pooled_column.save()
+
+    def _update_pooled_sample_metadata_after_pool_deletion(self, instrument_job, affected_samples):
+        """Update pooled sample metadata after pool deletion to recalculate sample statuses"""
+        import json
+        
+        # Get remaining pools for this instrument job
+        pools = SamplePool.objects.filter(instrument_job=instrument_job)
+        
+        # Find the pooled sample metadata column
+        pooled_column = instrument_job.staff_metadata.filter(
+            name="Pooled sample",
+            type="Characteristics"
+        ).first()
+        
+        if not pooled_column:
+            # No pooled sample column exists, nothing to update
+            return
+        
+        # Recalculate modifiers based on remaining pools
+        modifiers = []
+        for pool in pools:
+            if pool.pooled_only_samples:
+                modifier = {
+                    "samples": ",".join([str(i) for i in pool.pooled_only_samples]),
+                    "value": "pooled"
+                }
+                modifiers.append(modifier)
+        
+        # Update the metadata column with new modifiers
+        pooled_column.modifiers = json.dumps(modifiers) if modifiers else None
+        pooled_column.save()
+        
+        # Also update pooled sample metadata for all pools to reflect the changes
+        for pool in pools:
+            pool_pooled_column = pool.staff_metadata.filter(
+                name="Pooled sample",
+                type="Characteristics"  
+            ).first()
+            
+            if pool_pooled_column:
+                # Calculate SDRF value for this pool
+                if pool.pooled_only_samples:
+                    # Get source names for pooled only samples
+                    source_names = self._get_source_names_for_samples(instrument_job)
+                    pooled_source_names = [source_names.get(i, f"Sample {i}") for i in pool.pooled_only_samples]
+                    sdrf_value = f"SN={','.join(pooled_source_names)}"
+                else:
+                    sdrf_value = "not pooled"
+                
+                pool_pooled_column.value = sdrf_value
+                pool_pooled_column.save()
+
+    def _create_basic_pool_metadata(self, pool, instrument_job):
+        """Create basic metadata for pools without template sample"""
+        # Get all metadata columns for this instrument job
+        user_metadata_columns = list(instrument_job.user_metadata.all())
+        staff_metadata_columns = list(instrument_job.staff_metadata.all())
+        
+        # Create a Source Name column for the pool with the pool name
+        source_name_column = None
+        for metadata_column in user_metadata_columns + staff_metadata_columns:
+            if metadata_column.name.lower() in ['source name', 'source_name']:
+                source_name_column = metadata_column
+                break
+        
+        if source_name_column:
+            # Create a Source Name column for the pool with the pool name as value
+            pool_source_name_column = MetadataColumn.objects.create(
+                name=source_name_column.name,
+                type=source_name_column.type,
+                value=pool.pool_name,
+                mandatory=source_name_column.mandatory,
+                hidden=source_name_column.hidden,
+                readonly=source_name_column.readonly
+            )
+            
+            # Add to pool's user metadata or staff metadata based on original
+            if source_name_column in user_metadata_columns:
+                pool.user_metadata.add(pool_source_name_column)
+            else:
+                pool.staff_metadata.add(pool_source_name_column)
+        
+        # Create a Pooled sample column for the pool with the SDRF value
+        pool_pooled_column = MetadataColumn.objects.create(
+            name="Pooled sample",
+            type="Characteristics",
+            value=pool.sdrf_value,
+            mandatory=False
+        )
+        
+        # Add to pool's staff metadata
+        pool.staff_metadata.add(pool_pooled_column)
+
+    def _copy_metadata_from_template_sample(self, pool, instrument_job):
+        """Copy metadata from the template sample to the pool"""
+        import json
+        
+        template_sample_index = pool.template_sample
+        if not template_sample_index:
+            return
+        
+        # Get all metadata columns for this instrument job
+        user_metadata_columns = list(instrument_job.user_metadata.all())
+        staff_metadata_columns = list(instrument_job.staff_metadata.all())
+        
+        # First, create a Source Name column for the pool with the pool name
+        source_name_column = None
+        for metadata_column in user_metadata_columns + staff_metadata_columns:
+            if metadata_column.name.lower() in ['source name', 'source_name']:
+                source_name_column = metadata_column
+                break
+        
+        if source_name_column:
+            # Create a Source Name column for the pool with the pool name as value
+            pool_source_name_column = MetadataColumn.objects.create(
+                name=source_name_column.name,
+                type=source_name_column.type,
+                value=pool.pool_name,
+                mandatory=source_name_column.mandatory,
+                hidden=source_name_column.hidden,
+                readonly=source_name_column.readonly
+            )
+            
+            # Add to pool's user metadata or staff metadata based on original
+            if source_name_column in user_metadata_columns:
+                pool.user_metadata.add(pool_source_name_column)
+            else:
+                pool.staff_metadata.add(pool_source_name_column)
+        
+        # Create a Pooled sample column for the pool with the SDRF value
+        pool_pooled_column = MetadataColumn.objects.create(
+            name="Pooled sample",
+            type="Characteristics",
+            value=pool.sdrf_value,
+            mandatory=False
+        )
+        
+        # Add to pool's staff metadata
+        pool.staff_metadata.add(pool_pooled_column)
+        
+        # Copy user metadata columns
+        for metadata_column in user_metadata_columns:
+            # Skip Source Name and Pooled sample columns - pools should have their own unique values
+            if metadata_column.name.lower() in ['source name', 'source_name', 'pooled sample']:
+                continue
+                
+            # Get the value for the template sample from this metadata column
+            template_value = self._get_sample_metadata_value(metadata_column, template_sample_index)
+            
+            if template_value:
+                # Create a new metadata column specifically for the pool
+                # This column is only associated with the pool, not the instrument
+                pool_metadata_column = MetadataColumn.objects.create(
+                    name=metadata_column.name,
+                    type=metadata_column.type,
+                    value=template_value,
+                    mandatory=metadata_column.mandatory,
+                    hidden=metadata_column.hidden,
+                    readonly=metadata_column.readonly,
+                    modifiers=metadata_column.modifiers
+                )
+                
+                # Add to pool's user metadata
+                pool.user_metadata.add(pool_metadata_column)
+        
+        # Copy staff metadata columns
+        for metadata_column in staff_metadata_columns:
+            # Skip Source Name and Pooled sample columns - pools should have their own unique values
+            if metadata_column.name.lower() in ['source name', 'source_name', 'pooled sample']:
+                continue
+                
+            # Get the value for the template sample from this metadata column
+            template_value = self._get_sample_metadata_value(metadata_column, template_sample_index)
+            
+            if template_value:
+                # Create a new metadata column for the pool with the template value
+                # Use a more specific filter to avoid duplicates
+                pool_metadata_column = MetadataColumn.objects.create(
+                    instrument=instrument_job.instrument,
+                    name=metadata_column.name,
+                    type=metadata_column.type,
+                    value=template_value,
+                    mandatory=metadata_column.mandatory,
+                    hidden=metadata_column.hidden,
+                    readonly=metadata_column.readonly,
+                    modifiers=metadata_column.modifiers
+                )
+                
+                # Add to pool's staff metadata
+                pool.staff_metadata.add(pool_metadata_column)
+    
+    def _get_sample_metadata_value(self, metadata_column, sample_index):
+        """Get the metadata value for a specific sample from a metadata column"""
+        import json
+        
+        # Check if there are modifiers for this specific sample
+        if metadata_column.modifiers:
+            try:
+                modifiers = json.loads(metadata_column.modifiers)
+                for modifier in modifiers:
+                    if 'samples' in modifier and 'value' in modifier:
+                        sample_list = [int(s.strip()) for s in modifier['samples'].split(',')]
+                        if sample_index in sample_list:
+                            return modifier['value']
+            except (json.JSONDecodeError, ValueError):
+                pass
+        
+        # Return the default value if no specific modifier found
+        return metadata_column.value or ''
+
+    def _get_source_names_for_samples(self, instrument_job):
+        """Get source names for all samples from metadata"""
+        import json
+        
+        # Get the Source name metadata column
+        source_name_column = None
+        for metadata_column in list(instrument_job.user_metadata.all()) + list(instrument_job.staff_metadata.all()):
+            if metadata_column.name == "Source name":
+                source_name_column = metadata_column
+                break
+        
+        if not source_name_column:
+            # No source name metadata found, return empty dict to use fallback
+            return {}
+        
+        source_names = {}
+        
+        # Set default value for all samples
+        if source_name_column.value:
+            for i in range(1, instrument_job.sample_number + 1):
+                source_names[i] = source_name_column.value
+        
+        # Override with modifier values if they exist
+        if source_name_column.modifiers:
+            try:
+                modifiers = json.loads(source_name_column.modifiers) if isinstance(source_name_column.modifiers, str) else source_name_column.modifiers
+                for modifier in modifiers:
+                    samples_str = modifier.get("samples", "")
+                    value = modifier.get("value", "")
+                    
+                    # Parse sample indices from the modifier string
+                    sample_indices = self._parse_sample_indices_from_modifier_string(samples_str)
+                    for sample_index in sample_indices:
+                        if 1 <= sample_index <= instrument_job.sample_number:
+                            source_names[sample_index] = value
+            except (json.JSONDecodeError, ValueError):
+                pass
+        
+        return source_names
+    
+    def _parse_sample_indices_from_modifier_string(self, samples_str):
+        """Parse sample indices from modifier string like '1,2,3' or '1-3,5'"""
+        indices = []
+        if not samples_str:
+            return indices
+            
+        parts = samples_str.split(",")
+        for part in parts:
+            part = part.strip()
+            if "-" in part:
+                # Handle range like "1-3"
+                try:
+                    start, end = part.split("-")
+                    start_idx = int(start.strip())
+                    end_idx = int(end.strip())
+                    for i in range(start_idx, end_idx + 1):
+                        indices.append(i)
+                except ValueError:
+                    continue
+            else:
+                # Handle single number
+                try:
+                    indices.append(int(part))
+                except ValueError:
+                    continue
+        
+        return indices
 
 class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
     serializer_class = FavouriteMetadataOptionSerializer
@@ -10364,3 +10979,309 @@ class BackupViewSet(ModelViewSet):
             return Response({
                 'error': f'Failed to get backup progress: {str(e)}'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SamplePoolViewSet(ModelViewSet):
+    """ViewSet for managing sample pools"""
+    serializer_class = SamplePoolSerializer
+    queryset = SamplePool.objects.all()
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    
+    def get_queryset(self):
+        """Get pools for a specific instrument job"""
+        instrument_job_id = self.kwargs.get('instrument_job_id')
+        if instrument_job_id:
+            return SamplePool.objects.filter(instrument_job_id=instrument_job_id)
+        return SamplePool.objects.all()
+    
+    def _check_instrument_job_permissions(self, instrument_job, user, action='read'):
+        """
+        Check if user has permission to perform action on instrument job
+        Returns (has_permission, is_staff_user)
+        """
+        # System admin always has access
+        if user.is_staff:
+            return True, True
+        
+        # Job owner has read access only
+        if instrument_job.user == user:
+            return action == 'read', False
+        
+        # Check staff assignment
+        staff_users = instrument_job.staff.all()
+        if staff_users.count() > 0:
+            if user in staff_users:
+                return True, True
+        else:
+            # No specific staff assigned, check service lab group
+            if instrument_job.service_lab_group:
+                service_staff = instrument_job.service_lab_group.users.all()
+                if user in service_staff:
+                    return True, True
+        
+        return False, False
+    
+    def perform_create(self, serializer):
+        """Create a new sample pool"""
+        instrument_job_id = self.kwargs.get('instrument_job_id')
+        instrument_job = get_object_or_404(InstrumentJob, id=instrument_job_id)
+        
+        # Check if user has permission to create pools (write access + staff role)
+        has_permission, is_staff_user = self._check_instrument_job_permissions(
+            instrument_job, self.request.user, 'write'
+        )
+        if not has_permission or not is_staff_user:
+            raise PermissionDenied("Only staff members can create pools")
+        
+        # Validate pool name is unique for this instrument job
+        pool_name = serializer.validated_data.get('pool_name')
+        if SamplePool.objects.filter(instrument_job=instrument_job, pool_name=pool_name).exists():
+            raise ValidationError(
+                f"A pool with name '{pool_name}' already exists for this instrument job"
+            )
+        
+        # Validate sample indices are within range
+        pooled_only = serializer.validated_data.get('pooled_only_samples', [])
+        pooled_and_independent = serializer.validated_data.get('pooled_and_independent_samples', [])
+        all_samples = set(pooled_only + pooled_and_independent)
+        
+        if all_samples:
+            max_sample = max(all_samples)
+            if max_sample > instrument_job.sample_number:
+                raise ValidationError(
+                    f"Sample index {max_sample} is invalid. "
+                    f"Instrument job has only {instrument_job.sample_number} samples"
+                )
+        
+        # Save the pool
+        sample_pool = serializer.save(
+            instrument_job=instrument_job,
+            created_by=self.request.user
+        )
+        
+        return sample_pool
+    
+    def perform_update(self, serializer):
+        """Update an existing sample pool"""
+        instance = serializer.instance
+        
+        # Check permissions (write access + staff role)
+        has_permission, is_staff_user = self._check_instrument_job_permissions(
+            instance.instrument_job, self.request.user, 'write'
+        )
+        if not has_permission or not is_staff_user:
+            raise PermissionDenied("Only staff members can update pools")
+        
+        # Validate sample indices are within range
+        pooled_only = serializer.validated_data.get('pooled_only_samples', [])
+        pooled_and_independent = serializer.validated_data.get('pooled_and_independent_samples', [])
+        all_samples = set(pooled_only + pooled_and_independent)
+        
+        if all_samples:
+            max_sample = max(all_samples)
+            if max_sample > instance.instrument_job.sample_number:
+                raise ValidationError(
+                    f"Sample index {max_sample} is invalid. "
+                    f"Instrument job has only {instance.instrument_job.sample_number} samples"
+                )
+        
+        # Save the updated pool
+        sample_pool = serializer.save()
+        
+        return sample_pool
+    
+    def perform_destroy(self, instance):
+        """Delete a sample pool"""
+        # Check permissions (write access + staff role)
+        has_permission, is_staff_user = self._check_instrument_job_permissions(
+            instance.instrument_job, self.request.user, 'write'
+        )
+        if not has_permission or not is_staff_user:
+            raise PermissionDenied("Only staff members can delete pools")
+        
+        instrument_job = instance.instrument_job
+        
+        # Store the samples that were in this pool for metadata update
+        affected_samples = set(instance.pooled_only_samples + instance.pooled_and_independent_samples)
+        
+        # Delete the pool
+        instance.delete()
+        
+        # Update pooled sample metadata for the instrument job after deletion
+        # This will recalculate the pooled sample values for all samples
+        # Call the method from InstrumentJobViewSets
+        instrument_job_viewset = InstrumentJobViewSets()
+        instrument_job_viewset._update_pooled_sample_metadata_after_pool_deletion(instrument_job, affected_samples)
+    
+    @action(detail=False, methods=['get'])
+    def sample_status_overview(self, request, instrument_job_id=None):
+        """Get overview of sample pooling status for all samples"""
+        instrument_job = get_object_or_404(InstrumentJob, id=instrument_job_id)
+        
+        # Check permissions (read access allowed)
+        has_permission, _ = self._check_instrument_job_permissions(
+            instrument_job, request.user, 'read'
+        )
+        if not has_permission:
+            raise PermissionDenied("You don't have permission to view sample status")
+        
+        pools = SamplePool.objects.filter(instrument_job=instrument_job)
+        
+        # Get source names for all samples
+        source_names = self._get_source_names_for_samples(instrument_job)
+        
+        overview = []
+        for i in range(1, instrument_job.sample_number + 1):
+            sample_pools = []
+            status = "Independent"
+            sdrf_value = "not pooled"
+            
+            for pool in pools:
+                if i in pool.pooled_only_samples:
+                    sample_pools.append(pool.pool_name)
+                    status = "Pooled Only"
+                    sdrf_value = pool.sdrf_value
+                elif i in pool.pooled_and_independent_samples:
+                    sample_pools.append(pool.pool_name)
+                    if status == "Independent":
+                        status = "Mixed"
+                    # For independent samples, SDRF value remains "not pooled"
+            
+            # Get source name or fallback to sample index
+            source_name = source_names.get(i, f'Sample {i}')
+            
+            overview.append({
+                'sample_index': i,
+                'sample_name': source_name,
+                'status': status,
+                'pool_names': sample_pools,
+                'sdrf_value': sdrf_value
+            })
+        
+        return Response(overview)
+    
+    @action(detail=True, methods=['post'])
+    def add_sample(self, request, pk=None, instrument_job_id=None):
+        """Add a sample to the pool"""
+        pool = self.get_object()
+        sample_index = request.data.get('sample_index')
+        sample_status = request.data.get('status', 'pooled_only')
+        
+        # Check permissions (write access + staff role)
+        has_permission, is_staff_user = self._check_instrument_job_permissions(
+            pool.instrument_job, request.user, 'write'
+        )
+        if not has_permission or not is_staff_user:
+            raise PermissionDenied("Only staff members can modify pools")
+        
+        # Validate sample index
+        if not isinstance(sample_index, int) or sample_index < 1:
+            raise ValidationError("Sample index must be a positive integer")
+        
+        if sample_index > pool.instrument_job.sample_number:
+            raise ValidationError(
+                f"Sample index {sample_index} is invalid. "
+                f"Instrument job has only {pool.instrument_job.sample_number} samples"
+            )
+        
+        # Add the sample
+        pool.add_sample(sample_index, sample_status)
+        pool.save()
+        
+        return Response({
+            'message': f'Sample {sample_index} added to pool as {sample_status}',
+            'pool': SamplePoolSerializer(pool).data
+        })
+    
+    @action(detail=True, methods=['post'])
+    def remove_sample(self, request, pk=None, instrument_job_id=None):
+        """Remove a sample from the pool"""
+        pool = self.get_object()
+        sample_index = request.data.get('sample_index')
+        
+        # Check permissions (write access + staff role)
+        has_permission, is_staff_user = self._check_instrument_job_permissions(
+            pool.instrument_job, request.user, 'write'
+        )
+        if not has_permission or not is_staff_user:
+            raise PermissionDenied("Only staff members can modify pools")
+        
+        # Validate sample index
+        if not isinstance(sample_index, int) or sample_index < 1:
+            raise ValidationError("Sample index must be a positive integer")
+        
+        # Remove the sample
+        pool.remove_sample(sample_index)
+        pool.save()
+        
+        return Response({
+            'message': f'Sample {sample_index} removed from pool',
+            'pool': SamplePoolSerializer(pool).data
+        })
+
+    def _get_source_names_for_samples(self, instrument_job):
+        """Get source names for all samples from metadata"""
+        
+        # Get the Source name metadata column
+        source_name_column = None
+        for metadata_column in list(instrument_job.user_metadata.all()) + list(instrument_job.staff_metadata.all()):
+            if metadata_column.name == "Source name":
+                source_name_column = metadata_column
+                break
+        
+        if not source_name_column:
+            # No source name metadata found, return empty dict to use fallback
+            return {}
+        
+        source_names = {}
+        
+        # Set default value for all samples
+        if source_name_column.value:
+            for i in range(1, instrument_job.sample_number + 1):
+                source_names[i] = source_name_column.value
+        
+        # Override with modifier values if they exist
+        if source_name_column.modifiers:
+            try:
+                modifiers = json.loads(source_name_column.modifiers) if isinstance(source_name_column.modifiers, str) else source_name_column.modifiers
+                for modifier in modifiers:
+                    samples_str = modifier.get("samples", "")
+                    value = modifier.get("value", "")
+                    
+                    # Parse sample indices from the modifier string
+                    sample_indices = self._parse_sample_indices_from_modifier_string(samples_str)
+                    for sample_index in sample_indices:
+                        if 1 <= sample_index <= instrument_job.sample_number:
+                            source_names[sample_index] = value
+            except (json.JSONDecodeError, ValueError):
+                pass
+        
+        return source_names
+    
+    def _parse_sample_indices_from_modifier_string(self, samples_str):
+        """Parse sample indices from modifier string like '1,2,3' or '1-3,5'"""
+        indices = []
+        if not samples_str:
+            return indices
+            
+        parts = samples_str.split(",")
+        for part in parts:
+            part = part.strip()
+            if "-" in part:
+                # Handle range like "1-3"
+                try:
+                    start, end = part.split("-", 1)
+                    start_idx = int(start.strip())
+                    end_idx = int(end.strip())
+                    indices.extend(range(start_idx, end_idx + 1))
+                except ValueError:
+                    pass
+            else:
+                # Handle single number
+                try:
+                    indices.append(int(part))
+                except ValueError:
+                    pass
+        
+        return indices

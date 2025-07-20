@@ -3702,6 +3702,337 @@ class ProjectViewSet(ModelViewSet, FilterMixin):
         data = self.get_serializer(project).data
         return Response(data, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['get'])
+    def sdrf_metadata_collection(self, request, pk=None):
+        """
+        Collect all SDRF metadata columns used across a project.
+        This includes metadata from:
+        - Protocol step annotations
+        - Session annotations  
+        - Stored reagent annotations
+        
+        Query Parameters:
+        - metadata_name: Filter by specific metadata column name(s). Can be comma-separated for multiple names.
+        - unique_values_only: If true, returns only unique values for the filtered metadata columns.
+        """
+        project = self.get_object()
+        
+        # Check permissions
+        print(f"SDRF Collection Debug: project.owner={project.owner}, request.user={request.user}")
+        if project.owner != request.user:
+            return Response(
+                {'error': 'You do not have permission to access this project'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Parse query parameters
+        metadata_name_filter = request.query_params.get('metadata_name', '')
+        unique_values_only = request.query_params.get('unique_values_only', '').lower() == 'true'
+        
+        # Process metadata name filter
+        filter_names = []
+        if metadata_name_filter:
+            filter_names = [name.strip() for name in metadata_name_filter.split(',') if name.strip()]
+        
+        # Helper function to check if metadata should be included
+        def should_include_metadata(metadata_name):
+            if not filter_names:
+                return True
+            return any(filter_name.lower() in metadata_name.lower() for filter_name in filter_names)
+        
+        # Helper function to process metadata
+        def process_metadata(metadata, source_info=None):
+            if not should_include_metadata(metadata.name):
+                return False
+                
+            if unique_values_only and filter_names:
+                # Unique values mode - group by metadata name (not name_type combination)
+                base_name = metadata.name
+                if base_name not in metadata_collection['metadata_columns']:
+                    metadata_collection['metadata_columns'][base_name] = {
+                        'name': metadata.name,
+                        'types': {},  # Track different types for this metadata name
+                        'unique_values': set(),
+                        'value_count': 0
+                    }
+                
+                # Track the type
+                if metadata.type not in metadata_collection['metadata_columns'][base_name]['types']:
+                    metadata_collection['metadata_columns'][base_name]['types'][metadata.type] = 0
+                metadata_collection['metadata_columns'][base_name]['types'][metadata.type] += 1
+                
+                if metadata.value:  # Only add non-empty values
+                    metadata_collection['metadata_columns'][base_name]['unique_values'].add(metadata.value)
+                    metadata_collection['metadata_columns'][base_name]['value_count'] += 1
+            else:
+                # Standard mode - add to unique columns collection
+                column_key = f"{metadata.name}_{metadata.type}"
+                if column_key not in metadata_collection['unique_metadata_columns']:
+                    metadata_collection['unique_metadata_columns'][column_key] = {
+                        'name': metadata.name,
+                        'type': metadata.type,
+                        'occurrences': 0,
+                        'sources': []
+                    }
+                
+                metadata_collection['unique_metadata_columns'][column_key]['occurrences'] += 1
+                if source_info:
+                    metadata_collection['unique_metadata_columns'][column_key]['sources'].append(source_info)
+            
+            return True
+        
+        # Initialize response structure based on mode
+        if unique_values_only and filter_names:
+            # For unique values mode, use a simpler structure
+            metadata_collection = {
+                'project_id': project.id,
+                'project_name': project.project_name,
+                'filter_applied': filter_names,
+                'unique_values_only': True,
+                'metadata_columns': {},
+                'statistics': {
+                    'filtered_columns_count': 0,
+                    'total_unique_values': 0
+                }
+            }
+        else:
+            # Standard full collection mode
+            metadata_collection = {
+                'project_id': project.id,
+                'project_name': project.project_name,
+                'filter_applied': filter_names if filter_names else None,
+                'unique_values_only': False,
+                'metadata_sources': {
+                    'protocol_step_annotations': [],
+                    'session_annotations': [],
+                    'stored_reagent_annotations': []
+                },
+                'unique_metadata_columns': {},
+                'statistics': {
+                    'total_metadata_columns': 0,
+                    'unique_column_names': 0,
+                    'sources_count': {
+                        'protocol_steps': 0,
+                        'sessions': 0,
+                        'stored_reagents': 0
+                    }
+                }
+            }
+        
+        try:
+            print(f"SDRF Collection Debug: Starting collection for project {project.id}")
+            # Get all sessions in this project
+            project_sessions = project.sessions.all()
+            print(f"SDRF Collection Debug: Found {project_sessions.count()} sessions")
+            
+            # 1. Collect metadata from protocol step annotations
+            for session in project_sessions:
+                for annotation in session.annotations.all():
+                    if annotation.step:  # This is a protocol step annotation
+                        step_metadata = annotation.metadata_columns.all()
+                        if step_metadata.exists():
+                            if unique_values_only and filter_names:
+                                # Unique values mode - collect only values for filtered columns
+                                for metadata in step_metadata:
+                                    process_metadata(metadata)
+                            else:
+                                # Standard mode - collect full details
+                                step_data = {
+                                    'session_id': session.id,
+                                    'session_name': session.name,
+                                    'step_id': annotation.step.id,
+                                    'annotation_id': annotation.id,
+                                    'annotation_type': annotation.annotation_type,
+                                    'metadata_columns': []
+                                }
+                                
+                                for metadata in step_metadata:
+                                    source_info = {
+                                        'type': 'protocol_step',
+                                        'session_id': session.id,
+                                        'step_id': annotation.step.id,
+                                        'annotation_id': annotation.id
+                                    }
+                                    
+                                    if process_metadata(metadata, source_info):
+                                        metadata_info = {
+                                            'id': metadata.id,
+                                            'name': metadata.name,
+                                            'type': metadata.type,
+                                            'value': metadata.value,
+                                            'column_position': metadata.column_position,
+                                            'mandatory': metadata.mandatory,
+                                            'hidden': metadata.hidden,
+                                            'auto_generated': metadata.auto_generated,
+                                            'readonly': metadata.readonly,
+                                            'modifiers': metadata.modifiers,
+                                            'created_at': metadata.created_at,
+                                            'updated_at': metadata.updated_at
+                                        }
+                                        step_data['metadata_columns'].append(metadata_info)
+                                
+                                if step_data['metadata_columns']:
+                                    metadata_collection['metadata_sources']['protocol_step_annotations'].append(step_data)
+                                    metadata_collection['statistics']['sources_count']['protocol_steps'] += 1
+            
+            # 2. Collect metadata from session annotations (not linked to specific steps)
+            for session in project_sessions:
+                for annotation in session.annotations.filter(step__isnull=True):
+                    session_metadata = annotation.metadata_columns.all()
+                    if session_metadata.exists():
+                        session_data = {
+                            'session_id': session.id,
+                            'session_name': session.name,
+                            'annotation_id': annotation.id,
+                            'annotation_type': annotation.annotation_type,
+                            'metadata_columns': []
+                        }
+                        
+                        for metadata in session_metadata:
+                            metadata_info = {
+                                'id': metadata.id,
+                                'name': metadata.name,
+                                'type': metadata.type,
+                                'value': metadata.value,
+                                'column_position': metadata.column_position,
+                                'mandatory': metadata.mandatory,
+                                'hidden': metadata.hidden,
+                                'auto_generated': metadata.auto_generated,
+                                'readonly': metadata.readonly,
+                                'modifiers': metadata.modifiers,
+                                'created_at': metadata.created_at,
+                                'updated_at': metadata.updated_at
+                            }
+                            session_data['metadata_columns'].append(metadata_info)
+                            
+                            # Add to unique columns collection
+                            column_key = f"{metadata.name}_{metadata.type}"
+                            if column_key not in metadata_collection['unique_metadata_columns']:
+                                metadata_collection['unique_metadata_columns'][column_key] = {
+                                    'name': metadata.name,
+                                    'type': metadata.type,
+                                    'occurrences': 0,
+                                    'sources': []
+                                }
+                            
+                            metadata_collection['unique_metadata_columns'][column_key]['occurrences'] += 1
+                            metadata_collection['unique_metadata_columns'][column_key]['sources'].append({
+                                'type': 'session_annotation',
+                                'session_id': session.id,
+                                'annotation_id': annotation.id
+                            })
+                        
+                        if session_data['metadata_columns']:
+                            metadata_collection['metadata_sources']['session_annotations'].append(session_data)
+                            metadata_collection['statistics']['sources_count']['sessions'] += 1
+            
+            # 3. Collect metadata from stored reagents used in project sessions
+            stored_reagents_with_metadata = set()
+            for session in project_sessions:
+                # Get stored reagents from session annotations
+                for annotation in session.annotations.all():
+                    if annotation.stored_reagent:
+                        stored_reagents_with_metadata.add(annotation.stored_reagent.id)
+                
+                # Also check if any protocol steps in this session reference stored reagents through reagent actions
+                for protocol in session.protocols.all():
+                    for step in protocol.steps.all():
+                        for step_reagent in step.reagents.all():
+                            # Get reagent actions for this step reagent
+                            for reagent_action in step_reagent.reagent_actions.all():
+                                if reagent_action.reagent:  # reagent_action.reagent is a StoredReagent
+                                    stored_reagents_with_metadata.add(reagent_action.reagent.id)
+            
+            # Collect metadata from identified stored reagents
+            for reagent_id in stored_reagents_with_metadata:
+                try:
+                    stored_reagent = StoredReagent.objects.get(id=reagent_id)
+                    reagent_metadata = stored_reagent.metadata_columns.all()
+                    
+                    if reagent_metadata.exists():
+                        reagent_data = {
+                            'stored_reagent_id': stored_reagent.id,
+                            'reagent_name': stored_reagent.reagent.name if stored_reagent.reagent else 'Unknown',
+                            'storage_location': str(stored_reagent.storage_object) if stored_reagent.storage_object else 'Unknown',
+                            'metadata_columns': []
+                        }
+                        
+                        for metadata in reagent_metadata:
+                            metadata_info = {
+                                'id': metadata.id,
+                                'name': metadata.name,
+                                'type': metadata.type,
+                                'value': metadata.value,
+                                'column_position': metadata.column_position,
+                                'mandatory': metadata.mandatory,
+                                'hidden': metadata.hidden,
+                                'auto_generated': metadata.auto_generated,
+                                'readonly': metadata.readonly,
+                                'modifiers': metadata.modifiers,
+                                'created_at': metadata.created_at,
+                                'updated_at': metadata.updated_at
+                            }
+                            reagent_data['metadata_columns'].append(metadata_info)
+                            
+                            # Add to unique columns collection
+                            column_key = f"{metadata.name}_{metadata.type}"
+                            if column_key not in metadata_collection['unique_metadata_columns']:
+                                metadata_collection['unique_metadata_columns'][column_key] = {
+                                    'name': metadata.name,
+                                    'type': metadata.type,
+                                    'occurrences': 0,
+                                    'sources': []
+                                }
+                            
+                            metadata_collection['unique_metadata_columns'][column_key]['occurrences'] += 1
+                            metadata_collection['unique_metadata_columns'][column_key]['sources'].append({
+                                'type': 'stored_reagent',
+                                'stored_reagent_id': stored_reagent.id
+                            })
+                        
+                        if reagent_data['metadata_columns']:
+                            metadata_collection['metadata_sources']['stored_reagent_annotations'].append(reagent_data)
+                            metadata_collection['statistics']['sources_count']['stored_reagents'] += 1
+                            
+                except StoredReagent.DoesNotExist:
+                    continue
+            
+            # Calculate final statistics and prepare response
+            if unique_values_only and filter_names:
+                # Convert sets to lists for JSON serialization and calculate statistics
+                total_unique_values = 0
+                for base_name, column_data in metadata_collection['metadata_columns'].items():
+                    column_data['unique_values'] = sorted(list(column_data['unique_values']))
+                    total_unique_values += len(column_data['unique_values'])
+                
+                metadata_collection['statistics']['filtered_columns_count'] = len(metadata_collection['metadata_columns'])
+                metadata_collection['statistics']['total_unique_values'] = total_unique_values
+            else:
+                # Standard mode statistics
+                total_metadata_count = 0
+                if 'metadata_sources' in metadata_collection:
+                    for source_type in metadata_collection['metadata_sources'].values():
+                        for source in source_type:
+                            total_metadata_count += len(source['metadata_columns'])
+                
+                metadata_collection['statistics']['total_metadata_columns'] = total_metadata_count
+                metadata_collection['statistics']['unique_column_names'] = len(metadata_collection['unique_metadata_columns'])
+            
+            return Response(metadata_collection, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            import traceback
+            error_details = {
+                'error': f'Failed to collect SDRF metadata: {str(e)}',
+                'error_type': type(e).__name__,
+                'traceback': traceback.format_exc(),
+                'project_id': project.id,
+                'filter_applied': filter_names,
+                'unique_values_only': unique_values_only
+            }
+            print(f"SDRF Collection Error: {error_details}")  # For debugging
+            return Response(error_details, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 class InstrumentViewSet(ModelViewSet, FilterMixin):
     permission_classes = [InstrumentViewSetPermission]
@@ -6437,143 +6768,206 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                 pool_pooled_column.save()
 
     def _create_basic_pool_metadata(self, pool, instrument_job):
-        """Create basic metadata for pools without template sample"""
+        """Create ALL metadata columns for pools inheriting default values from main table"""
         # Get all metadata columns for this instrument job
         user_metadata_columns = list(instrument_job.user_metadata.all())
         staff_metadata_columns = list(instrument_job.staff_metadata.all())
         
-        # Create a Source Name column for the pool with the pool name
-        source_name_column = None
-        for metadata_column in user_metadata_columns + staff_metadata_columns:
+        # Create ALL user metadata columns for the pool
+        for metadata_column in user_metadata_columns:
+            # Skip pooled sample column as it's added separately to staff metadata
+            if metadata_column.name.lower() in ['pooled sample', 'pooled_sample']:
+                continue
+                
+            # Determine the value based on column type - use main table defaults except for special cases
             if metadata_column.name.lower() in ['source name', 'source_name']:
-                source_name_column = metadata_column
-                break
-        
-        if source_name_column:
-            # Create a Source Name column for the pool with the pool name as value
-            pool_source_name_column = MetadataColumn.objects.create(
-                name=source_name_column.name,
-                type=source_name_column.type,
-                value=pool.pool_name,
-                mandatory=source_name_column.mandatory,
-                hidden=source_name_column.hidden,
-                readonly=source_name_column.readonly
+                column_value = pool.pool_name  # Pool name as source name
+            elif metadata_column.name.lower() in ['assay name', 'assay_name']:
+                # Calculate run number: sample_count + pool_number (pools are numbered sequentially)
+                pool_count = instrument_job.sample_pools.filter(id__lte=pool.id).count()
+                run_number = instrument_job.sample_number + pool_count
+                column_value = f"run {run_number}"
+            else:
+                # Use the default value from the main table
+                column_value = metadata_column.value
+            
+            # Create a copy of the metadata column for the pool
+            pool_metadata_column = MetadataColumn.objects.create(
+                name=metadata_column.name,
+                type=metadata_column.type,
+                value=column_value,
+                mandatory=metadata_column.mandatory,
+                hidden=metadata_column.hidden,
+                readonly=metadata_column.readonly,
+                column_position=metadata_column.column_position,
+                not_applicable=metadata_column.not_applicable,
+                auto_generated=metadata_column.auto_generated,
+                modifiers=metadata_column.modifiers
             )
             
-            # Add to pool's user metadata or staff metadata based on original
-            if source_name_column in user_metadata_columns:
-                pool.user_metadata.add(pool_source_name_column)
-            else:
-                pool.staff_metadata.add(pool_source_name_column)
+            # Add to pool's user metadata
+            pool.user_metadata.add(pool_metadata_column)
         
-        # Create a Pooled sample column for the pool with the SDRF value
-        pool_pooled_column = MetadataColumn.objects.create(
-            name="Pooled sample",
-            type="Characteristics",
-            value=pool.sdrf_value,
-            mandatory=False
+        # Create ALL staff metadata columns for the pool
+        for metadata_column in staff_metadata_columns:
+            # Determine the value based on column type - use main table defaults except for special cases
+            if metadata_column.name.lower() in ['pooled sample', 'pooled_sample']:
+                column_value = pool.sdrf_value  # Always use pool-specific SDRF value, never inherit from main table
+            elif metadata_column.name.lower() in ['source name', 'source_name']:
+                column_value = pool.pool_name  # Pool name as source name
+            elif metadata_column.name.lower() in ['assay name', 'assay_name']:
+                # Calculate run number: sample_count + pool_number (pools are numbered sequentially)
+                pool_count = instrument_job.sample_pools.filter(id__lte=pool.id).count()
+                run_number = instrument_job.sample_number + pool_count
+                column_value = f"run {run_number}"
+            else:
+                # Use the default value from the main table
+                column_value = metadata_column.value
+            
+            # Create a copy of the metadata column for the pool
+            pool_metadata_column = MetadataColumn.objects.create(
+                name=metadata_column.name,
+                type=metadata_column.type,
+                value=column_value,
+                mandatory=metadata_column.mandatory,
+                hidden=metadata_column.hidden,
+                readonly=metadata_column.readonly,
+                column_position=metadata_column.column_position,
+                not_applicable=metadata_column.not_applicable,
+                auto_generated=metadata_column.auto_generated,
+                modifiers=metadata_column.modifiers
+            )
+            
+            # Add to pool's staff metadata
+            pool.staff_metadata.add(pool_metadata_column)
+        
+        # If no pooled sample column exists in staff metadata, create one
+        pooled_sample_exists = any(
+            col.name.lower() in ['pooled sample', 'pooled_sample'] 
+            for col in staff_metadata_columns
         )
         
-        # Add to pool's staff metadata
-        pool.staff_metadata.add(pool_pooled_column)
+        if not pooled_sample_exists:
+            # Create a Pooled sample column for the pool with the SDRF value
+            pool_pooled_column = MetadataColumn.objects.create(
+                name="Pooled sample",
+                type="Characteristics",
+                value=pool.sdrf_value,
+                mandatory=False,
+                hidden=False,
+                readonly=False,
+                column_position=999,  # Put at end
+                not_applicable=False,
+                auto_generated=True
+            )
+            
+            # Add to pool's staff metadata
+            pool.staff_metadata.add(pool_pooled_column)
 
     def _copy_metadata_from_template_sample(self, pool, instrument_job):
-        """Copy metadata from the template sample to the pool"""
+        """Copy ALL metadata from template sample to pool, creating complete metadata structure"""
         import json
         
         template_sample_index = pool.template_sample
         if not template_sample_index:
+            # Fallback to basic metadata creation if no template
+            self._create_basic_pool_metadata(pool, instrument_job)
             return
         
         # Get all metadata columns for this instrument job
         user_metadata_columns = list(instrument_job.user_metadata.all())
         staff_metadata_columns = list(instrument_job.staff_metadata.all())
         
-        # First, create a Source Name column for the pool with the pool name
-        source_name_column = None
-        for metadata_column in user_metadata_columns + staff_metadata_columns:
+        # Create ALL user metadata columns for the pool
+        for metadata_column in user_metadata_columns:
+            # Skip pooled sample column as it's added separately to staff metadata
+            if metadata_column.name.lower() in ['pooled sample', 'pooled_sample']:
+                continue
+                
+            # Determine the value based on column type and template
             if metadata_column.name.lower() in ['source name', 'source_name']:
-                source_name_column = metadata_column
-                break
-        
-        if source_name_column:
-            # Create a Source Name column for the pool with the pool name as value
-            pool_source_name_column = MetadataColumn.objects.create(
-                name=source_name_column.name,
-                type=source_name_column.type,
-                value=pool.pool_name,
-                mandatory=source_name_column.mandatory,
-                hidden=source_name_column.hidden,
-                readonly=source_name_column.readonly
+                column_value = pool.pool_name  # Pool name as source name
+            elif metadata_column.name.lower() in ['assay name', 'assay_name']:
+                # Calculate run number: sample_count + pool_number (pools are numbered sequentially)
+                pool_count = instrument_job.sample_pools.filter(id__lte=pool.id).count()
+                run_number = instrument_job.sample_number + pool_count
+                column_value = f"run {run_number}"
+            else:
+                # Get the value for the template sample from this metadata column
+                column_value = self._get_sample_metadata_value(metadata_column, template_sample_index) or ""
+            
+            # Create a copy of ALL metadata columns for the pool (not just ones with values)
+            pool_metadata_column = MetadataColumn.objects.create(
+                name=metadata_column.name,
+                type=metadata_column.type,
+                value=column_value,
+                mandatory=metadata_column.mandatory,
+                hidden=metadata_column.hidden,
+                readonly=metadata_column.readonly,
+                column_position=metadata_column.column_position,
+                not_applicable=metadata_column.not_applicable,
+                auto_generated=metadata_column.auto_generated,
+                modifiers=metadata_column.modifiers
             )
             
-            # Add to pool's user metadata or staff metadata based on original
-            if source_name_column in user_metadata_columns:
-                pool.user_metadata.add(pool_source_name_column)
-            else:
-                pool.staff_metadata.add(pool_source_name_column)
+            # Add to pool's user metadata
+            pool.user_metadata.add(pool_metadata_column)
         
-        # Create a Pooled sample column for the pool with the SDRF value
-        pool_pooled_column = MetadataColumn.objects.create(
-            name="Pooled sample",
-            type="Characteristics",
-            value=pool.sdrf_value,
-            mandatory=False
+        # Create ALL staff metadata columns for the pool
+        for metadata_column in staff_metadata_columns:
+            # Determine the value based on column type and template
+            if metadata_column.name.lower() in ['pooled sample', 'pooled_sample']:
+                column_value = pool.sdrf_value  # Always use pool-specific SDRF value, never inherit from template
+            elif metadata_column.name.lower() in ['source name', 'source_name']:
+                column_value = pool.pool_name  # Pool name as source name
+            elif metadata_column.name.lower() in ['assay name', 'assay_name']:
+                # Calculate run number: sample_count + pool_number (pools are numbered sequentially)
+                pool_count = instrument_job.sample_pools.filter(id__lte=pool.id).count()
+                run_number = instrument_job.sample_number + pool_count
+                column_value = f"run {run_number}"
+            else:
+                # Get the value for the template sample from this metadata column
+                column_value = self._get_sample_metadata_value(metadata_column, template_sample_index) or ""
+            
+            # Create a copy of ALL metadata columns for the pool (not just ones with values)
+            pool_metadata_column = MetadataColumn.objects.create(
+                name=metadata_column.name,
+                type=metadata_column.type,
+                value=column_value,
+                mandatory=metadata_column.mandatory,
+                hidden=metadata_column.hidden,
+                readonly=metadata_column.readonly,
+                column_position=metadata_column.column_position,
+                not_applicable=metadata_column.not_applicable,
+                auto_generated=metadata_column.auto_generated,
+                modifiers=metadata_column.modifiers
+            )
+            
+            # Add to pool's staff metadata
+            pool.staff_metadata.add(pool_metadata_column)
+        
+        # If no pooled sample column exists in staff metadata, create one
+        pooled_sample_exists = any(
+            col.name.lower() in ['pooled sample', 'pooled_sample'] 
+            for col in staff_metadata_columns
         )
         
-        # Add to pool's staff metadata
-        pool.staff_metadata.add(pool_pooled_column)
-        
-        # Copy user metadata columns
-        for metadata_column in user_metadata_columns:
-            # Skip Source Name and Pooled sample columns - pools should have their own unique values
-            if metadata_column.name.lower() in ['source name', 'source_name', 'pooled sample']:
-                continue
-                
-            # Get the value for the template sample from this metadata column
-            template_value = self._get_sample_metadata_value(metadata_column, template_sample_index)
+        if not pooled_sample_exists:
+            # Create a Pooled sample column for the pool with the SDRF value
+            pool_pooled_column = MetadataColumn.objects.create(
+                name="Pooled sample",
+                type="Characteristics",
+                value=pool.sdrf_value,
+                mandatory=False,
+                hidden=False,
+                readonly=False,
+                column_position=999,  # Put at end
+                not_applicable=False,
+                auto_generated=True
+            )
             
-            if template_value:
-                # Create a new metadata column specifically for the pool
-                # This column is only associated with the pool, not the instrument
-                pool_metadata_column = MetadataColumn.objects.create(
-                    name=metadata_column.name,
-                    type=metadata_column.type,
-                    value=template_value,
-                    mandatory=metadata_column.mandatory,
-                    hidden=metadata_column.hidden,
-                    readonly=metadata_column.readonly,
-                    modifiers=metadata_column.modifiers
-                )
-                
-                # Add to pool's user metadata
-                pool.user_metadata.add(pool_metadata_column)
-        
-        # Copy staff metadata columns
-        for metadata_column in staff_metadata_columns:
-            # Skip Source Name and Pooled sample columns - pools should have their own unique values
-            if metadata_column.name.lower() in ['source name', 'source_name', 'pooled sample']:
-                continue
-                
-            # Get the value for the template sample from this metadata column
-            template_value = self._get_sample_metadata_value(metadata_column, template_sample_index)
-            
-            if template_value:
-                # Create a new metadata column for the pool with the template value
-                # Use a more specific filter to avoid duplicates
-                pool_metadata_column = MetadataColumn.objects.create(
-                    instrument=instrument_job.instrument,
-                    name=metadata_column.name,
-                    type=metadata_column.type,
-                    value=template_value,
-                    mandatory=metadata_column.mandatory,
-                    hidden=metadata_column.hidden,
-                    readonly=metadata_column.readonly,
-                    modifiers=metadata_column.modifiers
-                )
-                
-                # Add to pool's staff metadata
-                pool.staff_metadata.add(pool_metadata_column)
+            # Add to pool's staff metadata
+            pool.staff_metadata.add(pool_pooled_column)
     
     def _get_sample_metadata_value(self, metadata_column, sample_index):
         """Get the metadata value for a specific sample from a metadata column"""
@@ -6661,6 +7055,7 @@ class InstrumentJobViewSets(FilterMixin, ModelViewSet):
                     continue
         
         return indices
+
 
 class FavouriteMetadataOptionViewSets(FilterMixin, ModelViewSet):
     serializer_class = FavouriteMetadataOptionSerializer
@@ -11285,3 +11680,68 @@ class SamplePoolViewSet(ModelViewSet):
                     pass
         
         return indices
+
+    @action(detail=True, methods=['patch'])
+    def update_metadata(self, request, pk=None):
+        """Update a specific metadata column for this pool"""
+        pool = self.get_object()
+        
+        # Check permissions via the parent instrument job
+        has_permission, is_staff_user = self._check_instrument_job_permissions(
+            pool.instrument_job, request.user, 'write'
+        )
+        
+        if not has_permission:
+            return Response(
+                {'error': 'You do not have permission to update metadata for this pool'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Get the metadata column data from request
+        metadata_column_id = request.data.get('metadata_column_id')
+        new_value = request.data.get('value', '')
+        
+        if not metadata_column_id:
+            return Response(
+                {'error': 'metadata_column_id is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Find the metadata column in the pool's metadata
+            metadata_column = None
+            
+            # Check user metadata first
+            if pool.user_metadata.filter(id=metadata_column_id).exists():
+                metadata_column = pool.user_metadata.get(id=metadata_column_id)
+            # Then check staff metadata
+            elif pool.staff_metadata.filter(id=metadata_column_id).exists():
+                metadata_column = pool.staff_metadata.get(id=metadata_column_id)
+            
+            if not metadata_column:
+                return Response(
+                    {'error': 'Metadata column not found in this pool'}, 
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Update the metadata column value
+            metadata_column.value = new_value
+            metadata_column.save()
+            
+            # Special handling for pool name updates
+            if metadata_column.name.lower() in ['source name', 'source_name']:
+                pool.pool_name = new_value
+                pool.save()
+            
+            return Response({
+                'success': True,
+                'metadata_column_id': metadata_column.id,
+                'new_value': new_value,
+                'message': f'Pool metadata updated: {metadata_column.name}'
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to update metadata: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

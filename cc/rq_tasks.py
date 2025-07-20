@@ -2053,6 +2053,41 @@ def add_pool_rows_to_sdrf(result, pools, data_type):
     return [headers] + data_rows
 
 
+def sort_pool_metadata(metadata_list, pools):
+    """Sort metadata specifically for pools - pools are indexed 0, 1, 2... in the pools list"""
+    headers = []
+    id_metadata_column_map = {}
+    
+    if not metadata_list:
+        return {"data": [], "headers": []}, {}
+    
+    pool_count = len(pools)
+    col_count = len(metadata_list)
+    data = [["" for i in range(col_count)] for j in range(pool_count)]
+    
+    for col_idx, m in enumerate(metadata_list):
+        headers.append(m.name if m.type == "Characteristics" else m.name)
+        
+        # Fill default value for all pools
+        for pool_idx in range(pool_count):
+            data[pool_idx][col_idx] = m.value if m.value else ""
+        
+        # Apply modifiers if they exist (though pools typically don't use modifiers)
+        if m.modifiers:
+            for modifier in m.modifiers:
+                # Pool modifiers would need special handling if they exist
+                # For now, we'll skip modifiers for pools since they're entity-level metadata
+                pass
+        
+        id_metadata_column_map[m.id] = {
+            "column": col_idx, 
+            "name": m.name, 
+            "type": m.type.lower() if m.type else "", 
+            "hidden": m.hidden
+        }
+    
+    return [headers, *data], id_metadata_column_map
+
 def sort_metadata(metadata: list[MetadataColumn]|QuerySet, sample_number: int):
     id_metadata_column_map = {}
     headers = []
@@ -2750,6 +2785,7 @@ def _synchronize_pools_with_import_data(instrument_job, import_pools_data, metad
     # Get existing pools for this instrument job
     existing_pools = SamplePool.objects.filter(instrument_job=instrument_job)
     existing_pool_names = {pool.pool_name: pool for pool in existing_pools}
+    existing_pool_ids = {pool.id: pool for pool in existing_pools}
     
     # Track pools found in import data
     import_pool_names = {pool_data['pool_name'] for pool_data in import_pools_data}
@@ -2757,10 +2793,17 @@ def _synchronize_pools_with_import_data(instrument_job, import_pools_data, metad
     # Process each pool from import data
     for pool_data in import_pools_data:
         pool_name = pool_data['pool_name']
+        pool_id = pool_data.get('pool_id')
+        existing_pool = None
         
-        if pool_name in existing_pool_names:
-            # Update existing pool
+        # Try to find existing pool by ID first (more reliable), then by name
+        if pool_id and pool_id in existing_pool_ids:
+            existing_pool = existing_pool_ids[pool_id]
+        elif pool_name in existing_pool_names:
             existing_pool = existing_pool_names[pool_name]
+        
+        if existing_pool:
+            # Update existing pool
             
             # Update pool properties
             existing_pool.pooled_only_samples = pool_data['pooled_only_samples']
@@ -3230,16 +3273,15 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
     # Check for pools and prepare pool data
     pools = list(SamplePool.objects.filter(instrument_job=instrument_job))
     has_pools = len(pools) > 0
+    all_pools = pools  # Excel export includes all pools (archive of all job data)
     pool_result_main, pool_id_map_main = [], {}
     pool_result_hidden, pool_id_map_hidden = [], {}
     
     if has_pools:
-        # Get all pool metadata (only reference pools for export)
-        reference_pools = [pool for pool in pools if pool.is_reference]
-        if reference_pools:
+        if all_pools:
             # Combine all pool metadata
             all_pool_metadata = []
-            for pool in reference_pools:
+            for pool in all_pools:
                 if export_type == "user_metadata":
                     all_pool_metadata.extend(list(pool.user_metadata.all()))
                 elif export_type == "staff_metadata":
@@ -3260,9 +3302,9 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
             pool_hidden_metadata = [m for m in unique_pool_metadata if m.hidden]
             
             if pool_main_metadata:
-                pool_result_main, pool_id_map_main = sort_metadata(pool_main_metadata, len(reference_pools))
+                pool_result_main, pool_id_map_main = sort_pool_metadata(pool_main_metadata, all_pools)
             if pool_hidden_metadata:
-                pool_result_hidden, pool_id_map_hidden = sort_metadata(pool_hidden_metadata, len(reference_pools))
+                pool_result_hidden, pool_id_map_hidden = sort_pool_metadata(pool_hidden_metadata, all_pools)
 
     # get favourites for each metadata column
     favourites = {}
@@ -3295,11 +3337,13 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
     pool_main_ws = None
     pool_hidden_ws = None
     pool_id_metadata_column_map_ws = None
+    pool_object_map_ws = None
     
-    if has_pools and reference_pools:
+    if has_pools and all_pools:
         pool_main_ws = wb.create_sheet(title="pool_main")
         pool_hidden_ws = wb.create_sheet(title="pool_hidden") 
         pool_id_metadata_column_map_ws = wb.create_sheet(title="pool_id_metadata_column_map")
+        pool_object_map_ws = wb.create_sheet(title="pool_object_map")
     # fill in the id_metadata_column_map_ws with 3 columns: id, name, type
     id_metadata_column_map_ws.append(["id", "column", "name", "type", "hidden"])
 
@@ -3309,12 +3353,23 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
         id_metadata_column_map_ws.append([k, v["column"], v["name"], v["type"], v["hidden"]])
     
     # Fill pool ID mapping if pools exist
-    if has_pools and reference_pools and pool_id_metadata_column_map_ws:
+    if has_pools and all_pools and pool_id_metadata_column_map_ws:
         pool_id_metadata_column_map_ws.append(["id", "column", "name", "type", "hidden"])
         for k, v in pool_id_map_main.items():
             pool_id_metadata_column_map_ws.append([k, v["column"], v["name"], v["type"], v["hidden"]])
         for k, v in pool_id_map_hidden.items():
             pool_id_metadata_column_map_ws.append([k, v["column"], v["name"], v["type"], v["hidden"]])
+        
+        # Fill pool object mapping sheet
+        pool_object_map_ws.append(["pool_id", "pool_name", "is_reference", "pooled_only_samples", "pooled_and_independent_samples"])
+        for pool in all_pools:
+            pool_object_map_ws.append([
+                pool.id,
+                pool.pool_name,
+                pool.is_reference,
+                ",".join(map(str, pool.pooled_only_samples)),
+                ",".join(map(str, pool.pooled_and_independent_samples))
+            ])
 
     fill = PatternFill(start_color="FFFF99", end_color="FFFF99", fill_type="solid")
     thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'),
@@ -3384,10 +3439,10 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
                 hidden_ws.column_dimensions[column].width = adjusted_width
 
     # Populate pool worksheets if pools exist
-    if has_pools and reference_pools and pool_main_ws and len(pool_result_main) > 0:
+    if has_pools and all_pools and pool_main_ws and len(pool_result_main) > 0:
         # Pool main worksheet
         pool_main_ws.append(pool_result_main[0])
-        pool_main_work_area = f"A1:{get_column_letter(len(pool_result_main[0]))}{len(reference_pools) + 1}"
+        pool_main_work_area = f"A1:{get_column_letter(len(pool_result_main[0]))}{len(all_pools) + 1}"
         
         for row in pool_result_main[1:]:
             pool_main_ws.append(row)
@@ -3411,13 +3466,13 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
             
         # Add notes for pool main worksheet
         pool_note_texts = [
-            "Note: Pool metadata for reference pools only.",
+            "Note: Pool metadata for all pools (both reference and non-reference).",
             "[*] User-specific favourite options.",
             "[**] Facility-recommended options.", 
             "[***] Global recommendations."
         ]
         
-        pool_start_row = len(reference_pools) + 2
+        pool_start_row = len(all_pools) + 2
         for i, note_text in enumerate(pool_note_texts):
             pool_main_ws.merge_cells(start_row=pool_start_row + i, start_column=1, 
                                    end_row=pool_start_row + i, end_column=len(pool_result_main[0]))
@@ -3427,7 +3482,7 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
             
         # Pool hidden worksheet
         if len(pool_result_hidden) > 0:
-            pool_hidden_work_area = f"A1:{get_column_letter(len(pool_result_hidden[0]))}{len(reference_pools) + 1}"
+            pool_hidden_work_area = f"A1:{get_column_letter(len(pool_result_hidden[0]))}{len(all_pools) + 1}"
             if len(pool_result_hidden) > 1:
                 pool_hidden_ws.append(pool_result_hidden[0])
                 for row in pool_result_hidden[1:]:
@@ -3517,7 +3572,7 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
             dv.add(f"{col_letter}2:{col_letter}{instrument_job.sample_number + 1}")
 
     # Add dropdown validation for pool worksheets
-    if has_pools and reference_pools and pool_main_ws and len(pool_result_main) > 0:
+    if has_pools and all_pools and pool_main_ws and len(pool_result_main) > 0:
         # Pool main worksheet dropdowns
         for i, header in enumerate(pool_result_main[0]):
             name_splitted = pool_result_main[0][i].split("[")
@@ -3550,7 +3605,7 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
             )
             col_letter = get_column_letter(i + 1)
             pool_main_ws.add_data_validation(dv)
-            dv.add(f"{col_letter}2:{col_letter}{len(reference_pools) + 1}")
+            dv.add(f"{col_letter}2:{col_letter}{len(all_pools) + 1}")
             
         # Pool hidden worksheet dropdowns
         if len(pool_result_hidden) > 1:
@@ -3585,7 +3640,7 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
                 )
                 col_letter = get_column_letter(i + 1)
                 pool_hidden_ws.add_data_validation(dv)
-                dv.add(f"{col_letter}2:{col_letter}{len(reference_pools) + 1}")
+                dv.add(f"{col_letter}2:{col_letter}{len(all_pools) + 1}")
 
     # save the file
     filename = str(uuid.uuid4())
@@ -3693,12 +3748,14 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
     pool_main_ws = None
     pool_hidden_ws = None
     pool_id_metadata_column_map_ws = None
+    pool_object_map_ws = None
     pool_main_headers = []
     pool_main_data = []
     pool_hidden_headers = []
     pool_hidden_data = []
     pool_id_metadata_column_map_list = []
     pool_id_metadata_column_map = {}
+    pool_object_map_data = []
     
     if "pool_main" in wb.sheetnames:
         pool_main_ws = wb["pool_main"]
@@ -3719,6 +3776,12 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
         for row in pool_id_metadata_column_map_list:
             if row[0] is not None:  # Check for valid ID
                 pool_id_metadata_column_map[int(row[0])] = {"column": row[1], "name": row[2], "type": row[3], "hidden": row[4]}
+    
+    # Read pool object mapping sheet
+    if "pool_object_map" in wb.sheetnames:
+        pool_object_map_ws = wb["pool_object_map"]
+        if pool_object_map_ws.max_row > 1:
+            pool_object_map_data = [list(row) for row in pool_object_map_ws.iter_rows(min_row=2, values_only=True)]
 
     instrument_job = InstrumentJob.objects.get(id=instrument_job_id)
     
@@ -4023,8 +4086,8 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
     if pool_main_headers and pool_main_data:
         _import_pool_data_from_excel(instrument_job, pool_main_headers, pool_main_data, 
                                    pool_hidden_headers, pool_hidden_data,
-                                   pool_id_metadata_column_map, data_type, 
-                                   field_mask_map, user_id)
+                                   pool_id_metadata_column_map, pool_object_map_data, 
+                                   data_type, field_mask_map, user_id)
 
     channel_layer = get_channel_layer()
     # notify user through channels that it has completed
@@ -4043,8 +4106,8 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
 
 def _import_pool_data_from_excel(instrument_job, pool_main_headers, pool_main_data,
                                pool_hidden_headers, pool_hidden_data,
-                               pool_id_metadata_column_map, data_type, 
-                               field_mask_map, user_id):
+                               pool_id_metadata_column_map, pool_object_map_data, 
+                               data_type, field_mask_map, user_id):
     """
     Import pool data from Excel sheets
     """
@@ -4096,12 +4159,31 @@ def _import_pool_data_from_excel(instrument_job, pool_main_headers, pool_main_da
     # Extract pool information and create/update pools
     pools_to_import = []
     
+    # Create pool info from pool object mapping data
+    pool_object_info = {}
+    if pool_object_map_data:
+        for row in pool_object_map_data:
+            if len(row) >= 5:  # Ensure we have all required columns
+                pool_id = row[0] if row[0] is not None else None
+                pool_name = row[1] if row[1] is not None else ""
+                is_reference = row[2] if row[2] is not None else False
+                pooled_only_samples = [int(x.strip()) for x in str(row[3]).split(',') if x.strip().isdigit()] if row[3] else []
+                pooled_and_independent_samples = [int(x.strip()) for x in str(row[4]).split(',') if x.strip().isdigit()] if row[4] else []
+                
+                pool_object_info[pool_name] = {
+                    'pool_id': pool_id,
+                    'pool_name': pool_name,
+                    'is_reference': is_reference,
+                    'pooled_only_samples': pooled_only_samples,
+                    'pooled_and_independent_samples': pooled_and_independent_samples
+                }
+    
     for row_index, row in enumerate(pool_data):
         pool_info = {
             'pool_name': None,
             'pooled_only_samples': [],
             'pooled_and_independent_samples': [],
-            'is_reference': True,  # Pool sheets only contain reference pools
+            'is_reference': False,
             'metadata': {}
         }
         
@@ -4112,17 +4194,16 @@ def _import_pool_data_from_excel(instrument_job, pool_main_headers, pool_main_da
                 
                 # Handle special columns
                 if column.name.lower() == 'source name':
-                    pool_info['pool_name'] = value if value else f"Pool {row_index + 1}"
-                elif column.name.lower() == 'pooled sample' and value and value.startswith('SN='):
-                    # Extract sample information from SN= value
-                    source_names = value[3:].split(',')
-                    source_names = [name.strip() for name in source_names if name.strip()]
+                    pool_name = value if value else f"Pool {row_index + 1}"
+                    pool_info['pool_name'] = pool_name
                     
-                    # Map source names to sample indices (this requires finding samples by source name)
-                    for source_name in source_names:
-                        sample_index = _find_sample_index_by_source_name(instrument_job, source_name)
-                        if sample_index:
-                            pool_info['pooled_only_samples'].append(sample_index)
+                    # Get pool object information from mapping
+                    if pool_name in pool_object_info:
+                        obj_info = pool_object_info[pool_name]
+                        pool_info['pool_id'] = obj_info.get('pool_id')
+                        pool_info['is_reference'] = obj_info.get('is_reference', False)
+                        pool_info['pooled_only_samples'] = obj_info.get('pooled_only_samples', [])
+                        pool_info['pooled_and_independent_samples'] = obj_info.get('pooled_and_independent_samples', [])
                 
                 # Store metadata value
                 if value is not None and value != "":
@@ -4171,14 +4252,20 @@ def _import_pool_data_from_excel(instrument_job, pool_main_headers, pool_main_da
     # Use the existing synchronization logic to update pools
     import_pools_data = []
     for pool_info in pools_to_import:
-        import_pools_data.append({
+        pool_data = {
             'pool_name': pool_info['pool_name'],
             'pooled_only_samples': pool_info['pooled_only_samples'],
             'pooled_and_independent_samples': pool_info['pooled_and_independent_samples'],
             'is_reference': pool_info['is_reference'],
             'metadata_row': [pool_info['metadata'].get(i, "") for i in range(len(pool_metadata_columns))],
             'sn_value': _generate_sn_value_from_samples(instrument_job, pool_info['pooled_only_samples'])
-        })
+        }
+        
+        # Add pool_id if available for direct updates
+        if 'pool_id' in pool_info and pool_info['pool_id']:
+            pool_data['pool_id'] = pool_info['pool_id']
+            
+        import_pools_data.append(pool_data)
     
     # Use existing synchronization function
     _synchronize_pools_with_import_data(instrument_job, import_pools_data, pool_metadata_columns,

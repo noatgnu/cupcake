@@ -13,3 +13,4 @@ docker-compose.cloudflared.yml
 *.sqlite3
 /backups
 *.csv
+*.img

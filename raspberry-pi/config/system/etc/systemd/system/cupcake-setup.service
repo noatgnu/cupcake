@@ -1,0 +1,17 @@
+[Unit]
+Description=CUPCAKE Initial Setup Service
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/var/lib/cupcake/setup-complete
+
+[Service]
+Type=oneshot
+ExecStart=/opt/cupcake/scripts/setup.sh
+RemainAfterExit=yes
+TimeoutSec=1800
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

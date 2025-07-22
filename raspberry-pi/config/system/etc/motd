@@ -1,0 +1,35 @@
+██████╗██╗   ██╗██████╗  ██████╗ █████╗ ██╗  ██╗███████╗
+██╔════╝██║   ██║██╔══██╗██╔════╝██╔══██╗██║ ██╔╝██╔════╝
+██║     ██║   ██║██████╔╝██║     ███████║█████╔╝ █████╗  
+██║     ██║   ██║██╔═══╝ ██║     ██╔══██║██╔═██╗ ██╔══╝  
+╚██████╗╚██████╔╝██║     ╚██████╗██║  ██║██║  ██╗███████╗
+ ╚═════╝ ╚═════╝ ╚═╝      ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝
+
+🥧 Raspberry Pi 5 Edition - Laboratory Management System
+
+Web Interface: http://cupcake-pi.local
+Dashboard:     http://cupcake-pi.local/dashboard
+Admin Panel:   http://cupcake-pi.local/admin
+
+Quick Commands:
+  System Status: sudo systemctl status cupcake-*
+  View Logs:     sudo journalctl -f -u cupcake-web
+  Resources:     htop
+  Temperature:   vcgencmd measure_temp
+  Disk Usage:    df -h
+  Memory:        free -h
+
+Configuration:
+  CUPCAKE:       /opt/cupcake/
+  Logs:          /var/log/cupcake/
+  Backups:       /opt/cupcake/backups/
+  
+Service Management:
+  Restart Web:   sudo systemctl restart cupcake-web
+  Restart DB:    sudo systemctl restart postgresql
+  View Status:   /opt/cupcake/scripts/monitoring.sh
+
+Security Reminder:
+⚠️  Change default passwords immediately after first login!
+
+Documentation: /opt/cupcake/README.md

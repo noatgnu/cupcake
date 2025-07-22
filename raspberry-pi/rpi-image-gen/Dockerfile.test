@@ -1,0 +1,285 @@
+# Simple test Dockerfile for CUPCAKE rpi-image-gen configuration
+# Tests configuration validity without installing build dependencies
+
+FROM ubuntu:22.04
+
+# Install minimal dependencies for testing
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-yaml \
+    bash \
+    grep \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create working directory
+WORKDIR /workspace
+
+# Copy CUPCAKE configuration files
+COPY . /workspace/
+
+# Create comprehensive test script
+RUN cat > test-config.sh << 'EOF'
+#!/bin/bash
+set -e
+
+echo "=== CUPCAKE rpi-image-gen Configuration Test ==="
+
+echo "1. Checking main configuration file..."
+if [ -f cupcake-pi5-config.ini ]; then
+    echo "✓ cupcake-pi5-config.ini exists"
+    
+    # Check for Pi 5 specific settings
+    if grep -q "device_tree = bcm2712-rpi-5-b.dtb" cupcake-pi5-config.ini; then
+        echo "✓ Pi 5 device tree configured"
+    else
+        echo "✗ Pi 5 device tree missing"
+        exit 1
+    fi
+    
+    if grep -q "arm_64bit = 1" cupcake-pi5-config.ini; then
+        echo "✓ ARM64 mode enabled"
+    else
+        echo "✗ ARM64 mode not enabled"
+        exit 1
+    fi
+    
+    if grep -q "dtparam = pcie_gen=3" cupcake-pi5-config.ini; then
+        echo "✓ PCIe Gen 3 configured for NVMe"
+    else
+        echo "✗ PCIe Gen 3 not configured"
+        exit 1
+    fi
+    
+    if grep -q "collections = cupcake-packages" cupcake-pi5-config.ini; then
+        echo "✓ CUPCAKE package collection referenced"
+    else
+        echo "✗ Package collection not referenced"
+        exit 1
+    fi
+    
+else
+    echo "✗ cupcake-pi5-config.ini missing"
+    exit 1
+fi
+
+echo
+echo "2. Checking package collection..."
+if [ -f collections/cupcake-packages.yaml ]; then
+    echo "✓ cupcake-packages.yaml exists"
+    
+    # Test YAML syntax
+    python3 -c "
+import yaml
+import sys
+
+try:
+    with open('collections/cupcake-packages.yaml') as f:
+        data = yaml.safe_load(f)
+    
+    # Check structure
+    required_sections = ['base', 'network', 'development', 'database', 'webserver', 'security']
+    missing_sections = []
+    
+    for section in required_sections:
+        if section not in data:
+            missing_sections.append(section)
+    
+    if missing_sections:
+        print(f'✗ Missing package sections: {missing_sections}')
+        sys.exit(1)
+    else:
+        print('✓ All required package sections found')
+    
+    # Check for critical packages
+    all_packages = str(data)
+    critical_packages = ['postgresql-14', 'nginx', 'redis-server', 'python3', 'git']
+    missing_packages = []
+    
+    for pkg in critical_packages:
+        if pkg not in all_packages:
+            missing_packages.append(pkg)
+    
+    if missing_packages:
+        print(f'✗ Missing critical packages: {missing_packages}')
+        sys.exit(1)
+    else:
+        print('✓ All critical packages included')
+        
+except yaml.YAMLError as e:
+    print(f'✗ YAML syntax error: {e}')
+    sys.exit(1)
+except Exception as e:
+    print(f'✗ Error processing YAML: {e}')
+    sys.exit(1)
+"
+    
+else
+    echo "✗ collections/cupcake-packages.yaml missing"
+    exit 1
+fi
+
+echo
+echo "3. Checking hook scripts..."
+if [ -d hooks ]; then
+    hook_count=0
+    for hook in hooks/*.sh; do
+        if [ -f "$hook" ]; then
+            hook_count=$((hook_count + 1))
+            if [ -x "$hook" ]; then
+                echo "✓ $(basename $hook) is executable"
+            else
+                echo "✗ $(basename $hook) is not executable"
+                exit 1
+            fi
+            
+            # Check syntax
+            if bash -n "$hook"; then
+                echo "✓ $(basename $hook) syntax is valid"
+            else
+                echo "✗ $(basename $hook) has syntax errors"
+                exit 1
+            fi
+        fi
+    done
+    
+    if [ $hook_count -ge 5 ]; then
+        echo "✓ Found $hook_count hook scripts"
+    else
+        echo "✗ Expected at least 5 hook scripts, found $hook_count"
+        exit 1
+    fi
+else
+    echo "✗ hooks directory missing"
+    exit 1
+fi
+
+echo
+echo "4. Checking overlay scripts..."
+if [ -d overlays/cupcake/opt/cupcake/scripts ]; then
+    script_count=0
+    for script in overlays/cupcake/opt/cupcake/scripts/*.sh; do
+        if [ -f "$script" ]; then
+            script_count=$((script_count + 1))
+            if [ -x "$script" ]; then
+                echo "✓ $(basename $script) is executable"
+            else
+                echo "✗ $(basename $script) is not executable"
+                exit 1
+            fi
+            
+            # Check syntax
+            if bash -n "$script"; then
+                echo "✓ $(basename $script) syntax is valid"
+            else
+                echo "✗ $(basename $script) has syntax errors"
+                exit 1
+            fi
+        fi
+    done
+    
+    if [ $script_count -ge 2 ]; then
+        echo "✓ Found $script_count overlay scripts"
+    else
+        echo "✗ Expected at least 2 overlay scripts, found $script_count"
+        exit 1
+    fi
+else
+    echo "✗ overlays/cupcake/opt/cupcake/scripts directory missing"
+    exit 1
+fi
+
+echo
+echo "5. Checking build script..."
+if [ -f build-cupcake-image.sh ]; then
+    if [ -x build-cupcake-image.sh ]; then
+        echo "✓ build-cupcake-image.sh is executable"
+    else
+        echo "✗ build-cupcake-image.sh is not executable"
+        exit 1
+    fi
+    
+    if bash -n build-cupcake-image.sh; then
+        echo "✓ build-cupcake-image.sh syntax is valid"
+    else
+        echo "✗ build-cupcake-image.sh has syntax errors"
+        exit 1
+    fi
+    
+    # Check for key functionality
+    if grep -q "rpi-image-gen" build-cupcake-image.sh; then
+        echo "✓ References rpi-image-gen correctly"
+    else
+        echo "✗ Does not reference rpi-image-gen"
+        exit 1
+    fi
+else
+    echo "✗ build-cupcake-image.sh missing"
+    exit 1
+fi
+
+echo
+echo "6. Testing hook script content..."
+
+# Check system setup hook
+if grep -q "cupcake user" hooks/01-system-setup.sh; then
+    echo "✓ System setup creates cupcake user"
+else
+    echo "✗ System setup does not create cupcake user"
+    exit 1
+fi
+
+# Check Python setup hook
+if grep -q "python3 -m venv" hooks/02-python-setup.sh; then
+    echo "✓ Python setup creates virtual environment"
+else
+    echo "✗ Python setup does not create virtual environment"
+    exit 1
+fi
+
+# Check database setup hook
+if grep -q "postgresql" hooks/03-database-setup.sh && grep -q "redis" hooks/03-database-setup.sh; then
+    echo "✓ Database setup configures PostgreSQL and Redis"
+else
+    echo "✗ Database setup incomplete"
+    exit 1
+fi
+
+# Check web server setup hook
+if grep -q "nginx" hooks/04-webserver-setup.sh; then
+    echo "✓ Web server setup configures Nginx"
+else
+    echo "✗ Web server setup incomplete"
+    exit 1
+fi
+
+# Check NVMe optimization hook
+if grep -q "nvme" hooks/05-nvme-optimization.sh; then
+    echo "✓ NVMe optimization configured"
+else
+    echo "✗ NVMe optimization missing"
+    exit 1
+fi
+
+echo
+echo "=== Test Results ==="
+echo "✓ Configuration file structure is correct"
+echo "✓ Package collection is valid and complete"
+echo "✓ All hook scripts are present and executable"
+echo "✓ Overlay scripts are properly configured"
+echo "✓ Build script is ready to use"
+echo "✓ All hook scripts contain required functionality"
+echo
+echo "🎉 CUPCAKE rpi-image-gen configuration is READY for building!"
+echo
+echo "To build the image on a Raspberry Pi with 64-bit OS:"
+echo "1. Copy this entire directory to the Pi"
+echo "2. Run: ./build-cupcake-image.sh"
+echo "3. Wait 30-60 minutes for completion"
+echo "4. Flash the resulting .img file to storage"
+EOF
+
+RUN chmod +x test-config.sh
+
+# Run the test by default
+CMD ["./test-config.sh"]

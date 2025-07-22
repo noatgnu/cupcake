@@ -1,0 +1,148 @@
+
+# CUPCAKE Package Collection for rpi-image-gen
+# Defines all packages needed for CUPCAKE laboratory management system
+
+name: cupcake-packages
+description: "Packages required for CUPCAKE laboratory management system on Raspberry Pi 5"
+
+# Base system packages
+base:
+  - systemd
+  - systemd-sysv
+  - udev
+  - apt-utils
+  - ca-certificates
+  - curl
+  - wget
+  - gnupg
+  - lsb-release
+  - software-properties-common
+
+# Network and SSH
+network:
+  - openssh-server
+  - openssh-client
+  - network-manager
+  - wireless-regdb
+  - wpasupplicant
+  - rfkill
+
+# Development tools
+development:
+  - git
+  - build-essential
+  - python3
+  - python3-pip
+  - python3-venv
+  - python3-dev
+  - nodejs
+  - npm
+  - cmake
+  - pkg-config
+
+# Database systems
+database:
+  - postgresql-14
+  - postgresql-client-14
+  - postgresql-contrib-14
+  - redis-server
+  - redis-tools
+
+# Web server and reverse proxy
+webserver:
+  - nginx
+  - certbot
+  - python3-certbot-nginx
+
+# Security and firewall
+security:
+  - ufw
+  - fail2ban
+  - sudo
+  - cron
+
+# System monitoring and utilities
+monitoring:
+  - htop
+  - iotop
+  - ncdu
+  - tree
+  - vim
+  - nano
+  - tmux
+  - screen
+
+# Python packages (via pip in hooks)
+python_packages:
+  - Django>=4.2,<5.0
+  - djangorestframework
+  - django-cors-headers
+  - psycopg2-binary
+  - redis
+  - celery
+  - gunicorn
+  - uvicorn
+  - channels
+  - channels-redis
+  - flask
+  - werkzeug
+  - requests
+
+# Audio/Video processing and speech recognition
+multimedia:
+  - ffmpeg
+  - libavcodec-extra
+  - gstreamer1.0-tools
+  - gstreamer1.0-plugins-base
+  - gstreamer1.0-plugins-good
+  - alsa-utils
+  - pulseaudio
+  - sox
+
+# Whisper.cpp build dependencies
+whisper_build:
+  - cmake
+  - make
+  - g++
+  - libopenblas-dev
+  - pkg-config
+
+# NVMe and storage optimization
+storage:
+  - nvme-cli
+  - smartmontools
+  - hdparm
+  - e2fsprogs
+  - dosfstools
+
+# Laboratory specific tools
+laboratory:
+  - imagemagick
+  - ghostscript
+  - poppler-utils
+  - tesseract-ocr
+  - tesseract-ocr-eng
+
+# Container support (optional for development)
+containers:
+  - docker.io
+  - docker-compose
+
+# Raspberry Pi specific
+rpi_specific:
+  - raspi-config
+  - rpi-update
+  - libraspberrypi-bin
+  - firmware-brcm80211
+
+# Cleanup packages to remove
+remove:
+  - wolfram-engine
+  - libreoffice*
+  - minecraft-pi
+  - sonic-pi
+  - scratch*
+  - nuscratch
+  - timidity
+  - smartsim
+  - java-common

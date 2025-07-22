@@ -139,18 +139,67 @@ class MetadataTableTemplateTest(TestCase):
     
     def test_template_field_mask_mapping(self):
         """Test field mask mapping functionality"""
+        mapping_data = [
+            {'name': 'sample_id', 'mask': 'Sample ID'},
+            {'name': 'concentration', 'mask': 'Concentration (mg/mL)'},
+            {'name': 'date_analyzed', 'mask': 'Analysis Date'}
+        ]
+        
         template = MetadataTableTemplate.objects.create(
             name='Mapped Template',
             user=self.user,
-            field_mask_mapping=json.dumps({
-                'sample_id': 'Sample ID',
-                'concentration': 'Concentration (mg/mL)',
-                'date_analyzed': 'Analysis Date'
-            })
+            field_mask_mapping=json.dumps(mapping_data)
         )
         
-        self.assertIn('sample_id', template.field_mask_mapping)
-        self.assertEqual(json.loads(template.field_mask_mapping)['sample_id'], 'Sample ID')
+        parsed_mapping = json.loads(template.field_mask_mapping)
+        self.assertEqual(len(parsed_mapping), 3)
+        
+        # Check each mapping entry
+        sample_id_mapping = next(m for m in parsed_mapping if m['name'] == 'sample_id')
+        self.assertEqual(sample_id_mapping['mask'], 'Sample ID')
+        
+        concentration_mapping = next(m for m in parsed_mapping if m['name'] == 'concentration')
+        self.assertEqual(concentration_mapping['mask'], 'Concentration (mg/mL)')
+    
+    def test_template_field_mask_mapping_empty(self):
+        """Test template with empty field mask mapping"""
+        template = MetadataTableTemplate.objects.create(
+            name='No Mapping Template',
+            user=self.user,
+            field_mask_mapping=None
+        )
+        
+        self.assertIsNone(template.field_mask_mapping)
+    
+    def test_template_field_mask_mapping_json_structure(self):
+        """Test field mask mapping with complex JSON structure"""
+        complex_mapping = [
+            {
+                'name': 'organism_part',
+                'mask': 'Organism Part',
+                'description': 'SDRF organism part field',
+                'required': True
+            },
+            {
+                'name': 'disease',
+                'mask': 'Disease',
+                'description': 'SDRF disease field',
+                'required': False
+            }
+        ]
+        
+        template = MetadataTableTemplate.objects.create(
+            name='Complex Mapping Template',
+            user=self.user,
+            field_mask_mapping=json.dumps(complex_mapping)
+        )
+        
+        parsed_mapping = json.loads(template.field_mask_mapping)
+        organism_mapping = next(m for m in parsed_mapping if m['name'] == 'organism_part')
+        
+        self.assertEqual(organism_mapping['mask'], 'Organism Part')
+        self.assertEqual(organism_mapping['description'], 'SDRF organism part field')
+        self.assertTrue(organism_mapping['required'])
 
 
 class PresetTest(TestCase):

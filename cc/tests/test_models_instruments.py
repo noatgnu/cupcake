@@ -9,7 +9,7 @@ from datetime import timedelta, datetime
 from cc.models import (
     Instrument, InstrumentUsage, InstrumentPermission, InstrumentJob,
     MaintenanceLog, SupportInformation, LabGroup, AnnotationFolder,
-    MetadataColumn, MetadataTableTemplate
+    MetadataColumn, MetadataTableTemplate, SamplePool, Project
 )
 
 
@@ -226,6 +226,12 @@ class InstrumentJobTest(TestCase):
             description='A test lab group'
         )
         self.lab_group.users.add(self.user)
+        
+        self.project = Project.objects.create(
+            project_name='Test Project',
+            project_description='Test project for instrument jobs',
+            owner=self.user
+        )
     
     def test_instrument_job_creation(self):
         """Test basic instrument job creation"""
@@ -233,7 +239,9 @@ class InstrumentJobTest(TestCase):
             instrument=self.instrument,
             user=self.user,
             service_lab_group=self.lab_group,
-            job_type='analysis'
+            project=self.project,
+            job_type='analysis',
+            sample_number=5
         )
         
         self.assertEqual(job.instrument, self.instrument)
@@ -250,6 +258,7 @@ class InstrumentJobTest(TestCase):
                 instrument=self.instrument,
                 user=self.user,
                 service_lab_group=self.lab_group,
+                project=self.project,
                 job_type='analysis'
             )
             # Note: status field might be read-only or have different behavior
@@ -265,6 +274,7 @@ class InstrumentJobTest(TestCase):
                 instrument=self.instrument,
                 user=self.user,
                 service_lab_group=self.lab_group,
+                project=self.project,
                 job_type=job_type
             )
             self.assertEqual(job.job_type, job_type)
@@ -275,6 +285,7 @@ class InstrumentJobTest(TestCase):
             instrument=self.instrument,
             user=self.user,
             service_lab_group=self.lab_group,
+            project=self.project,
             job_type='analysis'
         )
         
@@ -294,6 +305,7 @@ class InstrumentJobTest(TestCase):
             instrument=self.instrument,
             user=self.user,
             service_lab_group=self.lab_group,
+            project=self.project,
             job_type='analysis',
             selected_template=template
         )
@@ -306,6 +318,7 @@ class InstrumentJobTest(TestCase):
             instrument=self.instrument,
             user=self.user,
             service_lab_group=self.lab_group,
+            project=self.project,
             job_type='analysis'
         )
         
@@ -313,6 +326,95 @@ class InstrumentJobTest(TestCase):
         # Just verify the job was created successfully
         self.assertIsNotNone(job.id)
         self.assertEqual(job.job_type, 'analysis')
+    
+    def test_instrument_job_sample_pools(self):
+        """Test sample pool creation and management for instrument jobs"""
+        job = InstrumentJob.objects.create(
+            instrument=self.instrument,
+            user=self.user,
+            service_lab_group=self.lab_group,
+            project=self.project,
+            job_type='analysis',
+            sample_number=10
+        )
+        
+        # Create sample pools
+        pool1 = SamplePool.objects.create(
+            instrument_job=job,
+            pool_name='Pool A',
+            pool_description='First pool of samples',
+            pooled_only_samples=[1, 2, 3],
+            is_reference=True,
+            created_by=self.user
+        )
+        
+        pool2 = SamplePool.objects.create(
+            instrument_job=job,
+            pool_name='Pool B',
+            pool_description='Second pool of samples',
+            pooled_only_samples=[4, 5],
+            pooled_and_independent_samples=[6, 7],
+            created_by=self.user
+        )
+        
+        # Test relationship from job to pools
+        job_pools = job.sample_pools.all()
+        self.assertEqual(job_pools.count(), 2)
+        self.assertIn(pool1, job_pools)
+        self.assertIn(pool2, job_pools)
+        
+        # Test pool properties
+        self.assertEqual(pool1.total_samples_count, 3)
+        self.assertEqual(pool2.total_samples_count, 4)
+        self.assertTrue(pool1.is_reference)
+        self.assertFalse(pool2.is_reference)
+        
+        # Test SDRF values
+        self.assertIn('SN=', pool1.sdrf_value)
+        self.assertIn('SN=', pool2.sdrf_value)
+    
+    def test_instrument_job_pool_metadata_inheritance(self):
+        """Test that pools can inherit metadata from instrument job"""
+        job = InstrumentJob.objects.create(
+            instrument=self.instrument,
+            user=self.user,
+            service_lab_group=self.lab_group,
+            project=self.project,
+            job_type='analysis',
+            sample_number=8
+        )
+        
+        # Create metadata for the job
+        job_metadata = MetadataColumn.objects.create(
+            name='Sample Type',
+            value='Protein Extract',
+            type='choice'
+        )
+        job.user_metadata.add(job_metadata)
+        
+        # Create pool
+        pool = SamplePool.objects.create(
+            instrument_job=job,
+            pool_name='Inheritance Test Pool',
+            pooled_only_samples=[1, 2, 3],
+            created_by=self.user
+        )
+        
+        # Create pool-specific metadata
+        pool_metadata = MetadataColumn.objects.create(
+            name='Pool Concentration',
+            value='2.5 mg/mL',
+            type='text'
+        )
+        pool.user_metadata.add(pool_metadata)
+        
+        # Verify metadata relationships
+        self.assertIn(job_metadata, job.user_metadata.all())
+        self.assertIn(pool_metadata, pool.user_metadata.all())
+        
+        # Pool should have access to its own metadata
+        self.assertEqual(pool.user_metadata.count(), 1)
+        self.assertEqual(pool.user_metadata.first().name, 'Pool Concentration')
 
 
 class MaintenanceLogTest(TestCase):
@@ -401,6 +503,12 @@ class InstrumentIntegrationTest(TestCase):
             description='Test lab group'
         )
         self.lab_group.users.add(self.user)
+        
+        self.project = Project.objects.create(
+            project_name='Integration Test Project',
+            project_description='Test project for integration testing',
+            owner=self.user
+        )
     
     def test_complete_instrument_workflow(self):
         """Test complete workflow from permission to usage to job"""
@@ -437,6 +545,7 @@ class InstrumentIntegrationTest(TestCase):
             instrument=self.instrument,
             user=self.user,
             service_lab_group=self.lab_group,
+            project=self.project,
             job_type='analysis'
         )
         

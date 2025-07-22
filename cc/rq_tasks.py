@@ -2876,10 +2876,52 @@ def _create_pool_metadata_from_import(pool, pool_data, metadata_columns,
             )
         else:
             # Create other metadata columns from the row
+            raw_value = row[col_index] if col_index < len(row) else ""
+            processed_value = raw_value
+            
+            # Process marker values for pools (same logic as main import)
+            if raw_value and isinstance(raw_value, str):
+                name = metadata_column.name.lower()
+                if raw_value.endswith("[*]"):
+                    processed_value = raw_value.replace("[*]", "")
+                    # Try to find user favourite value
+                    value_query = FavouriteMetadataOption.objects.filter(
+                        user_id=pool.instrument_job.user.id, 
+                        name=name, 
+                        display_value=processed_value, 
+                        service_lab_group__isnull=True, 
+                        lab_group__isnull=True
+                    )
+                    if value_query.exists():
+                        processed_value = value_query.first().value
+                elif raw_value.endswith("[**]"):
+                    processed_value = raw_value.replace("[**]", "")
+                    # Try to find facility recommendation value
+                    value_query = FavouriteMetadataOption.objects.filter(
+                        name=name, 
+                        service_lab_group=pool.instrument_job.service_lab_group, 
+                        display_value=processed_value
+                    )
+                    if value_query.exists():
+                        processed_value = value_query.first().value
+                elif raw_value.endswith("[***]"):
+                    processed_value = raw_value.replace("[***]", "")
+                    # Try to find global recommendation value
+                    value_query = FavouriteMetadataOption.objects.filter(
+                        name=name, 
+                        is_global=True, 
+                        display_value=processed_value
+                    )
+                    if value_query.exists():
+                        processed_value = value_query.first().value
+                elif raw_value.endswith("[****]"):
+                    # Project suggestion - just strip the marker
+                    processed_value = raw_value.replace("[****]", "")
+            
             pool_metadata_column = MetadataColumn.objects.create(
                 name=metadata_column.name,
                 type=metadata_column.type,
-                value=row[col_index] if col_index < len(row) else "",
+                value=processed_value,
                 mandatory=metadata_column.mandatory,
                 hidden=metadata_column.hidden,
                 readonly=metadata_column.readonly
@@ -3325,6 +3367,70 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
         if r.name.lower() not in favourites:
             favourites[r.name.lower()] = []
         favourites[r.name.lower()].append(f"{r.display_value}[***]")
+
+    # Get project suggestions for metadata columns
+    if instrument_job.project:
+        try:
+            # Use the same logic as the sdrf_metadata_collection endpoint
+            project_sessions = Session.objects.filter(session_name__startswith=instrument_job.project.project_name)
+            
+            # Collect all metadata from project sources
+            project_metadata = set()
+            
+            # From protocol step annotations
+            for session in project_sessions:
+                for protocol in session.protocols.all():
+                    for step in protocol.steps.all():
+                        for annotation in step.annotations.all():
+                            if annotation.value:
+                                project_metadata.add((annotation.name.lower(), annotation.value))
+            
+            # From session annotations  
+            for session in project_sessions:
+                for annotation in session.annotations.all():
+                    if annotation.value:
+                        project_metadata.add((annotation.name.lower(), annotation.value))
+            
+            # From stored reagent annotations
+            stored_reagents_with_metadata = set()
+            for session in project_sessions:
+                for annotation in session.annotations.all():
+                    if annotation.stored_reagent:
+                        stored_reagents_with_metadata.add(annotation.stored_reagent.id)
+                        
+                for protocol in session.protocols.all():
+                    for step in protocol.steps.all():
+                        for step_reagent in step.reagents.all():
+                            for reagent_action in step_reagent.reagent_actions.all():
+                                if reagent_action.reagent:
+                                    stored_reagents_with_metadata.add(reagent_action.reagent.id)
+            
+            for reagent_id in stored_reagents_with_metadata:
+                try:
+                    stored_reagent = StoredReagent.objects.get(id=reagent_id)
+                    for annotation in stored_reagent.annotations.all():
+                        if annotation.value:
+                            project_metadata.add((annotation.name.lower(), annotation.value))
+                except StoredReagent.DoesNotExist:
+                    continue
+            
+            # Group unique values by metadata name and add to favourites with [****] formatting
+            project_suggestions = {}
+            for name_lower, value in project_metadata:
+                if name_lower not in project_suggestions:
+                    project_suggestions[name_lower] = set()
+                project_suggestions[name_lower].add(value)
+            
+            # Add project suggestions to favourites
+            for name_lower, unique_values in project_suggestions.items():
+                if name_lower not in favourites:
+                    favourites[name_lower] = []
+                # Add unique project suggestions with [****] marker
+                for value in sorted(unique_values):  # Sort for consistent ordering
+                    favourites[name_lower].append(f"{value}[****]")
+                    
+        except Exception as e:
+            print(f"Error collecting project suggestions for Excel export: {e}")
 
     # based on column name from result, contruct an excel file with the appropriate rows beside the header row where the cell with the same name in favourite can have preset selection options dropdown related to that column
     wb = Workbook()
@@ -3985,6 +4091,10 @@ def import_excel(annotation_id: int, user_id: int, instrument_job_id: int, insta
                 value_query = FavouriteMetadataOption.objects.filter(name=name, is_global=True, display_value=value)
                 if value_query.exists():
                     value = value_query.first().value
+                value = convert_sdrf_to_metadata(name, value)
+            elif data[j][i].endswith("[****]"):
+                # Project suggestion - just strip the marker and use the value directly
+                value = data[j][i].replace("[****]", "")
                 value = convert_sdrf_to_metadata(name, value)
             else:
                 value = convert_sdrf_to_metadata(name, data[j][i])

@@ -14,3 +14,4 @@ docker-compose.cloudflared.yml
 /backups
 *.csv
 *.img
+*.zip

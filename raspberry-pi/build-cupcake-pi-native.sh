@@ -77,18 +77,23 @@ progress() { echo -e "${CYAN}[PROGRESS]${NC} $1"; }
 cleanup() {
     log "Cleaning up build environment..."
     
-    if [ -n "$LOOP_DEVICE" ] && [ -e "$LOOP_DEVICE" ]; then
-        sudo umount "${LOOP_DEVICE}p1" 2>/dev/null || true
-        sudo umount "${LOOP_DEVICE}p2" 2>/dev/null || true
-        sudo losetup -d "$LOOP_DEVICE" 2>/dev/null || true
-    fi
-    
     if [ -d "$MOUNT_DIR" ]; then
+        # Unmount bind mounts first
+        sudo umount "$MOUNT_DIR/dev/pts" 2>/dev/null || true
+        sudo umount "$MOUNT_DIR/dev" 2>/dev/null || true
+        sudo umount "$MOUNT_DIR/sys" 2>/dev/null || true
+        sudo umount "$MOUNT_DIR/proc" 2>/dev/null || true
         sudo umount "$MOUNT_DIR/boot" 2>/dev/null || true
         sudo umount "$MOUNT_DIR" 2>/dev/null || true
         sudo rm -rf "$MOUNT_DIR" 2>/dev/null || true
     fi
     
+    if [ -n "$LOOP_DEVICE" ] && [ -e "$LOOP_DEVICE" ]; then
+        sudo umount "${LOOP_DEVICE}p1" 2>/dev/null || true
+        sudo umount "${LOOP_DEVICE}p2" 2>/dev/null || true
+        sudo losetup -d "$LOOP_DEVICE" 2>/dev/null || true
+    fi
+
     # Clean up temporary files
     rm -f "$BUILD_DIR"/*.tmp 2>/dev/null || true
 }
@@ -310,6 +315,13 @@ mount_image() {
     sudo mount "${LOOP_DEVICE}p2" "$MOUNT_DIR"
     sudo mount "${LOOP_DEVICE}p1" "$MOUNT_DIR/boot"
     
+    # Bind mount essential filesystems for chroot operations
+    progress "Setting up chroot environment..."
+    sudo mount --bind /proc "$MOUNT_DIR/proc"
+    sudo mount --bind /sys "$MOUNT_DIR/sys"
+    sudo mount --bind /dev "$MOUNT_DIR/dev"
+    sudo mount --bind /dev/pts "$MOUNT_DIR/dev/pts"
+
     info "Image mounted at $MOUNT_DIR (native ARM64 - no emulation needed)"
 }
 
@@ -321,8 +333,10 @@ install_base_system() {
     progress "Updating package database..."
     sudo chroot "$MOUNT_DIR" /bin/bash -c "
         export DEBIAN_FRONTEND=noninteractive
-        apt-get update
-        apt-get upgrade -y
+        export APT_LISTCHANGES_FRONTEND=none
+        export NEEDRESTART_MODE=a
+        apt-get update -qq
+        apt-get upgrade -y -qq -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold'
     "
     
     # Install packages appropriate for Pi model
@@ -348,7 +362,9 @@ install_base_system() {
     progress "Installing essential packages..."
     sudo chroot "$MOUNT_DIR" /bin/bash -c "
         export DEBIAN_FRONTEND=noninteractive
-        apt-get install -y $packages
+        export APT_LISTCHANGES_FRONTEND=none
+        export NEEDRESTART_MODE=a
+        apt-get install -y -qq $packages -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold'
     "
     
     log "Base system packages installed"
@@ -811,9 +827,12 @@ finalize_image() {
     # Clean up package cache and temporary files
     progress "Cleaning up..."
     sudo chroot "$MOUNT_DIR" /bin/bash -c "
-        apt-get autoremove -y
-        apt-get autoclean
-        apt-get clean
+        export DEBIAN_FRONTEND=noninteractive
+        export APT_LISTCHANGES_FRONTEND=none
+        export NEEDRESTART_MODE=a
+        apt-get autoremove -y -qq
+        apt-get autoclean -qq
+        apt-get clean -qq
         rm -rf /var/lib/apt/lists/*
         rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
         rm -rf /var/cache/apt/* 2>/dev/null || true

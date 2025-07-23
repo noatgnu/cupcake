@@ -348,44 +348,194 @@ fi
 EOF
     chmod +x "$stage_dir/prerun.sh"
     
-    # Create the main setup script that uses our modular scripts
+    # Create the main setup script (restore working version)
     cat > "$stage_dir/01-cupcake/01-run.sh" << 'EOF'
 #!/bin/bash -e
 
-# Ensure ROOTFS_DIR is set and exists
-if [ -z "${ROOTFS_DIR}" ]; then
-    echo "Error: ROOTFS_DIR is not set"
-    exit 1
+# Copy configuration files first
+if [ -d "files" ]; then
+    cp -r files/* "${ROOTFS_DIR}/"
 fi
 
-echo "Setting up CUPCAKE in ${ROOTFS_DIR}"
-
-# Copy all files from the prepare_build stage
-if [ -d "files" ] && [ -n "${ROOTFS_DIR}" ]; then
-    echo "Copying files to ${ROOTFS_DIR}"
-    mkdir -p "${ROOTFS_DIR}"
-    find files -type f -exec cp --parents {} "${ROOTFS_DIR}/" \; 2>/dev/null || {
-        echo "Warning: Some files could not be copied"
-        if [ -d "files" ]; then
-            cd files
-            tar -cf - . | (cd "${ROOTFS_DIR}" && tar -xf -)
-            cd ..
-        fi
-    }
-fi
-
-# Run the modular installation script
+# Install system packages
 on_chroot << 'CHROOT_EOF'
-bash /opt/cupcake/scripts/install-cupcake.sh
+export DEBIAN_FRONTEND=noninteractive
+
+# Update package list
+apt-get update
+
+# Install PostgreSQL
+apt-get install -y postgresql postgresql-contrib postgresql-client
+
+# Install Redis
+apt-get install -y redis-server
+
+# Install Nginx
+apt-get install -y nginx
+
+# Install Python and essential packages for native deployment
+apt-get install -y python3 python3-pip python3-venv python3-dev
+
+# Install system dependencies for Python packages
+apt-get install -y build-essential libpq-dev libffi-dev libssl-dev
+apt-get install -y libxml2-dev libxslt1-dev libjpeg-dev zlib1g-dev
+apt-get install -y git curl wget unzip htop nvme-cli
+
+# Install Node.js for frontend builds
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt-get install -y nodejs
+
+# Build CUPCAKE Angular frontend
+echo "Building CUPCAKE Angular frontend..."
+cd /tmp
+git clone https://github.com/noatgnu/cupcake-ng.git
+cd cupcake-ng
+
+# Configure for Pi deployment (use Pi's hostname)
+sed -i 's;https://cupcake.proteo.info;http://cupcake-pi.local;g' src/environments/environment.ts
+sed -i 's;http://localhost;http://cupcake-pi.local;g' src/environments/environment.ts
+
+# Install dependencies and build
+npm install
+npm run build
+
+# Copy built frontend to nginx directory
+mkdir -p /opt/cupcake/frontend
+cp -r dist/browser/* /opt/cupcake/frontend/
+chown -R cupcake:cupcake /opt/cupcake/frontend
+
+# Clean up build directory
+cd /
+rm -rf /tmp/cupcake-ng
+
+# Clean up
+apt-get autoremove -y
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+
+CHROOT_EOF
+
+# Set permissions after copying files
+if [ -d "${ROOTFS_DIR}/opt/cupcake/scripts" ]; then
+    chmod +x "${ROOTFS_DIR}/opt/cupcake/scripts/"*
+fi
+
+# Create cupcake user and directories
+on_chroot << 'CHROOT_EOF'
+# Create cupcake user if it doesn't exist
+if ! id "cupcake" &>/dev/null; then
+    useradd -m -s /bin/bash cupcake
+    echo "cupcake:cupcake123" | chpasswd
+    usermod -aG sudo cupcake
+fi
+
+# Create required directories
+mkdir -p /var/log/cupcake
+mkdir -p /var/lib/cupcake
+mkdir -p /opt/cupcake/{data,logs,backup,media}
+
+# Set ownership
+chown -R cupcake:cupcake /opt/cupcake
+chown -R cupcake:cupcake /var/log/cupcake
+chown -R cupcake:cupcake /var/lib/cupcake
+
+# Enable services
+systemctl enable ssh
+systemctl enable postgresql
+systemctl enable redis-server
+systemctl enable nginx
+
+# Enable cupcake setup service if it exists
+if [ -f "/etc/systemd/system/cupcake-setup.service" ]; then
+    systemctl enable cupcake-setup.service
+fi
+
 CHROOT_EOF
 
 echo "CUPCAKE stage completed successfully"
-
 EOF
 
     chmod +x "$stage_dir/01-cupcake/01-run.sh"
+    
+    # Create boot configuration stage
+    mkdir -p "$stage_dir/02-boot-config"
+    
+    cat > "$stage_dir/02-boot-config/01-${PI_MODEL}-config.sh" << 'EOF'
+#!/bin/bash -e
 
-    log "Custom CUPCAKE stage created"
+# Add Pi model specific optimizations to boot config
+# Check which boot path exists
+if [ -f "${ROOTFS_DIR}/boot/firmware/config.txt" ]; then
+    BOOT_CONFIG="${ROOTFS_DIR}/boot/firmware/config.txt"
+elif [ -f "${ROOTFS_DIR}/boot/config.txt" ]; then
+    BOOT_CONFIG="${ROOTFS_DIR}/boot/config.txt"
+else
+    echo "Creating boot config file..."
+    mkdir -p "${ROOTFS_DIR}/boot/firmware"
+    BOOT_CONFIG="${ROOTFS_DIR}/boot/firmware/config.txt"
+fi
+
+EOF
+
+    # Add Pi-specific boot configurations
+    if [[ "$PI_MODEL" == "pi4" ]]; then
+        cat >> "$stage_dir/02-boot-config/01-${PI_MODEL}-config.sh" << 'EOF'
+cat >> "${BOOT_CONFIG}" << 'BOOTEOF'
+
+# CUPCAKE Pi 4 Optimizations
+arm_64bit=1
+dtparam=arm_freq=2000
+dtparam=over_voltage=2
+gpu_mem=64
+
+# Enable NVMe support
+dtparam=pciex1
+dtoverlay=pcie-32bit-dma
+
+# Disable unused interfaces
+dtparam=audio=off
+camera_auto_detect=0
+display_auto_detect=0
+
+# Memory optimizations
+disable_splash=1
+boot_delay=0
+BOOTEOF
+EOF
+    else
+        cat >> "$stage_dir/02-boot-config/01-${PI_MODEL}-config.sh" << 'EOF'
+cat >> "${BOOT_CONFIG}" << 'BOOTEOF'
+
+# CUPCAKE Pi 5 Optimizations
+arm_64bit=1
+dtparam=arm_freq=2400
+dtparam=over_voltage=2
+gpu_mem=128
+
+# Enable PCIe Gen 3 for NVMe
+dtparam=pciex1_gen=3
+dtoverlay=pcie-32bit-dma
+
+# Pi 5 specific optimizations
+dtparam=i2c_arm=off
+dtparam=spi=off
+
+# Disable unused interfaces
+dtparam=audio=off
+camera_auto_detect=0
+display_auto_detect=0
+
+# Memory and performance optimizations
+disable_splash=1
+boot_delay=0
+arm_boost=1
+BOOTEOF
+EOF
+    fi
+    
+    chmod +x "$stage_dir/02-boot-config/01-${PI_MODEL}-config.sh"
+
+    log "Custom CUPCAKE stage created with $PI_MODEL optimizations"
 }
 
 # Main build execution

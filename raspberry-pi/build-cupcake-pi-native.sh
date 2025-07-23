@@ -933,100 +933,35 @@ EOF
 configure_services() {
     log "Configuring system services for $PI_MODEL..."
     
-    # Configure PostgreSQL with Pi-appropriate settings
-    local pg_shared_buffers="128MB"
-    local pg_work_mem="4MB"
-    local pg_effective_cache="512MB"
-    
-    if [ "$PI_RAM_MB" -gt 4096 ]; then
-        pg_shared_buffers="256MB"
-        pg_work_mem="8MB"
-        pg_effective_cache="1GB"
-    elif [ "$PI_RAM_MB" -gt 7168 ]; then
-        pg_shared_buffers="512MB"
-        pg_work_mem="16MB"
-        pg_effective_cache="2GB"
-    fi
-    
+    # Copy scripts directory to the image first
+    progress "Copying configuration scripts..."
+    sudo cp -r "$CUPCAKE_DIR/raspberry-pi/scripts" "$MOUNT_DIR/opt/cupcake/"
+    sudo cp -r "$CUPCAKE_DIR/raspberry-pi/config" "$MOUNT_DIR/opt/cupcake/" 2>/dev/null || true
+    sudo chmod +x "$MOUNT_DIR/opt/cupcake/scripts/"*.sh
+    sudo chown -R cupcake:cupcake "$MOUNT_DIR/opt/cupcake/scripts" "$MOUNT_DIR/opt/cupcake/config" 2>/dev/null || true
+
+    # Configure PostgreSQL using the dedicated script
     progress "Configuring PostgreSQL..."
     sudo chroot "$MOUNT_DIR" /bin/bash -c "
-        systemctl enable postgresql
-        
-        # Configure PostgreSQL for Pi specs
-        echo 'shared_buffers = $pg_shared_buffers' >> /etc/postgresql/14/main/postgresql.conf
-        echo 'work_mem = $pg_work_mem' >> /etc/postgresql/14/main/postgresql.conf
-        echo 'effective_cache_size = $pg_effective_cache' >> /etc/postgresql/14/main/postgresql.conf
-        echo 'random_page_cost = 1.1' >> /etc/postgresql/14/main/postgresql.conf
-        
-        # Start PostgreSQL to create database
-        service postgresql start
-        
-        # Create CUPCAKE database and user
-        sudo -u postgres createuser cupcake
-        sudo -u postgres createdb cupcake_db -O cupcake
-        sudo -u postgres psql -c \\\"ALTER USER cupcake WITH PASSWORD 'cupcake123';\\\" || \\
-            sudo -u postgres psql -c \\\$'ALTER USER cupcake WITH PASSWORD \\'cupcake123\\';'
-
-        service postgresql stop
+        cd /opt/cupcake/scripts
+        ./setup-postgresql.sh
     "
     
-    # Configure Redis with Pi-appropriate settings
-    local redis_maxmem="256mb"
-    if [ "$PI_RAM_MB" -gt 4096 ]; then
-        redis_maxmem="512mb"
-    elif [ "$PI_RAM_MB" -gt 7168 ]; then
-        redis_maxmem="1gb"
-    fi
-    
+    # Configure Redis using the dedicated script
     progress "Configuring Redis..."
     sudo chroot "$MOUNT_DIR" /bin/bash -c "
-        systemctl enable redis-server
-        
-        # Optimize Redis for Pi specs
-        echo 'maxmemory $redis_maxmem' >> /etc/redis/redis.conf
-        echo 'maxmemory-policy allkeys-lru' >> /etc/redis/redis.conf
-        echo 'save 900 1' >> /etc/redis/redis.conf
-        echo 'save 300 10' >> /etc/redis/redis.conf
+        cd /opt/cupcake/scripts
+        ./setup-redis.sh
     "
     
+    # Configure Nginx using the dedicated script
     progress "Configuring Nginx..."
     sudo chroot "$MOUNT_DIR" /bin/bash -c "
-        systemctl enable nginx
-        
-        # Create CUPCAKE nginx configuration
-        cat > /etc/nginx/sites-available/cupcake << 'NGINXEOF'
-server {
-    listen 80;
-    server_name _;
-    client_max_body_size 100M;
-    
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host \\\$host;
-        proxy_set_header X-Real-IP \\\$remote_addr;
-        proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \\\$scheme;
-        proxy_read_timeout 300s;
-        proxy_connect_timeout 75s;
-    }
-    
-    location /static/ {
-        alias /opt/cupcake/staticfiles/;
-        expires 30d;
-    }
-    
-    location /media/ {
-        alias /opt/cupcake/media/;
-        expires 7d;
-    }
-}
-NGINXEOF
-        
-        ln -sf /etc/nginx/sites-available/cupcake /etc/nginx/sites-enabled/
-        rm -f /etc/nginx/sites-enabled/default
+        cd /opt/cupcake/scripts
+        ./setup-nginx.sh
     "
     
-    log "System services configured"
+    log "System services configured using dedicated scripts"
 }
 
 # Configure Pi-specific optimizations
@@ -1527,3 +1462,4 @@ main() {
 
 # Run main build process
 main "$@"
+

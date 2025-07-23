@@ -70,7 +70,21 @@ jobs:
           zip xz-utils \
           python3 python3-pip \
           binfmt-support \
-          rsync
+          rsync \
+          quilt \
+          libarchive-tools \
+          arch-test \
+          coreutils \
+          quilt \
+          parted \
+          realpath \
+          zerofree \
+          pxz \
+          tar \
+          whois \
+          grep \
+          rsync \
+          xz-utils
 
     - name: Clone and setup pi-gen
       run: |
@@ -314,7 +328,21 @@ jobs:
           zip xz-utils \
           python3 python3-pip \
           binfmt-support \
-          rsync
+          rsync \
+          quilt \
+          libarchive-tools \
+          arch-test \
+          coreutils \
+          quilt \
+          parted \
+          realpath \
+          zerofree \
+          pxz \
+          tar \
+          whois \
+          grep \
+          rsync \
+          xz-utils
 
     - name: Clone and setup pi-gen
       run: |

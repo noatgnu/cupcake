@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""CUPCAKE System Capability Detection"""
+import os
+import json
+
+def detect_pi_model():
+    try:
+        with open('/proc/cpuinfo', 'r') as f:
+            content = f.read()
+        if 'Pi 5' in content:
+            return 'Pi 5'
+        elif 'Pi 4' in content:
+            return 'Pi 4'
+        else:
+            return 'Unknown Pi'
+    except:
+        return 'Unknown'
+
+def detect_system_tier():
+    try:
+        with open('/proc/meminfo', 'r') as f:
+            mem_line = f.readline()
+            mem_kb = int(mem_line.split()[1])
+            mem_mb = mem_kb // 1024
+    except:
+        mem_mb = 2048
+
+    if mem_mb < 2048:
+        return 'low'
+    elif mem_mb < 4096:
+        return 'medium'
+    elif mem_mb < 8192:
+        return 'high'
+    else:
+        return 'ultra'
+
+def get_whisper_config():
+    tier = detect_system_tier()
+    pi_model = detect_pi_model()
+
+    configs = {
+        'low': {'model': 'ggml-tiny.en.bin', 'threads': 2},
+        'medium': {'model': 'ggml-base.en', 'threads': 3},
+        'high': {'model': 'ggml-base.en', 'threads': 4},
+        'ultra': {'model': 'ggml-small.en', 'threads': 6}
+    }
+
+    config = configs[tier]
+    config.update({
+        'binary_path': '/opt/whisper.cpp/build/bin/main',
+        'model_path': f"/opt/whisper.cpp/models/{config['model']}",
+        'system_tier': tier,
+        'pi_model': pi_model
+    })
+
+    return config
+
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) > 1:
+        if sys.argv[1] == 'tier':
+            print(detect_system_tier())
+        elif sys.argv[1] == 'model':
+            print(detect_pi_model())
+        elif sys.argv[1] == 'whisper':
+            print(json.dumps(get_whisper_config(), indent=2))
+    else:
+        config = get_whisper_config()
+        print(f"Pi Model: {config['pi_model']}")
+        print(f"System tier: {config['system_tier']}")
+        print(f"Whisper model: {config['model']}")
+        print(f"Threads: {config['threads']}")

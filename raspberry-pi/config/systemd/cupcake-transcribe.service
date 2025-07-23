@@ -1,0 +1,26 @@
+[Unit]
+Description=CUPCAKE Transcribe Worker
+After=network.target postgresql.service redis.service
+Requires=redis.service
+
+[Service]
+Type=simple
+User=cupcake
+Group=cupcake
+WorkingDirectory=/opt/cupcake/app
+Environment=PATH=/opt/cupcake/venv/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake123@localhost/cupcake_db
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+Environment=USE_WHISPER=True
+Environment=USE_OCR=True
+ExecStart=/opt/cupcake/venv/bin/python manage.py rqworker transcribe
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cupcake-transcribe
+
+[Install]
+WantedBy=multi-user.target

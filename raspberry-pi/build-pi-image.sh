@@ -361,9 +361,29 @@ EOF
     cat > "$stage_dir/01-cupcake/01-run.sh" << 'EOF'
 #!/bin/bash -e
 
+# Ensure ROOTFS_DIR is set and exists
+if [ -z "${ROOTFS_DIR}" ]; then
+    echo "Error: ROOTFS_DIR is not set"
+    exit 1
+fi
+
+echo "Setting up CUPCAKE in ${ROOTFS_DIR}"
+
 # Copy configuration files first
-if [ -d "files" ]; then
-    cp -r files/* "${ROOTFS_DIR}/"
+if [ -d "files" ] && [ -n "${ROOTFS_DIR}" ]; then
+    echo "Copying files to ${ROOTFS_DIR}"
+    # Ensure target directory exists
+    mkdir -p "${ROOTFS_DIR}"
+    # Copy files with proper error checking
+    find files -type f -exec cp --parents {} "${ROOTFS_DIR}/" \; 2>/dev/null || {
+        echo "Warning: Some files could not be copied"
+        # Try alternative copy method
+        if [ -d "files" ]; then
+            cd files
+            tar -cf - . | (cd "${ROOTFS_DIR}" && tar -xf -)
+            cd ..
+        fi
+    }
 fi
 
 # Install system packages

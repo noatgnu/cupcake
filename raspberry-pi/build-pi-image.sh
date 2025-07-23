@@ -579,7 +579,7 @@ cat > /etc/systemd/system.conf.d/whisper.conf << \\EOF
 DefaultEnvironment=WHISPERCPP_PATH=/opt/whisper.cpp/build/bin/main
 DefaultEnvironment=WHISPERCPP_DEFAULT_MODEL=\${DEFAULT_MODEL}
 DefaultEnvironment=WHISPERCPP_THREAD_COUNT=\${THREAD_COUNT}
-EOF
+\\EOF
 
 # Test the installation
 echo "Testing Whisper.cpp installation..."

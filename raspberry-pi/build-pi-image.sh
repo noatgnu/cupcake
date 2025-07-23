@@ -28,12 +28,13 @@ detect_build_dir() {
     local best_dir=""
     local max_space=0
 
-    # Check potential directories in order of preference
-    local dirs=("/build" "/opt/build" "/home/$USER/build" "/tmp/build")
+    # Check potential directories in order of preference (updated for GitHub Actions)
+    local dirs=("$HOME/build" "/tmp/build" "./build" "/opt/build")
 
     for dir in "${dirs[@]}"; do
-        if [ -d "$(dirname "$dir")" ]; then
-            local available_gb=$(df "$(dirname "$dir")" 2>/dev/null | awk 'NR==2{print int($4/1024/1024)}')
+        local parent_dir=$(dirname "$dir")
+        if [ -d "$parent_dir" ] && [ -w "$parent_dir" ]; then
+            local available_gb=$(df "$parent_dir" 2>/dev/null | awk 'NR==2{print int($4/1024/1024)}')
             if [ "$available_gb" -gt "$max_space" ]; then
                 max_space=$available_gb
                 best_dir=$dir
@@ -41,15 +42,15 @@ detect_build_dir() {
         fi
     done
 
-    # Find the mount point with most free space if none above work
-    if [ "$max_space" -lt "$required_gb" ]; then
-        best_dir=$(df -h | grep -E '^/dev' | awk '{print $6 " " int($4)}' | sort -k2 -nr | head -1 | cut -d' ' -f1)/cupcake-build
-        max_space=$(df "$best_dir" 2>/dev/null | awk 'NR==2{print int($4/1024/1024)}' || echo 0)
+    # If no suitable directory found, use current directory
+    if [ -z "$best_dir" ] || [ "$max_space" -lt "$required_gb" ]; then
+        best_dir="./cupcake-build"
+        max_space=$(df . 2>/dev/null | awk 'NR==2{print int($4/1024/1024)}' || echo 0)
     fi
 
     if [ "$max_space" -lt "$required_gb" ]; then
-        error "Need at least ${required_gb}GB free space. Found ${max_space}GB at $best_dir"
-        error "Free up space or add external storage"
+        warn "Only ${max_space}GB available, but ${required_gb}GB recommended"
+        warn "Build may fail if space runs out"
     fi
 
     echo "$best_dir"

@@ -132,21 +132,45 @@ jobs:
         # Create custom stage directory
         mkdir -p stage-cupcake/01-cupcake/files
         
-        # Copy existing raspberry-pi system configuration
-        cp -r "${GITHUB_WORKSPACE}/raspberry-pi/config/system/"* stage-cupcake/01-cupcake/files/
+        # Create stage prerun script
+        cat > stage-cupcake/prerun.sh << 'EOF'
+        #!/bin/bash -e
+        
+        # CUPCAKE Stage Prerun
+        if [ -f "${ROOTFS_DIR}/etc/systemd/system/dhcpcd.service.d/wait.conf" ]; then
+            rm -f "${ROOTFS_DIR}/etc/systemd/system/dhcpcd.service.d/wait.conf"
+        fi
+        EOF
+        chmod +x stage-cupcake/prerun.sh
+        
+        # Copy existing raspberry-pi system configuration if it exists
+        if [ -d "${GITHUB_WORKSPACE}/raspberry-pi/config/system" ]; then
+            cp -r "${GITHUB_WORKSPACE}/raspberry-pi/config/system/"* stage-cupcake/01-cupcake/files/
+        fi
         
         # Create cupcake directories in the stage
-        mkdir -p stage-cupcake/01-cupcake/files/opt/cupcake/{scripts,src,data,logs,backup,media,config}
+        mkdir -p stage-cupcake/01-cupcake/files/opt/cupcake/{scripts,src,data,logs,backup,media,config,assets}
         mkdir -p stage-cupcake/01-cupcake/files/var/log/cupcake
         mkdir -p stage-cupcake/01-cupcake/files/var/lib/cupcake
         
-        # Copy existing raspberry-pi scripts
-        cp -r "${GITHUB_WORKSPACE}/raspberry-pi/scripts/"* stage-cupcake/01-cupcake/files/opt/cupcake/scripts/
-        chmod +x stage-cupcake/01-cupcake/files/opt/cupcake/scripts/*
+        # Copy existing raspberry-pi scripts if they exist
+        if [ -d "${GITHUB_WORKSPACE}/raspberry-pi/scripts" ]; then
+            cp -r "${GITHUB_WORKSPACE}/raspberry-pi/scripts/"* stage-cupcake/01-cupcake/files/opt/cupcake/scripts/
+            chmod +x stage-cupcake/01-cupcake/files/opt/cupcake/scripts/*
+        fi
         
-        # Copy existing configuration
-        cp -r "${GITHUB_WORKSPACE}/raspberry-pi/config/nginx" stage-cupcake/01-cupcake/files/opt/cupcake/config/
-        cp -r "${GITHUB_WORKSPACE}/raspberry-pi/config/postgresql" stage-cupcake/01-cupcake/files/opt/cupcake/config/
+        # Copy existing configuration if it exists
+        if [ -d "${GITHUB_WORKSPACE}/raspberry-pi/config/nginx" ]; then
+            cp -r "${GITHUB_WORKSPACE}/raspberry-pi/config/nginx" stage-cupcake/01-cupcake/files/opt/cupcake/config/
+        fi
+        if [ -d "${GITHUB_WORKSPACE}/raspberry-pi/config/postgresql" ]; then
+            cp -r "${GITHUB_WORKSPACE}/raspberry-pi/config/postgresql" stage-cupcake/01-cupcake/files/opt/cupcake/config/
+        fi
+        
+        # Copy assets if they exist
+        if [ -d "${GITHUB_WORKSPACE}/raspberry-pi/assets" ]; then
+            cp -r "${GITHUB_WORKSPACE}/raspberry-pi/assets/"* stage-cupcake/01-cupcake/files/opt/cupcake/assets/
+        fi
         
         # Copy CUPCAKE source code (excluding development files)
         rsync -av --exclude='__pycache__' \
@@ -385,21 +409,45 @@ jobs:
         # Create custom stage directory
         mkdir -p stage-cupcake/01-cupcake/files
         
-        # Copy existing raspberry-pi system configuration
-        cp -r "${GITHUB_WORKSPACE}/raspberry-pi/config/system/"* stage-cupcake/01-cupcake/files/
+        # Create stage prerun script
+        cat > stage-cupcake/prerun.sh << 'EOF'
+        #!/bin/bash -e
+        
+        # CUPCAKE Stage Prerun
+        if [ -f "${ROOTFS_DIR}/etc/systemd/system/dhcpcd.service.d/wait.conf" ]; then
+            rm -f "${ROOTFS_DIR}/etc/systemd/system/dhcpcd.service.d/wait.conf"
+        fi
+        EOF
+        chmod +x stage-cupcake/prerun.sh
+        
+        # Copy existing raspberry-pi system configuration if it exists
+        if [ -d "${GITHUB_WORKSPACE}/raspberry-pi/config/system" ]; then
+            cp -r "${GITHUB_WORKSPACE}/raspberry-pi/config/system/"* stage-cupcake/01-cupcake/files/
+        fi
         
         # Create cupcake directories in the stage
-        mkdir -p stage-cupcake/01-cupcake/files/opt/cupcake/{scripts,src,data,logs,backup,media,config}
+        mkdir -p stage-cupcake/01-cupcake/files/opt/cupcake/{scripts,src,data,logs,backup,media,config,assets}
         mkdir -p stage-cupcake/01-cupcake/files/var/log/cupcake
         mkdir -p stage-cupcake/01-cupcake/files/var/lib/cupcake
         
-        # Copy existing raspberry-pi scripts
-        cp -r "${GITHUB_WORKSPACE}/raspberry-pi/scripts/"* stage-cupcake/01-cupcake/files/opt/cupcake/scripts/
-        chmod +x stage-cupcake/01-cupcake/files/opt/cupcake/scripts/*
+        # Copy existing raspberry-pi scripts if they exist
+        if [ -d "${GITHUB_WORKSPACE}/raspberry-pi/scripts" ]; then
+            cp -r "${GITHUB_WORKSPACE}/raspberry-pi/scripts/"* stage-cupcake/01-cupcake/files/opt/cupcake/scripts/
+            chmod +x stage-cupcake/01-cupcake/files/opt/cupcake/scripts/*
+        fi
         
-        # Copy existing configuration
-        cp -r "${GITHUB_WORKSPACE}/raspberry-pi/config/nginx" stage-cupcake/01-cupcake/files/opt/cupcake/config/
-        cp -r "${GITHUB_WORKSPACE}/raspberry-pi/config/postgresql" stage-cupcake/01-cupcake/files/opt/cupcake/config/
+        # Copy existing configuration if it exists
+        if [ -d "${GITHUB_WORKSPACE}/raspberry-pi/config/nginx" ]; then
+            cp -r "${GITHUB_WORKSPACE}/raspberry-pi/config/nginx" stage-cupcake/01-cupcake/files/opt/cupcake/config/
+        fi
+        if [ -d "${GITHUB_WORKSPACE}/raspberry-pi/config/postgresql" ]; then
+            cp -r "${GITHUB_WORKSPACE}/raspberry-pi/config/postgresql" stage-cupcake/01-cupcake/files/opt/cupcake/config/
+        fi
+        
+        # Copy assets if they exist
+        if [ -d "${GITHUB_WORKSPACE}/raspberry-pi/assets" ]; then
+            cp -r "${GITHUB_WORKSPACE}/raspberry-pi/assets/"* stage-cupcake/01-cupcake/files/opt/cupcake/assets/
+        fi
         
         # Copy CUPCAKE source code (excluding development files)
         rsync -av --exclude='__pycache__' \

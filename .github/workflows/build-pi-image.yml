@@ -83,8 +83,6 @@ jobs:
     - name: Clone and setup pi-gen
       run: |
         git clone https://github.com/RPi-Distro/pi-gen.git
-        cd pi-gen
-        git checkout 2025-05-13-raspios-bookworm
 
     - name: Configure pi-gen for Pi 4 using existing raspberry-pi structure
       run: |
@@ -336,7 +334,8 @@ jobs:
       run: |
         git clone https://github.com/RPi-Distro/pi-gen.git
         cd pi-gen
-        git checkout 2024-07-04-raspios-bookworm
+        # Use the latest stable release or master branch
+        # git checkout master  # or remove this line to use default branch
 
     - name: Configure pi-gen for Pi 5 using existing raspberry-pi structure
       run: |

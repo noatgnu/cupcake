@@ -40,7 +40,7 @@ on:
 
 jobs:
   build-pi4-image:
-    if: ${{ inputs.pi_model == 'pi4' || inputs.pi_model == 'both' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.pi_model == 'pi4' || inputs.pi_model == 'both' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -284,7 +284,7 @@ jobs:
         retention-days: 30
 
   build-pi5-image:
-    if: ${{ inputs.pi_model == 'pi5' || inputs.pi_model == 'both' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.pi_model == 'pi5' || inputs.pi_model == 'both' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

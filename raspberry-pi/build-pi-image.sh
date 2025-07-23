@@ -10,6 +10,10 @@ PI_MODEL="${1:-pi5}"
 IMAGE_VERSION="${2:-$(date +%Y-%m-%d)}"
 ENABLE_SSH="${3:-1}"
 
+# Version and metadata
+VERSION="1.0.0"
+BUILD_DATE=$(date -Iseconds)
+
 # Validate Pi model
 if [[ "$PI_MODEL" != "pi4" && "$PI_MODEL" != "pi5" ]]; then
     echo "Error: PI_MODEL must be 'pi4' or 'pi5'"
@@ -18,13 +22,79 @@ if [[ "$PI_MODEL" != "pi4" && "$PI_MODEL" != "pi5" ]]; then
     exit 1
 fi
 
-# Configuration
-PI_GEN_DIR="./pi-gen"
+# Auto-detect build directory with sufficient space (from native version)
+detect_build_dir() {
+    local required_gb=20
+    local best_dir=""
+    local max_space=0
+
+    # Check potential directories in order of preference
+    local dirs=("/build" "/opt/build" "/home/$USER/build" "/tmp/build")
+
+    for dir in "${dirs[@]}"; do
+        if [ -d "$(dirname "$dir")" ]; then
+            local available_gb=$(df "$(dirname "$dir")" 2>/dev/null | awk 'NR==2{print int($4/1024/1024)}')
+            if [ "$available_gb" -gt "$max_space" ]; then
+                max_space=$available_gb
+                best_dir=$dir
+            fi
+        fi
+    done
+
+    # Find the mount point with most free space if none above work
+    if [ "$max_space" -lt "$required_gb" ]; then
+        best_dir=$(df -h | grep -E '^/dev' | awk '{print $6 " " int($4)}' | sort -k2 -nr | head -1 | cut -d' ' -f1)/cupcake-build
+        max_space=$(df "$best_dir" 2>/dev/null | awk 'NR==2{print int($4/1024/1024)}' || echo 0)
+    fi
+
+    if [ "$max_space" -lt "$required_gb" ]; then
+        error "Need at least ${required_gb}GB free space. Found ${max_space}GB at $best_dir"
+        error "Free up space or add external storage"
+    fi
+
+    echo "$best_dir"
+}
+
+# Detect target Pi specifications for optimization (from native version)
+detect_target_pi_specs() {
+    log "Determining target Pi specifications for $PI_MODEL..."
+
+    # Set Pi model specific values
+    if [[ "$PI_MODEL" == "pi4" ]]; then
+        PI_MODEL_NUM="4"
+        PI_RAM_MB="4096"  # Assume 4GB Pi 4 for optimal build
+        PI_CORES="4"
+        GPU_MEM="64"
+        HOSTNAME="cupcake-pi4"
+        IMG_SIZE="8G"
+        WHISPER_MODEL="base.en"
+        WHISPER_THREADS="4"
+    else
+        PI_MODEL_NUM="5"
+        PI_RAM_MB="8192"  # Assume 8GB Pi 5 for optimal build
+        PI_CORES="4"
+        GPU_MEM="128"
+        HOSTNAME="cupcake-pi5"
+        IMG_SIZE="10G"
+        WHISPER_MODEL="small.en"
+        WHISPER_THREADS="6"
+    fi
+
+    info "Target specs: $PI_MODEL with ${PI_RAM_MB}MB RAM, $PI_CORES cores"
+    info "Whisper config: $WHISPER_MODEL model, $WHISPER_THREADS threads"
+    info "Image size: $IMG_SIZE"
+}
+
+# Configuration with smart detection
+BUILD_DIR=$(detect_build_dir)
+PI_GEN_DIR="$BUILD_DIR/pi-gen"
 CUPCAKE_DIR="$(dirname "$(readlink -f "$0")")/.."
-BUILD_DIR="./build"
 CONFIG_DIR="./config"
 SCRIPTS_DIR="./scripts"
 ASSETS_DIR="./assets"
+
+# Initialize target specs
+detect_target_pi_specs
 
 # Colors for output
 RED='\033[0;31m'
@@ -393,49 +463,192 @@ export DEBIAN_FRONTEND=noninteractive
 # Update package list
 apt-get update
 
-# Install PostgreSQL
-apt-get install -y postgresql postgresql-contrib postgresql-client
+# Add PostgreSQL official APT repository (same as Docker setup)
+curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | tee /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg > /dev/null
+echo 'deb http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main' > /etc/apt/sources.list.d/pgdg.list
+apt-get update
+
+# Install PostgreSQL 14
+apt-get install -y postgresql-14 postgresql-client-14 postgresql-contrib-14
 
 # Install Redis
-apt-get install -y redis-server
+apt-get install -y redis-server redis-tools
 
 # Install Nginx
 apt-get install -y nginx
 
-# Install Python and essential packages for native deployment
+# Install Python and essential packages
 apt-get install -y python3 python3-pip python3-venv python3-dev
 
 # Install system dependencies for Python packages
 apt-get install -y build-essential libpq-dev libffi-dev libssl-dev
 apt-get install -y libxml2-dev libxslt1-dev libjpeg-dev zlib1g-dev
-apt-get install -y git curl wget unzip htop nvme-cli
+apt-get install -y git curl wget unzip htop nvme-cli cmake pkg-config
+apt-get install -y ffmpeg libavcodec-extra fail2ban ufw libopenblas-dev
 
 # Install Node.js for frontend builds
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-apt-get install -y nodejs
+apt-get install -y nodejs npm
 
-# Build CUPCAKE Angular frontend
-echo "Building CUPCAKE Angular frontend..."
-cd /tmp
-git clone https://github.com/noatgnu/cupcake-ng.git
-cd cupcake-ng
+# Create cupcake user and setup directories
+useradd -m -s /bin/bash cupcake
+usermod -aG sudo cupcake
+echo 'cupcake ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/cupcake
 
-# Configure for Pi deployment (use generic Pi hostname)
-sed -i 's;https://cupcake.proteo.info;http://cupcake-pi.local;g' src/environments/environment.ts
-sed -i 's;http://localhost;http://cupcake-pi.local;g' src/environments/environment.ts
+# Create CUPCAKE directories
+mkdir -p /opt/cupcake/{scripts,config,logs,app,venv,data,backup,assets}
+mkdir -p /var/lib/cupcake
+mkdir -p /var/log/cupcake
+mkdir -p /opt/whisper.cpp
 
-# Install dependencies and build
-npm install
-npm run build
+# Build and install Whisper.cpp for CUPCAKE
+echo "=== Setting up Whisper.cpp for CUPCAKE Pi ${PI_MODEL_NUM} ==="
+cd /opt/whisper.cpp
 
-# Copy built frontend to nginx directory
-mkdir -p /opt/cupcake/frontend
-cp -r dist/browser/* /opt/cupcake/frontend/
-chown -R cupcake:cupcake /opt/cupcake/frontend
+# Clone Whisper.cpp repository (matching transcribe worker)
+echo "Cloning Whisper.cpp repository..."
+git clone https://github.com/ggerganov/whisper.cpp.git .
 
-# Clean up build directory
-cd /
-rm -rf /tmp/cupcake-ng
+# Detect system capabilities for model selection
+echo "Detecting system capabilities..."
+TOTAL_RAM=$(free -m | awk 'NR==2{printf "%d", $2}')
+CPU_CORES=$(nproc)
+PI_MODEL_REV=$(cat /proc/cpuinfo | grep "Revision" | awk '{print $3}' | head -1)
+
+echo "System specs: ${TOTAL_RAM}MB RAM, ${CPU_CORES} CPU cores, Pi model revision: ${PI_MODEL_REV}"
+
+# Download models first (like transcribe worker does)
+echo "Downloading Whisper models..."
+
+# Always download tiny as fallback
+./models/download-ggml-model.sh tiny.en
+
+# Download appropriate models based on system capabilities
+if [ "$TOTAL_RAM" -lt 2048 ]; then
+    # Low memory systems (< 2GB) - tiny model only
+    echo "Low memory system detected - using tiny model"
+    DEFAULT_MODEL="/opt/whisper.cpp/models/ggml-tiny.en.bin"
+    THREAD_COUNT="2"
+elif [ "$TOTAL_RAM" -lt 4096 ]; then
+    # Medium memory systems (2-4GB) - base model
+    echo "Medium memory system detected - downloading base model"
+    ./models/download-ggml-model.sh base.en
+    DEFAULT_MODEL="/opt/whisper.cpp/models/ggml-base.en.bin"
+    THREAD_COUNT="4"
+else
+    # High memory systems (4GB+) - small model (not medium like Docker to save space)
+    echo "High memory system detected - downloading small model"
+    ./models/download-ggml-model.sh small.en
+    ./models/download-ggml-model.sh base.en   # backup
+    DEFAULT_MODEL="/opt/whisper.cpp/models/ggml-small.en.bin"
+    THREAD_COUNT="6"
+fi
+
+# Build Whisper.cpp (matching transcribe worker build commands exactly)
+echo "Building Whisper.cpp..."
+cmake -B build
+cmake --build build --config Release -j $(nproc)
+
+# Verify the binary was built correctly
+if [ ! -f "build/bin/main" ]; then
+    echo "ERROR: whisper main binary not found after build!"
+    exit 1
+fi
+
+echo "Build completed successfully. Binary location: $(pwd)/build/bin/main"
+
+# Set appropriate permissions
+chown -R root:root /opt/whisper.cpp
+chmod +x /opt/whisper.cpp/build/bin/main
+
+# Create environment configuration matching CUPCAKE settings.py format
+echo "Creating Whisper.cpp environment configuration..."
+mkdir -p /etc/environment.d
+cat > /etc/environment.d/50-whisper.conf << EOF
+# Whisper.cpp configuration for CUPCAKE (matches settings.py)
+WHISPERCPP_PATH=/opt/whisper.cpp/build/bin/main
+WHISPERCPP_DEFAULT_MODEL=${DEFAULT_MODEL}
+WHISPERCPP_THREAD_COUNT=${THREAD_COUNT}
+EOF
+
+# Create systemd environment file for services
+mkdir -p /etc/systemd/system.conf.d
+cat > /etc/systemd/system.conf.d/whisper.conf << EOF
+[Manager]
+DefaultEnvironment=WHISPERCPP_PATH=/opt/whisper.cpp/build/bin/main
+DefaultEnvironment=WHISPERCPP_DEFAULT_MODEL=${DEFAULT_MODEL}
+DefaultEnvironment=WHISPERCPP_THREAD_COUNT=${THREAD_COUNT}
+EOF
+
+# Test the installation
+echo "Testing Whisper.cpp installation..."
+if /opt/whisper.cpp/build/bin/main --help > /dev/null 2>&1; then
+    echo "Whisper.cpp installation test passed"
+else
+    echo "WARNING: Whisper.cpp installation test failed"
+fi
+
+echo "=== Whisper.cpp setup completed ==="
+echo "Binary path: /opt/whisper.cpp/build/bin/main"
+echo "Default model: ${DEFAULT_MODEL}"
+echo "Thread count: ${THREAD_COUNT}"
+echo "Model files available:"
+ls -la /opt/whisper.cpp/models/ | grep "\.bin$" || echo "No model files found"
+
+# Configure PostgreSQL
+systemctl enable postgresql
+echo 'shared_buffers = 256MB' >> /etc/postgresql/14/main/postgresql.conf
+echo 'work_mem = 8MB' >> /etc/postgresql/14/main/postgresql.conf
+echo 'effective_cache_size = 1GB' >> /etc/postgresql/14/main/postgresql.conf
+echo 'random_page_cost = 1.1' >> /etc/postgresql/14/main/postgresql.conf
+
+# Start PostgreSQL to create database
+service postgresql start
+sudo -u postgres createuser cupcake
+sudo -u postgres createdb cupcake_db -O cupcake
+sudo -u postgres psql -c "ALTER USER cupcake WITH PASSWORD 'cupcake123';"
+service postgresql stop
+
+# Configure Redis
+systemctl enable redis-server
+echo 'maxmemory 512mb' >> /etc/redis/redis.conf
+echo 'maxmemory-policy allkeys-lru' >> /etc/redis/redis.conf
+
+# Configure Nginx
+systemctl enable nginx
+cat > /etc/nginx/sites-available/cupcake << 'NGINXEOF'
+server {
+    listen 80;
+    server_name _;
+    client_max_body_size 100M;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 75s;
+    }
+
+    location /static/ {
+        alias /opt/cupcake/staticfiles/;
+        expires 30d;
+    }
+
+    location /media/ {
+        alias /opt/cupcake/media/;
+        expires 7d;
+    }
+}
+NGINXEOF
+
+ln -sf /etc/nginx/sites-available/cupcake /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
+
+# Set ownership
+chown -R cupcake:cupcake /opt/cupcake /var/log/cupcake /var/lib/cupcake
 
 # Clean up
 apt-get autoremove -y
@@ -444,331 +657,237 @@ rm -rf /var/lib/apt/lists/*
 
 CHROOT_EOF
 
-# Set permissions after copying files
-if [ -d "${ROOTFS_DIR}/opt/cupcake/scripts" ]; then
-    chmod +x "${ROOTFS_DIR}/opt/cupcake/scripts/"*
-fi
+# Create CUPCAKE systemd services
+cat > "${ROOTFS_DIR}/etc/systemd/system/cupcake-web.service" << 'SERVICEEOF'
+[Unit]
+Description=CUPCAKE Web Server
+After=network.target postgresql.service redis.service
+Requires=postgresql.service redis.service
 
-# Create cupcake user and directories
-on_chroot << 'CHROOT_EOF'
-# Create cupcake user if it doesn't exist
-if ! id "cupcake" &>/dev/null; then
-    useradd -m -s /bin/bash cupcake
-    echo "cupcake:cupcake123" | chpasswd
-    usermod -aG sudo cupcake
-fi
+[Service]
+Type=notify
+User=cupcake
+Group=cupcake
+WorkingDirectory=/opt/cupcake/app
+Environment=PATH=/opt/cupcake/venv/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake123@localhost/cupcake_db
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+Environment=DEBUG=True
+Environment=USE_WHISPER=True
+Environment=USE_OCR=True
+Environment=USE_LLM=True
+ExecStart=/opt/cupcake/venv/bin/gunicorn cupcake.wsgi:application --bind 127.0.0.1:8000 --workers 2 --timeout 300
+ExecReload=/bin/kill -s HUP $MAINPID
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cupcake-web
 
-# Create required directories
-mkdir -p /var/log/cupcake
-mkdir -p /var/lib/cupcake
-mkdir -p /opt/cupcake/{data,logs,backup,media}
+[Install]
+WantedBy=multi-user.target
+SERVICEEOF
 
-# Set ownership
-chown -R cupcake:cupcake /opt/cupcake
-chown -R cupcake:cupcake /var/log/cupcake
-chown -R cupcake:cupcake /var/lib/cupcake
+# Create CUPCAKE RQ worker services
+for worker in transcribe export import maintenance ocr; do
+    cat > "${ROOTFS_DIR}/etc/systemd/system/cupcake-${worker}.service" << SERVICEEOF
+[Unit]
+Description=CUPCAKE ${worker^} Worker
+After=network.target postgresql.service redis.service
+Requires=redis.service
 
-# Enable services
-systemctl enable ssh
-systemctl enable postgresql
-systemctl enable redis-server
-systemctl enable nginx
+[Service]
+Type=simple
+User=cupcake
+Group=cupcake
+WorkingDirectory=/opt/cupcake/app
+Environment=PATH=/opt/cupcake/venv/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake123@localhost/cupcake_db
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+Environment=USE_WHISPER=True
+Environment=USE_OCR=True
+ExecStart=/opt/cupcake/venv/bin/python manage.py rqworker ${worker}
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cupcake-${worker}
 
-# Enable cupcake setup service if it exists
-if [ -f "/etc/systemd/system/cupcake-setup.service" ]; then
-    systemctl enable cupcake-setup.service
-fi
+[Install]
+WantedBy=multi-user.target
+SERVICEEOF
+done
 
-CHROOT_EOF
+# Create first boot setup service
+cat > "${ROOTFS_DIR}/etc/systemd/system/cupcake-setup.service" << 'SERVICEEOF'
+[Unit]
+Description=CUPCAKE First Boot Setup
+After=network.target postgresql.service redis.service
+Requires=postgresql.service redis.service
+Before=cupcake-web.service
+
+[Service]
+Type=oneshot
+User=cupcake
+Group=cupcake
+WorkingDirectory=/opt/cupcake/app
+Environment=PATH=/opt/cupcake/venv/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake123@localhost/cupcake_db
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+ExecStart=/opt/cupcake/scripts/first-boot-setup.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cupcake-setup
+
+[Install]
+WantedBy=multi-user.target
+SERVICEEOF
+
+# Create first boot setup script
+mkdir -p "${ROOTFS_DIR}/opt/cupcake/scripts"
+cat > "${ROOTFS_DIR}/opt/cupcake/scripts/first-boot-setup.sh" << 'SETUPEOF'
+#!/bin/bash
+set -e
+
+LOG_FILE="/var/log/cupcake/first-boot.log"
+mkdir -p "$(dirname "$LOG_FILE")"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "$(date): Starting CUPCAKE first boot setup..."
+
+cd /opt/cupcake/app
+
+# Wait for services
+while ! pg_isready -h localhost -p 5432 -U cupcake; do sleep 2; done
+while ! redis-cli ping > /dev/null 2>&1; do sleep 2; done
+
+# Activate virtual environment
+source /opt/cupcake/venv/bin/activate
+
+# Set environment variables
+export DJANGO_SETTINGS_MODULE=cupcake.settings
+export DATABASE_URL=postgresql://cupcake:cupcake123@localhost/cupcake_db
+export REDIS_URL=redis://localhost:6379/0
+
+# Run Django setup
+python manage.py migrate --noinput
+python manage.py collectstatic --noinput --clear
+
+# Create admin user
+python manage.py shell << PYEOF
+from django.contrib.auth.models import User
+if not User.objects.filter(username='admin').exists():
+    User.objects.create_superuser('admin', 'admin@cupcake.local', 'cupcake123')
+    print('Admin user created: admin / cupcake123')
+PYEOF
+
+# Set permissions
+chown -R cupcake:cupcake /opt/cupcake /var/log/cupcake /var/lib/cupcake
+
+echo "$(date): CUPCAKE first boot setup completed successfully"
+systemctl disable cupcake-setup.service
+SETUPEOF
+
+chmod +x "${ROOTFS_DIR}/opt/cupcake/scripts/first-boot-setup.sh"
+
+# Create runtime directory config
+echo 'd /var/run/cupcake 0755 cupcake cupcake -' > "${ROOTFS_DIR}/etc/tmpfiles.d/cupcake.conf"
+
+# Create system capability detection script (from native version)
+cat > "${ROOTFS_DIR}/usr/local/bin/cupcake-config" << 'CONFIGEOF'
+#!/usr/bin/env python3
+"""CUPCAKE System Capability Detection"""
+import os
+import json
+
+def detect_pi_model():
+    try:
+        with open('/proc/cpuinfo', 'r') as f:
+            content = f.read()
+        if 'Pi 5' in content:
+            return 'Pi 5'
+        elif 'Pi 4' in content:
+            return 'Pi 4'
+        else:
+            return 'Unknown Pi'
+    except:
+        return 'Unknown'
+
+def detect_system_tier():
+    try:
+        with open('/proc/meminfo', 'r') as f:
+            mem_line = f.readline()
+            mem_kb = int(mem_line.split()[1])
+            mem_mb = mem_kb // 1024
+    except:
+        mem_mb = 2048
+
+    if mem_mb < 2048:
+        return 'low'
+    elif mem_mb < 4096:
+        return 'medium'
+    elif mem_mb < 8192:
+        return 'high'
+    else:
+        return 'ultra'
+
+def get_whisper_config():
+    tier = detect_system_tier()
+    pi_model = detect_pi_model()
+
+    configs = {
+        'low': {'model': 'ggml-tiny.en.bin', 'threads': 2},
+        'medium': {'model': 'ggml-base.en', 'threads': 3},
+        'high': {'model': 'ggml-base.en', 'threads': 4},
+        'ultra': {'model': 'ggml-small.en', 'threads': 6}
+    }
+
+    config = configs[tier]
+    config.update({
+        'binary_path': '/opt/whisper.cpp/build/bin/main',
+        'model_path': f"/opt/whisper.cpp/models/{config['model']}",
+        'system_tier': tier,
+        'pi_model': pi_model
+    })
+
+    return config
+
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) > 1:
+        if sys.argv[1] == 'tier':
+            print(detect_system_tier())
+        elif sys.argv[1] == 'model':
+            print(detect_pi_model())
+        elif sys.argv[1] == 'whisper':
+            print(json.dumps(get_whisper_config(), indent=2))
+    else:
+        config = get_whisper_config()
+        print(f"Pi Model: {config['pi_model']}")
+        print(f"System tier: {config['system_tier']}")
+        print(f"Whisper model: {config['model']}")
+        print(f"Threads: {config['threads']}")
+CONFIGEOF
+
+chmod +x "${ROOTFS_DIR}/usr/local/bin/cupcake-config"
+
+# Enable all CUPCAKE services
+on_chroot << 'ENABLEEOF'
+systemctl enable cupcake-setup.service
+systemctl enable cupcake-web.service
+systemctl enable cupcake-transcribe.service
+systemctl enable cupcake-export.service
+systemctl enable cupcake-import.service
+systemctl enable cupcake-maintenance.service
+systemctl enable cupcake-ocr.service
+ENABLEEOF
 
 echo "CUPCAKE stage completed successfully"
-EOF
-    chmod +x "$stage_dir/01-cupcake/01-run.sh"
-    
-    # Create boot configuration stage
-    mkdir -p "$stage_dir/02-boot-config"
-    
-    cat > "$stage_dir/02-boot-config/01-${PI_MODEL}-config.sh" << 'EOF'
-#!/bin/bash -e
 
-# Add Pi model specific optimizations to boot config
-# Check which boot path exists
-if [ -f "${ROOTFS_DIR}/boot/firmware/config.txt" ]; then
-    BOOT_CONFIG="${ROOTFS_DIR}/boot/firmware/config.txt"
-elif [ -f "${ROOTFS_DIR}/boot/config.txt" ]; then
-    BOOT_CONFIG="${ROOTFS_DIR}/boot/config.txt"
-else
-    echo "Creating boot config file..."
-    mkdir -p "${ROOTFS_DIR}/boot/firmware"
-    BOOT_CONFIG="${ROOTFS_DIR}/boot/firmware/config.txt"
-fi
-
-EOF
-
-    # Add Pi-specific boot configurations
-    if [[ "$PI_MODEL" == "pi4" ]]; then
-        cat >> "$stage_dir/02-boot-config/01-${PI_MODEL}-config.sh" << 'EOF'
-cat >> "${BOOT_CONFIG}" << 'BOOTEOF'
-
-# CUPCAKE Pi 4 Optimizations
-arm_64bit=1
-dtparam=arm_freq=2000
-dtparam=over_voltage=2
-gpu_mem=64
-
-# Enable NVMe support
-dtparam=pciex1
-dtoverlay=pcie-32bit-dma
-
-# Disable unused interfaces
-dtparam=audio=off
-camera_auto_detect=0
-display_auto_detect=0
-
-# Memory optimizations
-disable_splash=1
-boot_delay=0
-BOOTEOF
-EOF
-    else
-        cat >> "$stage_dir/02-boot-config/01-${PI_MODEL}-config.sh" << 'EOF'
-cat >> "${BOOT_CONFIG}" << 'BOOTEOF'
-
-# CUPCAKE Pi 5 Optimizations
-arm_64bit=1
-dtparam=arm_freq=2400
-dtparam=over_voltage=2
-gpu_mem=128
-
-# Enable PCIe Gen 3 for NVMe
-dtparam=pciex1_gen=3
-dtoverlay=pcie-32bit-dma
-
-# Pi 5 specific optimizations
-dtparam=i2c_arm=off
-dtparam=spi=off
-
-# Disable unused interfaces
-dtparam=audio=off
-camera_auto_detect=0
-display_auto_detect=0
-
-# Memory and performance optimizations
-disable_splash=1
-boot_delay=0
-arm_boost=1
-BOOTEOF
-EOF
-    fi
-    
-    chmod +x "$stage_dir/02-boot-config/01-${PI_MODEL}-config.sh"
-    
-    log "Custom CUPCAKE stage created with $PI_MODEL optimizations"
-}
-
-# Build the image
-build_image() {
-    log "Starting image build process..."
-    
-    cd "$PI_GEN_DIR"
-    
-    # Clean previous builds
-    if [[ -d "work" ]]; then
-        info "Cleaning previous build..."
-        sudo rm -rf work
-    fi
-    
-    if [[ -d "deploy" ]]; then
-        sudo rm -rf deploy
-    fi
-    
-    # Start build
-    info "Building Raspberry Pi image (this may take 1-2 hours)..."
-    sudo ./build.sh
-    
-    # Check if build was successful
-    local expected_image="deploy/cupcake-${PI_MODEL}-${IMAGE_VERSION}.img"
-    if [[ -f "$expected_image" ]]; then
-        log "Image build completed successfully!"
-        
-        # Copy to build directory
-        cp deploy/cupcake-${PI_MODEL}-* "../$BUILD_DIR/"
-        
-        info "Image location: $BUILD_DIR/cupcake-${PI_MODEL}-${IMAGE_VERSION}.img"
-    else
-        error "Image build failed! Expected: $expected_image"
-        ls -la deploy/ || true
-    fi
-    
-    cd ..
-}
-
-# Create deployment package
-create_deployment_package() {
-    log "Creating deployment package..."
-    
-    local package_dir="$BUILD_DIR/cupcake-${PI_MODEL}-deployment"
-    mkdir -p "$package_dir"
-    
-    # Copy README and documentation
-    cp README.md "$package_dir/"
-    
-    # Copy configuration files for reference
-    cp -r "$CONFIG_DIR" "$package_dir/"
-    
-    # Copy scripts for standalone use
-    cp -r "$SCRIPTS_DIR" "$package_dir/"
-    
-    # Create deployment instructions
-    cat > "$package_dir/DEPLOYMENT.md" << EOF
-# CUPCAKE $PI_MODEL Deployment Instructions
-
-## 1. Flash Image to SD Card
-
-### Using Raspberry Pi Imager (Recommended)
-1. Download and install Raspberry Pi Imager
-2. Select "Use custom image" and choose the .img file
-3. Select your SD card
-4. Configure SSH keys and WiFi if needed
-5. Flash the image
-
-### Using dd (Linux/macOS)
-\`\`\`bash
-sudo dd if=cupcake-$PI_MODEL-$IMAGE_VERSION.img of=/dev/sdX bs=4M status=progress
-\`\`\`
-
-## 2. Initial Boot and Setup
-
-1. Insert SD card into Raspberry Pi ${PI_MODEL^^}
-2. Connect ethernet cable (recommended)
-3. Power on the Pi
-4. Wait for initial boot (2-3 minutes)
-
-## 3. Access and Configuration
-
-### SSH Access
-```bash
-ssh cupcake@cupcake-pi.local
-# Default password: cupcake123 (change immediately)
-```
-
-### Initial Setup
-```bash
-sudo /opt/cupcake/setup.sh
-```
-
-## 4. Web Access
-
-Once setup is complete:
-- Web Interface: http://cupcake-pi.local
-- Admin Panel: http://cupcake-pi.local/admin
-
-## 5. Monitoring
-
-Check system status:
-```bash
-sudo systemctl status cupcake-*
-htop
-```
-
-## Troubleshooting
-
-- Check logs: `journalctl -u cupcake-web`
-- System resources: `df -h && free -h`
-- Network issues: `ip addr show`
-EOF
-    
-    # Create archive
-    cd "$BUILD_DIR"
-    tar -czf "cupcake-${PI_MODEL}-deployment-${IMAGE_VERSION}.tar.gz" "cupcake-${PI_MODEL}-deployment/"
-    cd ..
-    
-    log "Deployment package created: $BUILD_DIR/cupcake-${PI_MODEL}-deployment-${IMAGE_VERSION}.tar.gz"
-}
-
-# Main execution
-main() {
-    log "Starting CUPCAKE Raspberry Pi $PI_MODEL image build..."
-    info "Pi Model: $PI_MODEL"
-    info "Image Version: $IMAGE_VERSION"
-    info "SSH Enabled: $ENABLE_SSH"
-    
-    # CRITICAL: Load binfmt_misc FIRST THING before any other operations
-    log "Loading binfmt_misc kernel module (required for pi-gen)..."
-    sudo modprobe binfmt_misc || warn "Could not load binfmt_misc module"
-    
-    # Mount binfmt_misc filesystem immediately
-    if [[ ! -d "/proc/sys/fs/binfmt_misc" ]] || ! mount | grep -q binfmt_misc; then
-        log "Mounting binfmt_misc filesystem..."
-        sudo mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc || error "CRITICAL: Failed to mount binfmt_misc - pi-gen will fail"
-    fi
-    
-    # Verify it's actually working
-    if [[ ! -f "/proc/sys/fs/binfmt_misc/status" ]]; then
-        error "CRITICAL: binfmt_misc not properly mounted - pi-gen will fail"
-    fi
-    
-    info "binfmt_misc status: $(cat /proc/sys/fs/binfmt_misc/status 2>/dev/null || echo 'unknown')"
-    
-    # Use system's qemu-user-static registration
-    log "Configuring qemu-user-static for pi-gen..."
-    if [ -f /usr/lib/binfmt.d/qemu-aarch64-static.conf ]; then
-        sudo systemd-binfmt --reload /usr/lib/binfmt.d/qemu-aarch64-static.conf 2>/dev/null || true
-    fi
-    
-    # Alternative: use update-binfmts if available
-    if command -v update-binfmts &>/dev/null; then
-        sudo update-binfmts --enable qemu-aarch64 2>/dev/null || true
-        sudo update-binfmts --enable qemu-arm 2>/dev/null || true
-    fi
-    
-    # Show what's registered
-    info "Registered binfmt interpreters:"
-    ls -la /proc/sys/fs/binfmt_misc/ | grep -E "(qemu|arm|aarch64)" || warn "No ARM interpreters found"
-    
-    # Test if ARM emulation is working
-    if command -v qemu-aarch64-static &>/dev/null; then
-        log "Testing ARM64 emulation..."
-        if echo "int main(){return 42;}" | gcc -x c - -o /tmp/test_arm64 -static 2>/dev/null; then
-            if qemu-aarch64-static /tmp/test_arm64 2>/dev/null; then
-                info "ARM64 emulation test: PASSED"
-            else
-                warn "ARM64 emulation test: FAILED"
-            fi
-            rm -f /tmp/test_arm64
-        fi
-    fi
-    
-    # Create necessary directories
-    mkdir -p "$CONFIG_DIR" "$SCRIPTS_DIR" "$ASSETS_DIR" "$BUILD_DIR"
-    
-    check_prerequisites
-    setup_pi_gen
-    prepare_build
-    configure_pi_gen
-    create_custom_stage
-    build_image
-    create_deployment_package
-    
-    log "CUPCAKE Raspberry Pi $PI_MODEL image build completed successfully!"
-    log "Image location: $BUILD_DIR/cupcake-${PI_MODEL}-${IMAGE_VERSION}.img"
-    log "Deployment package: $BUILD_DIR/cupcake-${PI_MODEL}-deployment-${IMAGE_VERSION}.tar.gz"
-    
-    echo ""
-    echo -e "${GREEN}Next steps:${NC}"
-    echo "1. Flash the image to an SD card (64GB+ recommended for production)"
-    echo "2. Boot the Raspberry Pi ${PI_MODEL^^}"
-    echo "3. SSH to cupcake@cupcake-pi.local (password: cupcake123)"
-    echo "4. Run: sudo /opt/cupcake/setup.sh"
-    echo "5. Access web interface at http://cupcake-pi.local"
-    echo ""
-    echo -e "${GREEN}Frontend Features:${NC}"
-    echo "• Angular frontend built and included"
-    echo "• Configured for Pi deployment with .local hostnames"
-    echo "• No separate frontend deployment needed"
-    echo ""
-    echo -e "${YELLOW}Note: Change default passwords immediately after first boot!${NC}"
-}
-
-# Execute main function
-main "$@"

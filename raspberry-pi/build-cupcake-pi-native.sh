@@ -8,9 +8,20 @@ set -e
 
 echo "=== CUPCAKE Pi Image Builder (Native Build) ==="
 
+# Parse command line arguments
+PI_MODEL_ARG="${1:-}"
+IMAGE_VERSION="${2:-$(date +%Y-%m-%d)}"
+ENABLE_SSH="${3:-1}"
+
 # Version and metadata
 VERSION="1.0.0"
 BUILD_DATE=$(date -Iseconds)
+
+# Configuration paths (matching QEMU version)
+CUPCAKE_DIR="$(dirname "$(readlink -f "$0")")/.."
+CONFIG_DIR="./config"
+SCRIPTS_DIR="./scripts"
+ASSETS_DIR="./assets"
 
 # Auto-detect build directory with sufficient space
 detect_build_dir() {
@@ -339,6 +350,15 @@ install_base_system() {
         apt-get upgrade -y -qq -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold'
     "
     
+    # Add PostgreSQL official APT repository (same as Docker setup)
+    progress "Adding PostgreSQL official repository..."
+    sudo chroot "$MOUNT_DIR" /bin/bash -c "
+        export DEBIAN_FRONTEND=noninteractive
+        curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | tee /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg > /dev/null
+        echo 'deb http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main' > /etc/apt/sources.list.d/pgdg.list
+        apt-get update -qq
+    "
+
     # Install packages appropriate for Pi model
     local packages="curl wget git vim nano htop tree rsync"
     packages="$packages build-essential cmake pkg-config"
@@ -386,6 +406,96 @@ setup_cupcake_environment() {
         mkdir -p /var/log/cupcake
         mkdir -p /opt/whisper.cpp
         
+        # Build and install Whisper.cpp for CUPCAKE
+        echo '=== Setting up Whisper.cpp for CUPCAKE ==='
+        cd /opt/whisper.cpp
+
+        # Clone Whisper.cpp repository (matching transcribe worker)
+        echo 'Cloning Whisper.cpp repository...'
+        git clone https://github.com/ggerganov/whisper.cpp.git .
+
+        # Detect system capabilities for model selection
+        echo 'Detecting system capabilities...'
+        TOTAL_RAM=\$(free -m | awk 'NR==2{printf \"%d\", \$2}')
+        CPU_CORES=\$(nproc)
+        PI_MODEL_REV=\$(cat /proc/cpuinfo | grep 'Revision' | awk '{print \$3}' | head -1)
+
+        echo \"System specs: \${TOTAL_RAM}MB RAM, \${CPU_CORES} CPU cores, Pi model revision: \${PI_MODEL_REV}\"
+
+        # Download models first (like transcribe worker does)
+        echo 'Downloading Whisper models...'
+
+        # Always download tiny as fallback
+        ./models/download-ggml-model.sh tiny.en
+
+        # Download appropriate models based on system capabilities
+        if [ \"\$TOTAL_RAM\" -lt 2048 ]; then
+            # Low memory systems (< 2GB) - tiny model only
+            echo 'Low memory system detected - using tiny model'
+            DEFAULT_MODEL='/opt/whisper.cpp/models/ggml-tiny.en.bin'
+            THREAD_COUNT='2'
+        elif [ \"\$TOTAL_RAM\" -lt 4096 ]; then
+            # Medium memory systems (2-4GB) - base model
+            echo 'Medium memory system detected - downloading base model'
+            ./models/download-ggml-model.sh base.en
+            DEFAULT_MODEL='/opt/whisper.cpp/models/ggml-base.en.bin'
+            THREAD_COUNT='4'
+        else
+            # High memory systems (4GB+) - small model for Pi 5
+            echo 'High memory system detected - downloading small model'
+            ./models/download-ggml-model.sh base.en   # backup
+            ./models/download-ggml-model.sh small.en
+            DEFAULT_MODEL='/opt/whisper.cpp/models/ggml-small.en.bin'
+            THREAD_COUNT='6'
+        fi
+
+        # Build Whisper.cpp (matching transcribe worker build commands exactly)
+        echo 'Building Whisper.cpp...'
+        cmake -B build
+        cmake --build build --config Release -j \$(nproc)
+
+        # Verify the binary was built correctly
+        if [ ! -f 'build/bin/main' ]; then
+            echo 'ERROR: whisper main binary not found after build!'
+            exit 1
+        fi
+
+        echo 'Build completed successfully. Binary location: /opt/whisper.cpp/build/bin/main'
+
+        # Create environment configuration matching CUPCAKE settings.py format
+        echo 'Creating Whisper.cpp environment configuration...'
+        mkdir -p /etc/environment.d
+        cat > /etc/environment.d/50-whisper.conf << EOF
+# Whisper.cpp configuration for CUPCAKE (matches settings.py)
+WHISPERCPP_PATH=/opt/whisper.cpp/build/bin/main
+WHISPERCPP_DEFAULT_MODEL=\${DEFAULT_MODEL}
+WHISPERCPP_THREAD_COUNT=\${THREAD_COUNT}
+EOF
+
+        # Create systemd environment file for services
+        mkdir -p /etc/systemd/system.conf.d
+        cat > /etc/systemd/system.conf.d/whisper.conf << EOF
+[Manager]
+DefaultEnvironment=WHISPERCPP_PATH=/opt/whisper.cpp/build/bin/main
+DefaultEnvironment=WHISPERCPP_DEFAULT_MODEL=\${DEFAULT_MODEL}
+DefaultEnvironment=WHISPERCPP_THREAD_COUNT=\${THREAD_COUNT}
+EOF
+
+        # Test the installation
+        echo 'Testing Whisper.cpp installation...'
+        if /opt/whisper.cpp/build/bin/main --help > /dev/null 2>&1; then
+            echo 'Whisper.cpp installation test passed'
+        else
+            echo 'WARNING: Whisper.cpp installation test failed'
+        fi
+
+        echo '=== Whisper.cpp setup completed ==='
+        echo \"Binary path: /opt/whisper.cpp/build/bin/main\"
+        echo \"Default model: \${DEFAULT_MODEL}\"
+        echo \"Thread count: \${THREAD_COUNT}\"
+        echo 'Model files available:'
+        ls -la /opt/whisper.cpp/models/ | grep '\.bin\$' || echo 'No model files found'
+
         # Set ownership
         chown -R cupcake:cupcake /opt/cupcake /var/lib/cupcake /var/log/cupcake /opt/whisper.cpp
     "
@@ -462,6 +572,27 @@ install_python_environment() {
 install_cupcake_source() {
     log "Installing CUPCAKE source code..."
 
+    # Copy external configuration files if they exist (matching QEMU version)
+    if [[ -d "$CONFIG_DIR/system" ]]; then
+        progress "Copying system configuration files..."
+        sudo cp -r "$CONFIG_DIR/system/"* "$MOUNT_DIR/" 2>/dev/null || true
+    fi
+
+    if [[ -d "$SCRIPTS_DIR" ]]; then
+        progress "Copying deployment scripts..."
+        sudo mkdir -p "$MOUNT_DIR/opt/cupcake/scripts"
+        sudo cp -r "$SCRIPTS_DIR/"* "$MOUNT_DIR/opt/cupcake/scripts/"
+        sudo chmod +x "$MOUNT_DIR/opt/cupcake/scripts/"*
+        sudo chown -R cupcake:cupcake "$MOUNT_DIR/opt/cupcake/scripts" 2>/dev/null || true
+    fi
+
+    if [[ -d "$ASSETS_DIR" ]]; then
+        progress "Copying assets..."
+        sudo mkdir -p "$MOUNT_DIR/opt/cupcake/assets"
+        sudo cp -r "$ASSETS_DIR/"* "$MOUNT_DIR/opt/cupcake/assets/" 2>/dev/null || true
+        sudo chown -R cupcake:cupcake "$MOUNT_DIR/opt/cupcake/assets" 2>/dev/null || true
+    fi
+
     # Clone CUPCAKE repository directly into the image
     progress "Cloning CUPCAKE repository..."
     sudo chroot "$MOUNT_DIR" /bin/bash -c "
@@ -469,9 +600,9 @@ install_cupcake_source() {
         sudo -u cupcake git clone https://github.com/noatgnu/cupcake.git app
         chown -R cupcake:cupcake /opt/cupcake/app
 
-        # Remove unnecessary files to save space
+        # Remove unnecessary files to save space (matching QEMU exclusions)
         cd /opt/cupcake/app
-        sudo -u cupcake rm -rf .git .github .idea .claude tests test_* *.md README* docker-compose* Dockerfile* raspberry-pi pi-deployment ansible-playbooks backups temp_extract data2 models staticfiles media
+        sudo -u cupcake rm -rf .git .github .idea .claude tests test_* *.md README* docker-compose* Dockerfile* raspberry-pi pi-deployment ansible-playbooks backups temp_extract data2 models staticfiles media __pycache__ *.pyc .env build dist node_modules venv env
     "
     
     progress "Installing CUPCAKE Python dependencies..."
@@ -484,8 +615,9 @@ install_cupcake_source() {
             pip install -r requirements.txt
         fi
 
-        # Create necessary directories
+        # Create necessary directories (matching QEMU structure)
         sudo -u cupcake mkdir -p /opt/cupcake/app/{media,staticfiles,logs}
+        sudo -u cupcake mkdir -p /opt/cupcake/{data,backup,config}
         sudo -u cupcake mkdir -p /var/log/cupcake
 
         # Set up Django

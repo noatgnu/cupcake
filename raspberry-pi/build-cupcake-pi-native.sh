@@ -406,7 +406,7 @@ install_python_environment() {
         source /opt/cupcake/venv/bin/activate
         pip install --upgrade pip setuptools wheel
         
-        # Install CUPCAKE Python dependencies
+        # Install CUPCAKE Python dependencies from requirements.txt
         pip install \
             'Django>=4.2,<5.0' \
             djangorestframework \
@@ -421,8 +421,35 @@ install_python_environment() {
             requests \
             psutil \
             numpy \
-            pandas
-            
+            pandas \
+            Pillow \
+            openpyxl \
+            python-multipart \
+            pydantic \
+            fastapi \
+            websockets \
+            aiofiles \
+            python-jose \
+            passlib \
+            bcrypt \
+            python-dotenv \
+            python-magic \
+            pathvalidate \
+            chardet \
+            lxml \
+            beautifulsoup4 \
+            markdown \
+            bleach \
+            django-extensions \
+            django-debug-toolbar \
+            django-filter \
+            djangorestframework-simplejwt \
+            django-oauth-toolkit \
+            social-auth-app-django \
+            whitenoise \
+            dj-database-url \
+            python-decouple
+
         # Fix ownership
         chown -R cupcake:cupcake /opt/cupcake/venv
     "
@@ -430,50 +457,256 @@ install_python_environment() {
     log "Python environment configured"
 }
 
-# Build Whisper.cpp natively
-install_whisper() {
-    log "Building Whisper.cpp natively for $PI_MODEL..."
-    
-    progress "Cloning Whisper.cpp repository..."
+# Install CUPCAKE source code
+install_cupcake_source() {
+    log "Installing CUPCAKE source code..."
+
+    # Clone CUPCAKE repository directly into the image
+    progress "Cloning CUPCAKE repository..."
     sudo chroot "$MOUNT_DIR" /bin/bash -c "
-        cd /opt/whisper.cpp
-        sudo -u cupcake git clone https://github.com/ggerganov/whisper.cpp.git .
-        
-        # Download models based on detected configuration
-        echo 'Downloading Whisper models...'
-        sudo -u cupcake ./models/download-ggml-model.sh tiny.en
-        sudo -u cupcake ./models/download-ggml-model.sh base.en
-        
-        # Download small model only for higher-end systems
-        if [ '$PI_RAM_MB' -gt 4096 ]; then
-            sudo -u cupcake ./models/download-ggml-model.sh small.en
-        fi
+        cd /opt/cupcake
+        sudo -u cupcake git clone https://github.com/noatgnu/cupcake.git app
+        chown -R cupcake:cupcake /opt/cupcake/app
+
+        # Remove unnecessary files to save space
+        cd /opt/cupcake/app
+        sudo -u cupcake rm -rf .git .github .idea .claude tests test_* *.md README* docker-compose* Dockerfile* raspberry-pi pi-deployment ansible-playbooks backups temp_extract data2 models staticfiles media
     "
     
-    progress "Building Whisper.cpp (this may take 10-20 minutes)..."
+    progress "Installing CUPCAKE Python dependencies..."
     sudo chroot "$MOUNT_DIR" /bin/bash -c "
-        cd /opt/whisper.cpp
-        
-        # Build with optimizations for Pi
-        sudo -u cupcake cmake -B build \
-            -DWHISPER_OPENBLAS=ON \
-            -DWHISPER_NO_AVX=ON \
-            -DWHISPER_NO_AVX2=ON \
-            -DCMAKE_BUILD_TYPE=Release
-            
-        sudo -u cupcake cmake --build build --config Release -j $PI_CORES
-        
-        # Verify build
-        if [ -f build/bin/main ]; then
-            echo 'Whisper.cpp built successfully'
-            sudo -u cupcake ./build/bin/main --help > /dev/null && echo 'Whisper.cpp test passed'
-        else
-            echo 'ERROR: Whisper.cpp build failed'
-            exit 1
+        cd /opt/cupcake/app
+        source /opt/cupcake/venv/bin/activate
+
+        # Install from requirements.txt if it exists
+        if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
         fi
+
+        # Create necessary directories
+        sudo -u cupcake mkdir -p /opt/cupcake/app/{media,staticfiles,logs}
+        sudo -u cupcake mkdir -p /var/log/cupcake
+
+        # Set up Django
+        export DJANGO_SETTINGS_MODULE=cupcake.settings
+        export DATABASE_URL=postgresql://cupcake:cupcake123@localhost/cupcake_db
+        export REDIS_URL=redis://localhost:6379/0
+
+        # Collect static files
+        python manage.py collectstatic --noinput --clear || echo 'Static files collection failed - will be done on first boot'
+
+        chown -R cupcake:cupcake /opt/cupcake/app
+    "
+
+    log "CUPCAKE source code installed"
+}
+
+# Create CUPCAKE systemd services
+create_cupcake_services() {
+    log "Creating CUPCAKE systemd services..."
+
+    # Create CUPCAKE web service
+    sudo tee "$MOUNT_DIR/etc/systemd/system/cupcake-web.service" > /dev/null << EOF
+[Unit]
+Description=CUPCAKE Web Server
+After=network.target postgresql.service redis.service
+Requires=postgresql.service redis.service
+
+[Service]
+Type=notify
+User=cupcake
+Group=cupcake
+WorkingDirectory=/opt/cupcake/app
+Environment=PATH=/opt/cupcake/venv/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake123@localhost/cupcake_db
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+ExecStart=/opt/cupcake/venv/bin/gunicorn cupcake.wsgi:application --bind 127.0.0.1:8000 --workers 2 --timeout 300
+ExecReload=/bin/kill -s HUP \$MAINPID
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cupcake-web
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Create CUPCAKE Celery worker service
+    sudo tee "$MOUNT_DIR/etc/systemd/system/cupcake-worker.service" > /dev/null << EOF
+[Unit]
+Description=CUPCAKE Celery Worker
+After=network.target postgresql.service redis.service
+Requires=redis.service
+
+[Service]
+Type=forking
+User=cupcake
+Group=cupcake
+WorkingDirectory=/opt/cupcake/app
+Environment=PATH=/opt/cupcake/venv/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake123@localhost/cupcake_db
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+ExecStart=/opt/cupcake/venv/bin/celery -A cupcake worker --loglevel=info --pidfile=/var/run/cupcake/worker.pid
+ExecStop=/bin/kill -s TERM \$MAINPID
+ExecReload=/bin/kill -s HUP \$MAINPID
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cupcake-worker
+PIDFile=/var/run/cupcake/worker.pid
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Create CUPCAKE Celery beat service (scheduler)
+    sudo tee "$MOUNT_DIR/etc/systemd/system/cupcake-beat.service" > /dev/null << EOF
+[Unit]
+Description=CUPCAKE Celery Beat Scheduler
+After=network.target postgresql.service redis.service
+Requires=redis.service
+
+[Service]
+Type=forking
+User=cupcake
+Group=cupcake
+WorkingDirectory=/opt/cupcake/app
+Environment=PATH=/opt/cupcake/venv/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake123@localhost/cupcake_db
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+ExecStart=/opt/cupcake/venv/bin/celery -A cupcake beat --loglevel=info --pidfile=/var/run/cupcake/beat.pid --schedule=/var/lib/cupcake/celerybeat-schedule
+ExecStop=/bin/kill -s TERM \$MAINPID
+ExecReload=/bin/kill -s HUP \$MAINPID
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cupcake-beat
+PIDFile=/var/run/cupcake/beat.pid
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Create CUPCAKE first-boot setup service
+    sudo tee "$MOUNT_DIR/etc/systemd/system/cupcake-setup.service" > /dev/null << EOF
+[Unit]
+Description=CUPCAKE First Boot Setup
+After=network.target postgresql.service redis.service
+Requires=postgresql.service redis.service
+Before=cupcake-web.service
+
+[Service]
+Type=oneshot
+User=cupcake
+Group=cupcake
+WorkingDirectory=/opt/cupcake/app
+Environment=PATH=/opt/cupcake/venv/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake123@localhost/cupcake_db
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+ExecStart=/opt/cupcake/scripts/first-boot-setup.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cupcake-setup
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Create runtime directory for PID files
+    sudo tee "$MOUNT_DIR/etc/tmpfiles.d/cupcake.conf" > /dev/null << EOF
+d /var/run/cupcake 0755 cupcake cupcake -
+EOF
+
+    # Create first boot setup script
+    sudo tee "$MOUNT_DIR/opt/cupcake/scripts/first-boot-setup.sh" > /dev/null << 'EOF'
+#!/bin/bash
+# CUPCAKE First Boot Setup Script
+
+set -e
+
+LOG_FILE="/var/log/cupcake/first-boot.log"
+mkdir -p "$(dirname "$LOG_FILE")"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "$(date): Starting CUPCAKE first boot setup..."
+
+cd /opt/cupcake/app
+
+# Wait for PostgreSQL to be ready
+echo "Waiting for PostgreSQL..."
+while ! pg_isready -h localhost -p 5432 -U cupcake; do
+    sleep 2
+done
+
+# Wait for Redis to be ready
+echo "Waiting for Redis..."
+while ! redis-cli ping > /dev/null 2>&1; do
+    sleep 2
+done
+
+# Activate virtual environment
+source /opt/cupcake/venv/bin/activate
+
+# Set environment variables
+export DJANGO_SETTINGS_MODULE=cupcake.settings
+export DATABASE_URL=postgresql://cupcake:cupcake123@localhost/cupcake_db
+export REDIS_URL=redis://localhost:6379/0
+
+# Run Django migrations
+echo "Running Django migrations..."
+python manage.py migrate --noinput
+
+# Collect static files
+echo "Collecting static files..."
+python manage.py collectstatic --noinput --clear
+
+# Create superuser if it doesn't exist
+echo "Setting up admin user..."
+python manage.py shell << PYEOF
+from django.contrib.auth.models import User
+if not User.objects.filter(username='admin').exists():
+    User.objects.create_superuser('admin', 'admin@cupcake.local', 'cupcake123')
+    print('Admin user created: admin / cupcake123')
+else:
+    print('Admin user already exists')
+PYEOF
+
+# Load initial data if needed
+echo "Loading initial data..."
+python manage.py loaddata initial_data.json 2>/dev/null || echo "No initial data file found"
+
+# Set proper permissions
+chown -R cupcake:cupcake /opt/cupcake /var/log/cupcake /var/lib/cupcake
+
+echo "$(date): CUPCAKE first boot setup completed successfully"
+
+# Disable this service so it doesn't run again
+systemctl disable cupcake-setup.service
+EOF
+
+    sudo chmod +x "$MOUNT_DIR/opt/cupcake/scripts/first-boot-setup.sh"
+
+    # Enable services
+    sudo chroot "$MOUNT_DIR" /bin/bash -c "
+        systemctl enable cupcake-setup.service
+        systemctl enable cupcake-web.service
+        systemctl enable cupcake-worker.service
+        systemctl enable cupcake-beat.service
     "
     
-    log "Whisper.cpp native build completed"
+    log "CUPCAKE systemd services created"
 }
 
 # Configure system services
@@ -985,9 +1218,9 @@ main() {
     progress "Step 7/10: Install Python environment"
     install_python_environment
     
-    progress "Step 8/10: Build Whisper.cpp"
-    install_whisper
-    
+    progress "Step 8/10: Install CUPCAKE source"
+    install_cupcake_source
+
     progress "Step 9/10: Configure services"
     configure_services
     
@@ -1036,6 +1269,7 @@ main() {
     echo "   • No emulation overhead"
     echo "   • Optimized for your exact hardware"  
     echo "   • Native performance validation"
+    echo "   • Hardware-specific optimizations"
     echo "   • Automatic storage adaptation"
     echo ""
 }

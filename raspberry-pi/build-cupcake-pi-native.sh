@@ -964,8 +964,9 @@ configure_services() {
         # Create CUPCAKE database and user
         sudo -u postgres createuser cupcake
         sudo -u postgres createdb cupcake_db -O cupcake
-        sudo -u postgres psql -c \\\"ALTER USER cupcake WITH PASSWORD 'cupcake123';\\\"
-        
+        sudo -u postgres psql -c \\\"ALTER USER cupcake WITH PASSWORD 'cupcake123';\\\" || \\
+            sudo -u postgres psql -c \\\$'ALTER USER cupcake WITH PASSWORD \\'cupcake123\\';'
+
         service postgresql stop
     "
     
@@ -1291,13 +1292,43 @@ finalize_image() {
         rm -rf /var/cache/apt/* 2>/dev/null || true
     "
     
-    # Unmount filesystem
+    # Unmount filesystem with proper cleanup
     progress "Unmounting filesystem..."
-    sudo umount "$MOUNT_DIR/boot"
-    sudo umount "$MOUNT_DIR"
-    
+
+    # First, ensure no processes are using the chroot
+    sudo fuser -km "$MOUNT_DIR" 2>/dev/null || true
+    sleep 2
+
+    # Unmount bind mounts first (in reverse order)
+    sudo umount "$MOUNT_DIR/dev/pts" 2>/dev/null || warn "Failed to unmount /dev/pts"
+    sudo umount "$MOUNT_DIR/dev" 2>/dev/null || warn "Failed to unmount /dev"
+    sudo umount "$MOUNT_DIR/sys" 2>/dev/null || warn "Failed to unmount /sys"
+    sudo umount "$MOUNT_DIR/proc" 2>/dev/null || warn "Failed to unmount /proc"
+
+    # Wait a moment for any remaining processes to finish
+    sleep 2
+
+    # Unmount boot partition
+    sudo umount "$MOUNT_DIR/boot" 2>/dev/null || {
+        warn "Boot partition busy, forcing unmount..."
+        sudo umount -l "$MOUNT_DIR/boot" 2>/dev/null || true
+    }
+
+    # Unmount root partition
+    sudo umount "$MOUNT_DIR" 2>/dev/null || {
+        warn "Root partition busy, forcing unmount..."
+        sudo umount -l "$MOUNT_DIR" 2>/dev/null || true
+    }
+
+    # Wait for lazy unmounts to complete
+    sleep 3
+
     # Detach loop device
-    sudo losetup -d "$LOOP_DEVICE"
+    sudo losetup -d "$LOOP_DEVICE" || {
+        warn "Loop device busy, waiting and retrying..."
+        sleep 5
+        sudo losetup -d "$LOOP_DEVICE" || warn "Failed to detach loop device"
+    }
     LOOP_DEVICE=""
     
     # Move to output directory

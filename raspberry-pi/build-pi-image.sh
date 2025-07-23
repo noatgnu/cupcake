@@ -565,20 +565,20 @@ chmod +x /opt/whisper.cpp/build/bin/main
 # Create environment configuration matching CUPCAKE settings.py format
 echo "Creating Whisper.cpp environment configuration..."
 mkdir -p /etc/environment.d
-cat > /etc/environment.d/50-whisper.conf << EOF
+cat > /etc/environment.d/50-whisper.conf << \\EOF
 # Whisper.cpp configuration for CUPCAKE (matches settings.py)
 WHISPERCPP_PATH=/opt/whisper.cpp/build/bin/main
-WHISPERCPP_DEFAULT_MODEL=${DEFAULT_MODEL}
-WHISPERCPP_THREAD_COUNT=${THREAD_COUNT}
+WHISPERCPP_DEFAULT_MODEL=\${DEFAULT_MODEL}
+WHISPERCPP_THREAD_COUNT=\${THREAD_COUNT}
 EOF
 
 # Create systemd environment file for services
 mkdir -p /etc/systemd/system.conf.d
-cat > /etc/systemd/system.conf.d/whisper.conf << EOF
+cat > /etc/systemd/system.conf.d/whisper.conf << \\EOF
 [Manager]
 DefaultEnvironment=WHISPERCPP_PATH=/opt/whisper.cpp/build/bin/main
-DefaultEnvironment=WHISPERCPP_DEFAULT_MODEL=${DEFAULT_MODEL}
-DefaultEnvironment=WHISPERCPP_THREAD_COUNT=${THREAD_COUNT}
+DefaultEnvironment=WHISPERCPP_DEFAULT_MODEL=\${DEFAULT_MODEL}
+DefaultEnvironment=WHISPERCPP_THREAD_COUNT=\${THREAD_COUNT}
 EOF
 
 # Test the installation
@@ -591,10 +591,10 @@ fi
 
 echo "=== Whisper.cpp setup completed ==="
 echo "Binary path: /opt/whisper.cpp/build/bin/main"
-echo "Default model: ${DEFAULT_MODEL}"
-echo "Thread count: ${THREAD_COUNT}"
+echo "Default model: \${DEFAULT_MODEL}"
+echo "Thread count: \${THREAD_COUNT}"
 echo "Model files available:"
-ls -la /opt/whisper.cpp/models/ | grep "\.bin$" || echo "No model files found"
+ls -la /opt/whisper.cpp/models/ | grep "\\.bin\$" || echo "No model files found"
 
 # Configure PostgreSQL
 systemctl enable postgresql
@@ -607,7 +607,8 @@ echo 'random_page_cost = 1.1' >> /etc/postgresql/14/main/postgresql.conf
 service postgresql start
 sudo -u postgres createuser cupcake
 sudo -u postgres createdb cupcake_db -O cupcake
-sudo -u postgres psql -c "ALTER USER cupcake WITH PASSWORD 'cupcake123';"
+sudo -u postgres psql -c "ALTER USER cupcake WITH PASSWORD 'cupcake123';" || \\
+    sudo -u postgres psql -c \\\$'ALTER USER cupcake WITH PASSWORD \\'cupcake123\\';'
 service postgresql stop
 
 # Configure Redis
@@ -617,7 +618,7 @@ echo 'maxmemory-policy allkeys-lru' >> /etc/redis/redis.conf
 
 # Configure Nginx
 systemctl enable nginx
-cat > /etc/nginx/sites-available/cupcake << 'NGINXEOF'
+cat > /etc/nginx/sites-available/cupcake << \\EOF
 server {
     listen 80;
     server_name _;
@@ -625,10 +626,10 @@ server {
 
     location / {
         proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host \\\$host;
+        proxy_set_header X-Real-IP \\\$remote_addr;
+        proxy_set_header X-Forwarded-For \\\$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \\\$scheme;
         proxy_read_timeout 300s;
         proxy_connect_timeout 75s;
     }
@@ -643,7 +644,7 @@ server {
         expires 7d;
     }
 }
-NGINXEOF
+EOF
 
 ln -sf /etc/nginx/sites-available/cupcake /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
@@ -892,3 +893,41 @@ ENABLEEOF
 
 echo "CUPCAKE stage completed successfully"
 
+EOF
+
+    chmod +x "$stage_dir/01-cupcake/01-run.sh"
+
+    log "Custom CUPCAKE stage created"
+}
+
+# Main build execution
+main() {
+    log "Starting CUPCAKE Pi image build for $PI_MODEL..."
+
+    # Main build steps
+    check_prerequisites
+    setup_pi_gen
+    prepare_build
+    configure_pi_gen
+    create_custom_stage
+
+    # Run pi-gen build
+    log "Starting pi-gen build process..."
+    cd "$PI_GEN_DIR"
+
+    # Run the build
+    sudo ./build.sh
+
+    log "Pi image build completed successfully!"
+    log "Output images available in: $PI_GEN_DIR/deploy/"
+
+    # List generated images
+    if [ -d "$PI_GEN_DIR/deploy" ]; then
+        info "Generated images:"
+        ls -la "$PI_GEN_DIR/deploy/"*.img* 2>/dev/null || true
+        ls -la "$PI_GEN_DIR/deploy/"*.zip 2>/dev/null || true
+    fi
+}
+
+# Run main build process
+main "$@"

@@ -9,3 +9,6 @@ staticfiles
 .env.cloudflared
 *.sqlite3
 *.cupcake
+*.zip
+*.md
+*.tar

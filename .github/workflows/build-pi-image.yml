@@ -63,7 +63,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          qemu-arm-static qemu-user-static \
+          qemu-user-static \
           debootstrap git \
           parted kpartx fdisk gdisk \
           dosfstools e2fsprogs \
@@ -307,7 +307,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          qemu-arm-static qemu-user-static \
+          qemu-user-static \
           debootstrap git \
           parted kpartx fdisk gdisk \
           dosfstools e2fsprogs \

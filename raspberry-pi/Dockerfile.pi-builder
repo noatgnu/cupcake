@@ -1,0 +1,67 @@
+# CUPCAKE Pi Image Builder Docker Image
+# Based on Ubuntu 22.04 with all pi-gen dependencies pre-installed
+
+FROM ubuntu:22.04
+
+# Set non-interactive mode for apt
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install pi-gen dependencies and build tools
+RUN apt-get update && apt-get install -y \
+    # Core pi-gen dependencies
+    qemu-user-static \
+    debootstrap git \
+    parted kpartx fdisk gdisk \
+    dosfstools e2fsprogs \
+    zip xz-utils \
+    python3 python3-pip \
+    binfmt-support \
+    rsync \
+    quilt \
+    libarchive-tools \
+    arch-test \
+    coreutils \
+    zerofree \
+    tar \
+    whois \
+    grep \
+    libcap2-bin \
+    xxd \
+    file \
+    kmod \
+    bc \
+    pigz \
+    # Additional build tools
+    curl wget \
+    sudo \
+    ca-certificates \
+    # Node.js for frontend builds (will be installed via script in pi-gen)
+    && rm -rf /var/lib/apt/lists/*
+
+# Create build user
+RUN useradd -m -s /bin/bash -G sudo builder && \
+    echo "builder ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Set up build directory
+WORKDIR /build
+RUN chown builder:builder /build
+
+# Switch to build user
+USER builder
+
+# Set up pi-gen repository
+RUN git clone https://github.com/RPi-Distro/pi-gen.git /build/pi-gen
+
+# Create directories for CUPCAKE source and build output
+RUN mkdir -p /build/cupcake-src /build/output
+
+# Copy the enhanced build script
+COPY --chown=builder:builder build-pi-image.sh /build/
+RUN chmod +x /build/build-pi-image.sh
+
+# Set default command
+CMD ["/bin/bash"]
+
+LABEL maintainer="CUPCAKE Team"
+LABEL description="Docker image for building CUPCAKE Raspberry Pi images using pi-gen"
+LABEL version="1.0"

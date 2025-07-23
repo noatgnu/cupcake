@@ -191,6 +191,11 @@ jobs:
         cat > stage-cupcake/01-cupcake/01-run.sh << 'EOF'
         #!/bin/bash -e
         
+        # Copy configuration files first
+        if [ -d "files" ]; then
+            cp -r files/* "${ROOTFS_DIR}/"
+        fi
+        
         # Install system packages
         on_chroot << 'CHROOT_EOF'
         export DEBIAN_FRONTEND=noninteractive
@@ -226,11 +231,10 @@ jobs:
         
         CHROOT_EOF
         
-        # Copy configuration files
-        cp -r files/* "${ROOTFS_DIR}/"
-        
-        # Set permissions
-        chmod +x "${ROOTFS_DIR}/opt/cupcake/scripts/"*
+        # Set permissions after copying files
+        if [ -d "${ROOTFS_DIR}/opt/cupcake/scripts" ]; then
+            chmod +x "${ROOTFS_DIR}/opt/cupcake/scripts/"*
+        fi
         
         # Create cupcake user and directories
         on_chroot << 'CHROOT_EOF'
@@ -240,6 +244,11 @@ jobs:
             echo "cupcake:cupcake123" | chpasswd
             usermod -aG sudo cupcake
         fi
+        
+        # Create required directories
+        mkdir -p /var/log/cupcake
+        mkdir -p /var/lib/cupcake
+        mkdir -p /opt/cupcake/{data,logs,backup,media}
         
         # Set ownership
         chown -R cupcake:cupcake /opt/cupcake
@@ -251,7 +260,11 @@ jobs:
         systemctl enable postgresql
         systemctl enable redis-server
         systemctl enable nginx
-        systemctl enable cupcake-setup.service
+        
+        # Enable cupcake setup service if it exists
+        if [ -f "/etc/systemd/system/cupcake-setup.service" ]; then
+            systemctl enable cupcake-setup.service
+        fi
         
         CHROOT_EOF
         
@@ -265,7 +278,18 @@ jobs:
         #!/bin/bash -e
         
         # Add Pi 4 optimizations to boot config
-        cat >> "${ROOTFS_DIR}/boot/firmware/config.txt" << 'BOOTEOF'
+        # Check which boot path exists
+        if [ -f "${ROOTFS_DIR}/boot/firmware/config.txt" ]; then
+            BOOT_CONFIG="${ROOTFS_DIR}/boot/firmware/config.txt"
+        elif [ -f "${ROOTFS_DIR}/boot/config.txt" ]; then
+            BOOT_CONFIG="${ROOTFS_DIR}/boot/config.txt"
+        else
+            echo "Creating boot config file..."
+            mkdir -p "${ROOTFS_DIR}/boot/firmware"
+            BOOT_CONFIG="${ROOTFS_DIR}/boot/firmware/config.txt"
+        fi
+        
+        cat >> "${BOOT_CONFIG}" << 'BOOTEOF'
         
         # CUPCAKE Pi 4 Optimizations
         arm_64bit=1
@@ -468,6 +492,11 @@ jobs:
         cat > stage-cupcake/01-cupcake/01-run.sh << 'EOF'
         #!/bin/bash -e
         
+        # Copy configuration files first
+        if [ -d "files" ]; then
+            cp -r files/* "${ROOTFS_DIR}/"
+        fi
+        
         # Install system packages
         on_chroot << 'CHROOT_EOF'
         export DEBIAN_FRONTEND=noninteractive
@@ -503,11 +532,10 @@ jobs:
         
         CHROOT_EOF
         
-        # Copy configuration files
-        cp -r files/* "${ROOTFS_DIR}/"
-        
-        # Set permissions
-        chmod +x "${ROOTFS_DIR}/opt/cupcake/scripts/"*
+        # Set permissions after copying files
+        if [ -d "${ROOTFS_DIR}/opt/cupcake/scripts" ]; then
+            chmod +x "${ROOTFS_DIR}/opt/cupcake/scripts/"*
+        fi
         
         # Create cupcake user and directories
         on_chroot << 'CHROOT_EOF'
@@ -517,6 +545,11 @@ jobs:
             echo "cupcake:cupcake123" | chpasswd
             usermod -aG sudo cupcake
         fi
+        
+        # Create required directories
+        mkdir -p /var/log/cupcake
+        mkdir -p /var/lib/cupcake
+        mkdir -p /opt/cupcake/{data,logs,backup,media}
         
         # Set ownership
         chown -R cupcake:cupcake /opt/cupcake
@@ -528,7 +561,11 @@ jobs:
         systemctl enable postgresql
         systemctl enable redis-server
         systemctl enable nginx
-        systemctl enable cupcake-setup.service
+        
+        # Enable cupcake setup service if it exists
+        if [ -f "/etc/systemd/system/cupcake-setup.service" ]; then
+            systemctl enable cupcake-setup.service
+        fi
         
         CHROOT_EOF
         
@@ -542,7 +579,18 @@ jobs:
         #!/bin/bash -e
         
         # Add Pi 5 optimizations to boot config
-        cat >> "${ROOTFS_DIR}/boot/firmware/config.txt" << 'BOOTEOF'
+        # Check which boot path exists
+        if [ -f "${ROOTFS_DIR}/boot/firmware/config.txt" ]; then
+            BOOT_CONFIG="${ROOTFS_DIR}/boot/firmware/config.txt"
+        elif [ -f "${ROOTFS_DIR}/boot/config.txt" ]; then
+            BOOT_CONFIG="${ROOTFS_DIR}/boot/config.txt"
+        else
+            echo "Creating boot config file..."
+            mkdir -p "${ROOTFS_DIR}/boot/firmware"
+            BOOT_CONFIG="${ROOTFS_DIR}/boot/firmware/config.txt"
+        fi
+        
+        cat >> "${BOOT_CONFIG}" << 'BOOTEOF'
         
         # CUPCAKE Pi 5 Optimizations
         arm_64bit=1

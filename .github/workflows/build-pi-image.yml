@@ -75,16 +75,10 @@ jobs:
           libarchive-tools \
           arch-test \
           coreutils \
-          quilt \
-          parted \
-          realpath \
           zerofree \
-          pxz \
           tar \
           whois \
-          grep \
-          rsync \
-          xz-utils
+          grep
 
     - name: Clone and setup pi-gen
       run: |
@@ -333,16 +327,10 @@ jobs:
           libarchive-tools \
           arch-test \
           coreutils \
-          quilt \
-          parted \
-          realpath \
           zerofree \
-          pxz \
           tar \
           whois \
-          grep \
-          rsync \
-          xz-utils
+          grep
 
     - name: Clone and setup pi-gen
       run: |

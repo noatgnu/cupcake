@@ -413,7 +413,8 @@ install_python_environment() {
             django-cors-headers \
             psycopg2-binary \
             redis \
-            celery \
+            'django-rq>=2.0' \
+            rq \
             gunicorn \
             uvicorn \
             channels \
@@ -522,6 +523,10 @@ Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
 Environment=DATABASE_URL=postgresql://cupcake:cupcake123@localhost/cupcake_db
 Environment=REDIS_URL=redis://localhost:6379/0
 Environment=PYTHONPATH=/opt/cupcake/app
+Environment=DEBUG=True
+Environment=USE_WHISPER=True
+Environment=USE_OCR=True
+Environment=USE_LLM=True
 ExecStart=/opt/cupcake/venv/bin/gunicorn cupcake.wsgi:application --bind 127.0.0.1:8000 --workers 2 --timeout 300
 ExecReload=/bin/kill -s HUP \$MAINPID
 Restart=always
@@ -534,15 +539,15 @@ SyslogIdentifier=cupcake-web
 WantedBy=multi-user.target
 EOF
 
-    # Create CUPCAKE Celery worker service
-    sudo tee "$MOUNT_DIR/etc/systemd/system/cupcake-worker.service" > /dev/null << EOF
+    # Create CUPCAKE transcribe worker service (replaces Celery worker)
+    sudo tee "$MOUNT_DIR/etc/systemd/system/cupcake-transcribe.service" > /dev/null << EOF
 [Unit]
-Description=CUPCAKE Celery Worker
+Description=CUPCAKE Transcribe Worker
 After=network.target postgresql.service redis.service
 Requires=redis.service
 
 [Service]
-Type=forking
+Type=simple
 User=cupcake
 Group=cupcake
 WorkingDirectory=/opt/cupcake/app
@@ -551,29 +556,27 @@ Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
 Environment=DATABASE_URL=postgresql://cupcake:cupcake123@localhost/cupcake_db
 Environment=REDIS_URL=redis://localhost:6379/0
 Environment=PYTHONPATH=/opt/cupcake/app
-ExecStart=/opt/cupcake/venv/bin/celery -A cupcake worker --loglevel=info --pidfile=/var/run/cupcake/worker.pid
-ExecStop=/bin/kill -s TERM \$MAINPID
-ExecReload=/bin/kill -s HUP \$MAINPID
+Environment=USE_WHISPER=True
+ExecStart=/opt/cupcake/venv/bin/python manage.py rqworker transcribe
 Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=cupcake-worker
-PIDFile=/var/run/cupcake/worker.pid
+SyslogIdentifier=cupcake-transcribe
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    # Create CUPCAKE Celery beat service (scheduler)
-    sudo tee "$MOUNT_DIR/etc/systemd/system/cupcake-beat.service" > /dev/null << EOF
+    # Create CUPCAKE export worker service
+    sudo tee "$MOUNT_DIR/etc/systemd/system/cupcake-export.service" > /dev/null << EOF
 [Unit]
-Description=CUPCAKE Celery Beat Scheduler
+Description=CUPCAKE Export Worker
 After=network.target postgresql.service redis.service
 Requires=redis.service
 
 [Service]
-Type=forking
+Type=simple
 User=cupcake
 Group=cupcake
 WorkingDirectory=/opt/cupcake/app
@@ -582,15 +585,97 @@ Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
 Environment=DATABASE_URL=postgresql://cupcake:cupcake123@localhost/cupcake_db
 Environment=REDIS_URL=redis://localhost:6379/0
 Environment=PYTHONPATH=/opt/cupcake/app
-ExecStart=/opt/cupcake/venv/bin/celery -A cupcake beat --loglevel=info --pidfile=/var/run/cupcake/beat.pid --schedule=/var/lib/cupcake/celerybeat-schedule
-ExecStop=/bin/kill -s TERM \$MAINPID
-ExecReload=/bin/kill -s HUP \$MAINPID
+ExecStart=/opt/cupcake/venv/bin/python manage.py rqworker export
 Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=cupcake-beat
-PIDFile=/var/run/cupcake/beat.pid
+SyslogIdentifier=cupcake-export
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Create CUPCAKE import worker service
+    sudo tee "$MOUNT_DIR/etc/systemd/system/cupcake-import.service" > /dev/null << EOF
+[Unit]
+Description=CUPCAKE Import Worker
+After=network.target postgresql.service redis.service
+Requires=redis.service
+
+[Service]
+Type=simple
+User=cupcake
+Group=cupcake
+WorkingDirectory=/opt/cupcake/app
+Environment=PATH=/opt/cupcake/venv/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake123@localhost/cupcake_db
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+ExecStart=/opt/cupcake/venv/bin/python manage.py rqworker import
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cupcake-import
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Create CUPCAKE maintenance worker service
+    sudo tee "$MOUNT_DIR/etc/systemd/system/cupcake-maintenance.service" > /dev/null << EOF
+[Unit]
+Description=CUPCAKE Maintenance Worker
+After=network.target postgresql.service redis.service
+Requires=redis.service
+
+[Service]
+Type=simple
+User=cupcake
+Group=cupcake
+WorkingDirectory=/opt/cupcake/app
+Environment=PATH=/opt/cupcake/venv/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake123@localhost/cupcake_db
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+ExecStart=/opt/cupcake/venv/bin/python manage.py rqworker maintenance
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cupcake-maintenance
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Create CUPCAKE OCR worker service
+    sudo tee "$MOUNT_DIR/etc/systemd/system/cupcake-ocr.service" > /dev/null << EOF
+[Unit]
+Description=CUPCAKE OCR Worker
+After=network.target postgresql.service redis.service
+Requires=redis.service
+
+[Service]
+Type=simple
+User=cupcake
+Group=cupcake
+WorkingDirectory=/opt/cupcake/app
+Environment=PATH=/opt/cupcake/venv/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake123@localhost/cupcake_db
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+Environment=USE_OCR=True
+ExecStart=/opt/cupcake/venv/bin/python manage.py rqworker ocr
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cupcake-ocr
 
 [Install]
 WantedBy=multi-user.target
@@ -702,8 +787,11 @@ EOF
     sudo chroot "$MOUNT_DIR" /bin/bash -c "
         systemctl enable cupcake-setup.service
         systemctl enable cupcake-web.service
-        systemctl enable cupcake-worker.service
-        systemctl enable cupcake-beat.service
+        systemctl enable cupcake-transcribe.service
+        systemctl enable cupcake-export.service
+        systemctl enable cupcake-import.service
+        systemctl enable cupcake-maintenance.service
+        systemctl enable cupcake-ocr.service
     "
     
     log "CUPCAKE systemd services created"

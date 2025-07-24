@@ -249,11 +249,14 @@ ENABLE_SSH=$ENABLE_SSH
 DISABLE_SPLASH=1
 DISABLE_FIRST_BOOT_USER_RENAME=1
 
-# Custom stages
+# Custom stages - ensure our stage runs after stage2
 STAGE_LIST="stage0 stage1 stage2 stage-cupcake"
 
-# Skip stages we don't need
-SKIP_IMAGES="stage0,stage1"
+# Set work directory for pi-gen
+WORK_DIR="${BUILD_DIR}/pi-gen/work"
+
+# Only export image after our custom stage
+SKIP_IMAGES="stage0,stage1,stage2"
 
 # Locale settings
 TIMEZONE_DEFAULT="UTC"
@@ -285,13 +288,34 @@ create_custom_stage() {
     
     # Create clean stage directory
     rm -rf "$stage_dir"
-    mkdir -p "$stage_dir/01-cupcake/files"
-    local files_dir="$stage_dir/01-cupcake/files"
+    mkdir -p "$stage_dir/00-install-cupcake"
+    local files_dir="$stage_dir/00-install-cupcake/files"
+    mkdir -p "$files_dir"
     
     # Copy stage configuration if it exists
     if [ -d "$CONFIG_DIR/pi-gen-config/stage-cupcake" ]; then
         cp "$CONFIG_DIR/pi-gen-config/stage-cupcake/"* "$stage_dir/" 2>/dev/null || true
     fi
+    
+    # Ensure stage control files exist (these control pi-gen behavior)
+    # EXPORT_IMAGE tells pi-gen to create an image after this stage
+    touch "$stage_dir/EXPORT_IMAGE"
+    
+    # Ensure we have all required pi-gen stage files
+    # EXPORT_IMAGE already created above
+    
+    # Create SKIP file to ensure stage isn't skipped
+    if [ ! -f "$stage_dir/SKIP" ]; then
+        # Don't create SKIP file - we want this stage to run
+        :
+    fi
+    
+    # Create stage info file
+    cat > "$stage_dir/STAGE_INFO" << 'EOF'
+# CUPCAKE Installation Stage
+# Installs CUPCAKE LIMS on Raspberry Pi OS
+# Depends on: stage2 (base system)
+EOF
     
     # Copy system configuration files if they exist
     if [ -d "$CONFIG_DIR/system" ]; then
@@ -357,6 +381,15 @@ create_custom_stage() {
 
 # CUPCAKE Stage Prerun - runs on host before chroot
 echo "CUPCAKE stage prerun starting..."
+echo "ROOTFS_DIR: ${ROOTFS_DIR}"
+echo "Checking if ROOTFS_DIR exists: $(ls -ld "${ROOTFS_DIR}" 2>/dev/null || echo "DOES NOT EXIST")"
+
+# Ensure rootfs directory exists (pi-gen should create this, but let's be sure)
+if [ ! -d "${ROOTFS_DIR}" ]; then
+    echo "ERROR: ROOTFS_DIR does not exist: ${ROOTFS_DIR}"
+    echo "This suggests a pi-gen configuration issue"
+    exit 1
+fi
 
 # Clean up problematic systemd files
 if [ -f "${ROOTFS_DIR}/etc/systemd/system/dhcpcd.service.d/wait.conf" ]; then
@@ -368,7 +401,7 @@ EOF
     chmod +x "$stage_dir/prerun.sh"
     
     # Create the main setup script - this runs in pi-gen context
-    cat > "$stage_dir/01-cupcake/01-run.sh" << 'EOF'
+    cat > "$stage_dir/00-install-cupcake/01-run.sh" << 'EOF'
 #!/bin/bash -e
 
 echo "Starting CUPCAKE installation..."
@@ -378,45 +411,59 @@ echo "Working directory: $(pwd)"
 echo "Environment variables:"
 env | grep -E "(ROOTFS|WORK|STAGE)" || true
 
-# Try to determine ROOTFS_DIR if not set
+# In pi-gen, ROOTFS_DIR should be set by the build system
+# If it's not set, we're not running in the correct pi-gen context
 if [ -z "${ROOTFS_DIR}" ]; then
-    echo "ROOTFS_DIR not set, attempting to detect..."
-    
-    # Common pi-gen paths where rootfs might be located
-    POSSIBLE_PATHS=(
-        "${WORK_DIR}/rootfs"
-        "$(pwd)/work/rootfs"  
-        "../work/rootfs"
-        "${PWD%/*}/work/rootfs"
-        "${BUILD_DIR}/work/rootfs"
-    )
-    
-    for path in "${POSSIBLE_PATHS[@]}"; do
-        if [ -d "$path" ]; then
-            echo "Found potential rootfs at: $path"
-            export ROOTFS_DIR="$path"
-            break
-        fi
-    done
-    
-    if [ -z "${ROOTFS_DIR}" ]; then
-        echo "ERROR: Cannot determine ROOTFS_DIR location"
-        echo "Available directories:"
-        find . -maxdepth 3 -type d -name "*rootfs*" 2>/dev/null || true
-        exit 1
-    fi
+    echo "ERROR: ROOTFS_DIR not set - this script must run within pi-gen context"
+    echo "Current environment:"
+    env | grep -E "(DIR|PATH)" | sort
+    echo "Working directory: $(pwd)"
+    echo "Directory contents:"
+    ls -la
+    exit 1
+fi
+
+# Ensure parent directory exists before checking ROOTFS_DIR
+ROOTFS_PARENT="$(dirname "${ROOTFS_DIR}")"
+if [ ! -d "${ROOTFS_PARENT}" ]; then
+    echo "ERROR: Parent directory of ROOTFS_DIR does not exist: ${ROOTFS_PARENT}"
+    echo "This suggests pi-gen work directory setup failed"
+    exit 1
 fi
 
 echo "Using ROOTFS_DIR: ${ROOTFS_DIR}"
 
-# Ensure ROOTFS_DIR exists and is writable
+# Pi-gen should create ROOTFS_DIR before running our script
+# If it doesn't exist, something is wrong with the pi-gen setup
 if [ ! -d "${ROOTFS_DIR}" ]; then
-    echo "ERROR: ROOTFS_DIR directory does not exist: ${ROOTFS_DIR}"
+    echo "CRITICAL ERROR: ROOTFS_DIR does not exist: ${ROOTFS_DIR}"
+    echo "This indicates a pi-gen configuration or timing issue"
+    echo ""
+    echo "Diagnostic information:"
+    echo "Current working directory: $(pwd)"
+    echo "ROOTFS_DIR: ${ROOTFS_DIR}"
+    echo "ROOTFS_DIR parent: $(dirname "${ROOTFS_DIR}")"
+    echo ""
+    echo "Available directories in work area:"
+    find "$(dirname "${ROOTFS_DIR}")/../.." -type d -name "*rootfs*" 2>/dev/null || true
+    echo ""
+    echo "Full directory structure:"
+    find "$(dirname "${ROOTFS_DIR}")/../.." -maxdepth 3 -type d 2>/dev/null | head -20 || true
+    
+    echo ""
+    echo "This suggests that:"
+    echo "1. Pi-gen hasn't extracted the base rootfs yet"  
+    echo "2. Our stage is running too early in the build process"
+    echo "3. The pi-gen configuration is incorrect"
+    
     exit 1
 fi
 
+# Check if ROOTFS_DIR is writable
 if [ ! -w "${ROOTFS_DIR}" ]; then
     echo "ERROR: ROOTFS_DIR is not writable: ${ROOTFS_DIR}"
+    echo "This may be a permissions issue"
+    ls -ld "${ROOTFS_DIR}" || true
     exit 1
 fi
 
@@ -633,7 +680,7 @@ CHROOT_EOF
 echo "CUPCAKE stage completed successfully"
 EOF
 
-    chmod +x "$stage_dir/01-cupcake/01-run.sh"
+    chmod +x "$stage_dir/00-install-cupcake/01-run.sh"
     
     # Create boot configuration stage
     mkdir -p "$stage_dir/02-boot-config"
@@ -727,12 +774,24 @@ main() {
     configure_pi_gen
     create_custom_stage
 
-    # Run pi-gen build
-    log "Starting pi-gen build process..."
+    # Run pi-gen build using Docker (official recommended approach)
+    log "Starting pi-gen Docker build process..."
     cd "$PI_GEN_DIR"
 
-    # Run the build
-    sudo ./build.sh
+    # Use Docker build approach like official pi-gen-action
+    # This avoids QEMU timing issues and rootfs setup problems by:
+    # 1. Running pi-gen in controlled Docker environment  
+    # 2. Proper isolation between host and build environment
+    # 3. Consistent chroot/mount behavior across different hosts
+    # 4. Official recommended approach for automated builds
+    log "Using Docker-based pi-gen build (resolves QEMU/timing issues)"
+    
+    # Set Docker build options for better reliability
+    export PRESERVE_CONTAINER=0
+    export CONTINUE=0
+    
+    # Run the Docker-based build
+    sudo ./build-docker.sh
 
     log "Pi image build completed successfully!"
     log "Output images available in: $PI_GEN_DIR/deploy/"

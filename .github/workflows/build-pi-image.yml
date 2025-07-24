@@ -90,7 +90,7 @@ jobs:
       id: build
       with:
         image-name: cupcake-pi4-${{ inputs.image_version || 'latest' }}
-        stage-list: stage0 stage1 stage2 stage2z-cupcake
+        stage-list: stage0 stage1 stage2 ./stage2z-cupcake
         release: bookworm
         username: cupcake
         password: cupcake123
@@ -101,7 +101,6 @@ jobs:
         keyboard-keymap: us
         compression: xz
         compression-level: 6
-        custom-stage-dir: raspberry-pi/config/pi-gen-config
 
     - name: Upload Pi 4 artifacts
       uses: actions/upload-artifact@v4
@@ -161,7 +160,7 @@ jobs:
       id: build
       with:
         image-name: cupcake-pi5-${{ inputs.image_version || 'latest' }}
-        stage-list: stage0 stage1 stage2 stage2z-cupcake
+        stage-list: stage0 stage1 stage2 ./stage2z-cupcake
         release: bookworm
         username: cupcake
         password: cupcake123
@@ -172,7 +171,6 @@ jobs:
         keyboard-keymap: us
         compression: xz
         compression-level: 6
-        custom-stage-dir: raspberry-pi/config/pi-gen-config
 
     - name: Upload Pi 5 artifacts
       uses: actions/upload-artifact@v4

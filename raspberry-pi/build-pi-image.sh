@@ -602,6 +602,7 @@ fi
 # Create cupcake user and directories
 on_chroot << 'CHROOT_EOF'
 # Create cupcake user if it doesn't exist
+# This will be the default, but Pi Imager can override it
 if ! id "cupcake" &>/dev/null; then
     useradd -m -s /bin/bash cupcake
     echo "cupcake:cupcake123" | chpasswd
@@ -629,6 +630,476 @@ if [ -f "/etc/systemd/system/cupcake-setup.service" ]; then
     systemctl enable cupcake-setup.service
 fi
 
+CHROOT_EOF
+
+# Create CUPCAKE-specific Pi Imager integration
+log "Setting up Pi Imager advanced configuration support..."
+
+# Create CUPCAKE firstrun extension script
+cat > "${ROOTFS_DIR}/usr/local/bin/cupcake-firstrun.sh" << 'CUPCAKE_FIRSTRUN_EOF'
+#!/bin/bash
+# CUPCAKE First-run Configuration Script
+# This script runs after Pi Imager's firstrun.sh to configure CUPCAKE-specific settings
+
+log_cupcake() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] CUPCAKE: $1" | tee -a /var/log/cupcake-firstrun.log
+}
+
+log_cupcake "Starting CUPCAKE first-run configuration..."
+
+# Get the current primary user (set by Pi Imager or default to cupcake)
+PRIMARY_USER=$(getent passwd 1000 | cut -d: -f1 2>/dev/null || echo "cupcake")
+log_cupcake "Primary user detected: $PRIMARY_USER"
+
+# Get the current hostname (set by Pi Imager or default)
+CURRENT_HOSTNAME=$(hostname)
+log_cupcake "Current hostname: $CURRENT_HOSTNAME"
+
+# Update CUPCAKE configuration with actual hostname and user
+CUPCAKE_CONFIG_DIR="/opt/cupcake/config"
+if [ -d "$CUPCAKE_CONFIG_DIR" ]; then
+    log_cupcake "Updating CUPCAKE configuration for hostname: $CURRENT_HOSTNAME"
+    
+    # Update any configuration files that reference the hostname
+    find "$CUPCAKE_CONFIG_DIR" -type f -name "*.conf" -o -name "*.yml" -o -name "*.json" | while read -r config_file; do
+        if grep -q "cupcake-pi.local\|cupcake-pi4.local\|cupcake-pi5.local" "$config_file" 2>/dev/null; then
+            log_cupcake "Updating hostname references in: $config_file"
+            sed -i "s/cupcake-pi\([45]\)\?\.local/${CURRENT_HOSTNAME}.local/g" "$config_file"
+        fi
+    done
+fi
+
+# Update CUPCAKE ownership to the primary user
+log_cupcake "Setting CUPCAKE ownership to user: $PRIMARY_USER"
+chown -R "$PRIMARY_USER:$PRIMARY_USER" /opt/cupcake/data /opt/cupcake/logs /opt/cupcake/media 2>/dev/null || true
+chown -R "$PRIMARY_USER:$PRIMARY_USER" /var/log/cupcake 2>/dev/null || true
+
+# Create CUPCAKE superuser in Django
+log_cupcake "Setting up CUPCAKE Django superuser..."
+cd /opt/cupcake/src
+
+# Create superuser setup script
+cat > /tmp/create_superuser.py << 'SUPERUSER_EOF'
+import os
+import django
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'cupcake.settings')
+django.setup()
+
+from django.contrib.auth import get_user_model
+User = get_user_model()
+
+# Use environment variables or defaults
+username = os.environ.get('CUPCAKE_ADMIN_USER', 'admin')
+email = os.environ.get('CUPCAKE_ADMIN_EMAIL', f'{username}@{os.environ.get("HOSTNAME", "localhost")}.local')
+password = os.environ.get('CUPCAKE_ADMIN_PASSWORD', 'cupcake123')
+
+if not User.objects.filter(username=username).exists():
+    User.objects.create_superuser(username=username, email=email, password=password)
+    print(f"Created CUPCAKE superuser: {username}")
+else:
+    print(f"CUPCAKE superuser already exists: {username}")
+SUPERUSER_EOF
+
+# Set environment variables for superuser creation
+export CUPCAKE_ADMIN_USER="$PRIMARY_USER"
+export CUPCAKE_ADMIN_EMAIL="${PRIMARY_USER}@${CURRENT_HOSTNAME}.local"
+export HOSTNAME="$CURRENT_HOSTNAME"
+
+# Run the superuser creation (will run when CUPCAKE services are started)
+log_cupcake "CUPCAKE superuser will be created on first service start"
+
+# Create a service to run this on first boot after services are ready
+cat > /etc/systemd/system/cupcake-firstrun.service << 'SERVICE_EOF'
+[Unit]
+Description=CUPCAKE First-run Configuration
+After=postgresql.service redis-server.service
+Wants=postgresql.service redis-server.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStartPre=/usr/local/bin/cupcake-manual-config.sh
+ExecStart=/usr/local/bin/cupcake-firstrun.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+SERVICE_EOF
+
+systemctl enable cupcake-firstrun.service
+
+log_cupcake "CUPCAKE first-run configuration completed"
+CUPCAKE_FIRSTRUN_EOF
+
+chmod +x "${ROOTFS_DIR}/usr/local/bin/cupcake-firstrun.sh"
+
+# Create manual configuration handler  
+cat > "${ROOTFS_DIR}/usr/local/bin/cupcake-manual-config.sh" << 'MANUAL_CONFIG_EOF'
+#!/bin/bash
+# CUPCAKE Manual Configuration Handler
+# Processes cupcake-config.txt and other manual configuration files
+
+log_config() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] CONFIG: $1" | tee -a /var/log/cupcake-config.log
+}
+
+# Process cupcake-config.txt if it exists
+if [ -f /boot/cupcake-config.txt ]; then
+    log_config "Processing manual CUPCAKE configuration..."
+    
+    # Source the configuration file
+    source /boot/cupcake-config.txt
+    
+    # Apply admin user configuration
+    if [ -n "$CUPCAKE_ADMIN_USER" ]; then
+        log_config "Setting CUPCAKE admin user: $CUPCAKE_ADMIN_USER"
+        echo "CUPCAKE_ADMIN_USER=$CUPCAKE_ADMIN_USER" >> /etc/environment
+    fi
+    
+    if [ -n "$CUPCAKE_ADMIN_PASSWORD" ]; then
+        log_config "Setting CUPCAKE admin password"
+        echo "CUPCAKE_ADMIN_PASSWORD=$CUPCAKE_ADMIN_PASSWORD" >> /etc/environment
+    fi
+    
+    if [ -n "$CUPCAKE_ADMIN_EMAIL" ]; then
+        log_config "Setting CUPCAKE admin email: $CUPCAKE_ADMIN_EMAIL"  
+        echo "CUPCAKE_ADMIN_EMAIL=$CUPCAKE_ADMIN_EMAIL" >> /etc/environment
+    fi
+    
+    # Apply hostname if specified
+    if [ -n "$CUPCAKE_HOSTNAME" ]; then
+        log_config "Setting hostname: $CUPCAKE_HOSTNAME"
+        echo "$CUPCAKE_HOSTNAME" > /etc/hostname
+        sed -i "s/127.0.1.1.*/127.0.1.1\t$CUPCAKE_HOSTNAME/g" /etc/hosts
+    fi
+    
+    # Apply database configuration
+    if [ -n "$CUPCAKE_DB_PASSWORD" ]; then
+        log_config "Setting database password"
+        echo "CUPCAKE_DB_PASSWORD=$CUPCAKE_DB_PASSWORD" >> /etc/environment
+    fi
+    
+    # Remove the config file for security
+    rm -f /boot/cupcake-config.txt
+    log_config "Manual configuration completed and removed"
+fi
+
+# Process SSH keys if provided
+if [ -f /boot/cupcake-ssh-keys.txt ]; then
+    log_config "Installing SSH keys..."
+    
+    # Get the primary user
+    PRIMARY_USER=$(getent passwd 1000 | cut -d: -f1 2>/dev/null || echo "cupcake")
+    USER_HOME=$(eval echo "~$PRIMARY_USER")
+    
+    # Create .ssh directory
+    mkdir -p "$USER_HOME/.ssh"
+    chmod 700 "$USER_HOME/.ssh"
+    
+    # Install authorized keys
+    cat /boot/cupcake-ssh-keys.txt >> "$USER_HOME/.ssh/authorized_keys"
+    chmod 600 "$USER_HOME/.ssh/authorized_keys"
+    chown -R "$PRIMARY_USER:$PRIMARY_USER" "$USER_HOME/.ssh"
+    
+    # Remove the keys file
+    rm -f /boot/cupcake-ssh-keys.txt
+    log_config "SSH keys installed and removed"
+fi
+
+# Process SSL configuration
+if [ -f /boot/cupcake-ssl-config.txt ]; then
+    log_config "Processing SSL configuration..."
+    source /boot/cupcake-ssl-config.txt
+    
+    if [ "$CUPCAKE_ENABLE_SSL" = "true" ]; then
+        log_config "Enabling self-signed SSL"
+        echo "CUPCAKE_ENABLE_SSL=true" >> /etc/environment
+        echo "CUPCAKE_SSL_COUNTRY=${CUPCAKE_SSL_COUNTRY:-US}" >> /etc/environment
+        echo "CUPCAKE_SSL_STATE=${CUPCAKE_SSL_STATE:-California}" >> /etc/environment
+        echo "CUPCAKE_SSL_CITY=${CUPCAKE_SSL_CITY:-Berkeley}" >> /etc/environment
+        echo "CUPCAKE_SSL_ORG=${CUPCAKE_SSL_ORG:-CUPCAKE Lab}" >> /etc/environment
+    fi
+    
+    rm -f /boot/cupcake-ssl-config.txt
+    log_config "SSL configuration processed and removed"
+fi
+
+# Process domain configuration
+if [ -f /boot/cupcake-domain-config.txt ]; then
+    log_config "Processing domain configuration..."
+    source /boot/cupcake-domain-config.txt
+    
+    if [ -n "$CUPCAKE_DOMAIN" ]; then
+        log_config "Setting custom domain: $CUPCAKE_DOMAIN"
+        echo "CUPCAKE_DOMAIN=$CUPCAKE_DOMAIN" >> /etc/environment
+        
+        if [ "$CUPCAKE_ENABLE_LETSENCRYPT" = "true" ]; then
+            log_config "Enabling Let's Encrypt"
+            echo "CUPCAKE_ENABLE_LETSENCRYPT=true" >> /etc/environment
+            echo "CUPCAKE_ADMIN_EMAIL=${CUPCAKE_ADMIN_EMAIL}" >> /etc/environment
+        fi
+    fi
+    
+    rm -f /boot/cupcake-domain-config.txt
+    log_config "Domain configuration processed and removed"
+fi
+
+# Process Cloudflare tunnel configuration
+if [ -f /boot/cupcake-tunnel-config.txt ]; then
+    log_config "Processing Cloudflare tunnel configuration..."
+    source /boot/cupcake-tunnel-config.txt
+    
+    if [ "$CUPCAKE_CLOUDFLARE_TUNNEL" = "true" ]; then
+        log_config "Enabling Cloudflare tunnel"
+        echo "CUPCAKE_CLOUDFLARE_TUNNEL=true" >> /etc/environment
+        echo "CUPCAKE_TUNNEL_TOKEN=$CUPCAKE_TUNNEL_TOKEN" >> /etc/environment
+        echo "CUPCAKE_TUNNEL_DOMAIN=$CUPCAKE_TUNNEL_DOMAIN" >> /etc/environment
+    fi
+    
+    rm -f /boot/cupcake-tunnel-config.txt
+    log_config "Cloudflare tunnel configuration processed and removed"
+fi
+
+log_config "Manual configuration processing completed"
+MANUAL_CONFIG_EOF
+
+chmod +x "${ROOTFS_DIR}/usr/local/bin/cupcake-manual-config.sh"
+
+# Create Pi Imager custom integration script
+mkdir -p "${ROOTFS_DIR}/usr/lib/raspberrypi-sys-mods"
+cat > "${ROOTFS_DIR}/usr/lib/raspberrypi-sys-mods/cupcake_imager_custom" << 'IMAGER_CUSTOM_EOF'
+#!/bin/bash
+# CUPCAKE Pi Imager Integration Script
+# This extends the standard Pi Imager functionality with CUPCAKE-specific features
+
+case "$1" in
+    set_hostname)
+        # Standard hostname setting + CUPCAKE integration
+        echo "$2" > /etc/hostname
+        sed -i "s/127.0.1.1.*/127.0.1.1\t$2/g" /etc/hosts
+        
+        # Update CUPCAKE-specific hostname references
+        if [ -f /opt/cupcake/config/nginx/cupcake.conf ]; then
+            sed -i "s/server_name .*/server_name $2.local;/g" /opt/cupcake/config/nginx/cupcake.conf
+        fi
+        ;;
+    set_cupcake_admin)
+        # CUPCAKE-specific: Set admin user for Django superuser
+        echo "CUPCAKE_ADMIN_USER=$2" >> /etc/environment
+        ;;
+    set_cupcake_admin_password)
+        # CUPCAKE-specific: Set admin password for Django superuser  
+        echo "CUPCAKE_ADMIN_PASSWORD=$2" >> /etc/environment
+        ;;
+esac
+IMAGER_CUSTOM_EOF
+
+chmod +x "${ROOTFS_DIR}/usr/lib/raspberrypi-sys-mods/cupcake_imager_custom"
+
+# Create SSL setup script
+cat > "${ROOTFS_DIR}/usr/local/bin/cupcake-ssl-setup.sh" << 'SSL_SETUP_EOF'
+#!/bin/bash
+# CUPCAKE SSL Setup Script
+# Handles different SSL configuration options
+
+log_ssl() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] SSL: $1" | tee -a /var/log/cupcake-ssl.log
+}
+
+# Source environment variables
+source /etc/environment
+
+HOSTNAME=$(hostname)
+SSL_DIR="/opt/cupcake/ssl"
+NGINX_SSL_DIR="/etc/nginx/ssl"
+
+# Create SSL directories
+mkdir -p "$SSL_DIR" "$NGINX_SSL_DIR"
+
+# Function to generate self-signed certificate
+generate_self_signed() {
+    log_ssl "Generating self-signed certificate for $HOSTNAME.local"
+    
+    # Generate private key
+    openssl genrsa -out "$SSL_DIR/cupcake.key" 2048
+    
+    # Generate certificate signing request
+    openssl req -new -key "$SSL_DIR/cupcake.key" -out "$SSL_DIR/cupcake.csr" -subj "/C=${CUPCAKE_SSL_COUNTRY:-US}/ST=${CUPCAKE_SSL_STATE:-California}/L=${CUPCAKE_SSL_CITY:-Berkeley}/O=${CUPCAKE_SSL_ORG:-CUPCAKE Lab}/CN=$HOSTNAME.local"
+    
+    # Generate self-signed certificate
+    openssl x509 -req -days 365 -in "$SSL_DIR/cupcake.csr" -signkey "$SSL_DIR/cupcake.key" -out "$SSL_DIR/cupcake.crt" -extensions v3_req -extfile <(cat <<EOF
+[v3_req]
+keyUsage = keyEncipherment, dataEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = $HOSTNAME.local
+DNS.2 = $HOSTNAME
+DNS.3 = localhost
+IP.1 = 127.0.0.1
+EOF
+)
+    
+    # Copy to nginx directory
+    cp "$SSL_DIR/cupcake.crt" "$NGINX_SSL_DIR/"
+    cp "$SSL_DIR/cupcake.key" "$NGINX_SSL_DIR/"
+    
+    # Set permissions
+    chown -R root:root "$SSL_DIR" "$NGINX_SSL_DIR"
+    chmod 600 "$SSL_DIR/cupcake.key" "$NGINX_SSL_DIR/cupcake.key"
+    chmod 644 "$SSL_DIR/cupcake.crt" "$NGINX_SSL_DIR/cupcake.crt"
+    
+    log_ssl "Self-signed certificate generated successfully"
+}
+
+# Function to setup Let's Encrypt
+setup_letsencrypt() {
+    log_ssl "Setting up Let's Encrypt for domain: $CUPCAKE_DOMAIN"
+    
+    # Install certbot if not present
+    if ! command -v certbot &> /dev/null; then
+        log_ssl "Installing certbot..."
+        apt-get update
+        apt-get install -y certbot python3-certbot-nginx
+    fi
+    
+    # Get certificate
+    certbot --nginx -d "$CUPCAKE_DOMAIN" --non-interactive --agree-tos --email "$CUPCAKE_ADMIN_EMAIL"
+    
+    # Setup auto-renewal
+    (crontab -l 2>/dev/null; echo "0 12 * * * /usr/bin/certbot renew --quiet") | crontab -
+    
+    log_ssl "Let's Encrypt certificate configured successfully"
+}
+
+# Function to setup Cloudflare tunnel
+setup_cloudflare_tunnel() {
+    log_ssl "Setting up Cloudflare tunnel for domain: $CUPCAKE_TUNNEL_DOMAIN"
+    
+    # Install cloudflared
+    curl -L --output /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb
+    dpkg -i /tmp/cloudflared.deb
+    rm /tmp/cloudflared.deb
+    
+    # Create tunnel service
+    cat > /etc/systemd/system/cloudflare-tunnel.service << 'TUNNEL_EOF'
+[Unit]
+Description=Cloudflare Tunnel
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate run --token ${CUPCAKE_TUNNEL_TOKEN}
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+TUNNEL_EOF
+    
+    # Enable and start service
+    systemctl enable cloudflare-tunnel.service
+    systemctl start cloudflare-tunnel.service
+    
+    log_ssl "Cloudflare tunnel configured successfully"
+}
+
+# Main SSL setup logic
+if [ "$CUPCAKE_ENABLE_SSL" = "true" ]; then
+    generate_self_signed
+    
+    # Update nginx configuration for SSL
+    cat > /etc/nginx/sites-available/cupcake-ssl << 'NGINX_SSL_EOF'
+server {
+    listen 80;
+    server_name _;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name _;
+    
+    ssl_certificate /etc/nginx/ssl/cupcake.crt;
+    ssl_certificate_key /etc/nginx/ssl/cupcake.key;
+    
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    
+    root /opt/cupcake/frontend;
+    index index.html;
+    
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+    
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    
+    location /admin/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    
+    location /cert {
+        alias /opt/cupcake/ssl/cupcake.crt;
+        add_header Content-Type application/x-x509-ca-cert;
+        add_header Content-Disposition 'attachment; filename="cupcake-$hostname.crt"';
+    }
+}
+NGINX_SSL_EOF
+    
+    # Enable SSL site
+    ln -sf /etc/nginx/sites-available/cupcake-ssl /etc/nginx/sites-enabled/
+    rm -f /etc/nginx/sites-enabled/default
+    
+elif [ "$CUPCAKE_ENABLE_LETSENCRYPT" = "true" ]; then
+    setup_letsencrypt
+    
+elif [ "$CUPCAKE_CLOUDFLARE_TUNNEL" = "true" ]; then
+    setup_cloudflare_tunnel
+    # Cloudflare handles SSL, so keep HTTP for local access
+fi
+
+# Restart nginx
+systemctl restart nginx
+
+log_ssl "SSL setup completed"
+SSL_SETUP_EOF
+
+chmod +x "${ROOTFS_DIR}/usr/local/bin/cupcake-ssl-setup.sh"
+
+# Create SSL systemd service
+cat > "${ROOTFS_DIR}/etc/systemd/system/cupcake-ssl-setup.service" << 'SSL_SERVICE_EOF'
+[Unit]
+Description=CUPCAKE SSL Setup
+After=network.target nginx.service
+Wants=nginx.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/cupcake-ssl-setup.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+SSL_SERVICE_EOF
+
+# Enable SSL service (will run if SSL is configured)
+on_chroot << 'CHROOT_EOF'
+systemctl enable cupcake-ssl-setup.service
 CHROOT_EOF
 
 log "CUPCAKE stage completed successfully"

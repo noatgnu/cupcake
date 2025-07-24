@@ -37,7 +37,6 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.pagination import LimitOffsetPagination
 from rq.job import Job
-from sdrf_pipelines.sdrf.sdrf import SdrfDataFrame
 
 from cc.filters import UnimodFilter, UnimodSearchFilter, MSUniqueVocabulariesSearchFilter, HumanDiseaseSearchFilter, \
     TissueSearchFilter, SubcellularLocationSearchFilter, SpeciesSearchFilter

@@ -135,7 +135,12 @@ fi
 trap 'echo "got CTRL+C... please wait 5s" && ${DOCKER} stop -t 5 ${DOCKER_CMDLINE_NAME}' SIGINT SIGTERM
 
 echo "Starting CUPCAKE pi-gen build in Docker container..."
-time ${DOCKER} run \
+echo "Build options: ${BUILD_OPTS}"
+echo "Container name: ${DOCKER_CMDLINE_NAME}"
+echo "Config file: ${CONFIG_FILE}"
+
+# Run Docker container and capture exit code properly
+${DOCKER} run \
   $DOCKER_CMDLINE_PRE \
   --name "${DOCKER_CMDLINE_NAME}" \
   --privileged \
@@ -145,26 +150,45 @@ time ${DOCKER} run \
   $DOCKER_CMDLINE_POST \
   cupcake-pi-gen \
   bash -e -o pipefail -c "
-    dpkg-reconfigure qemu-user-static &&
+    echo 'Container started, setting up qemu...'
+    dpkg-reconfigure qemu-user-static
+    echo 'qemu-user-static configured'
+    
     # binfmt_misc is sometimes not mounted with debian bookworm image
-    (mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc || true) &&
-    cd /pi-gen; ./build.sh ${BUILD_OPTS} &&
-    rsync -av work/*/build.log deploy/
-  " &
-  wait "$!"
+    (mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc || true)
+    echo 'binfmt_misc setup complete'
+    
+    echo 'Checking pi-gen directory...'
+    ls -la /pi-gen/
+    
+    echo 'Starting pi-gen build...'
+    cd /pi-gen && ./build.sh ${BUILD_OPTS}
+    
+    echo 'Build completed, copying logs...'
+    rsync -av work/*/build.log deploy/ || echo 'No build logs to copy'
+  "
 
-# Ensure that deploy/ is always owned by calling user
+BUILD_EXIT_CODE=$?
+echo "Docker container exit code: ${BUILD_EXIT_CODE}"
+
+# Always copy results and logs, even if build failed
 echo "copying results from deploy/"
-${DOCKER} cp "${CONTAINER_NAME}":/pi-gen/deploy - | tar -xf -
+${DOCKER} cp "${CONTAINER_NAME}":/pi-gen/deploy - | tar -xf - || echo "Failed to copy deploy directory"
 
 echo "copying log from container ${CONTAINER_NAME} to deploy/"
 ${DOCKER} logs --timestamps "${CONTAINER_NAME}" &>deploy/build-docker.log
 
+echo "Deploy directory contents:"
 ls -lah deploy
 
 # cleanup
 if [ "${PRESERVE_CONTAINER}" != "1" ]; then
-	${DOCKER} rm -v "${CONTAINER_NAME}"
+	${DOCKER} rm -v "${CONTAINER_NAME}" || ${DOCKER} rm -f "${CONTAINER_NAME}"
+fi
+
+if [ "${BUILD_EXIT_CODE}" -ne 0 ]; then
+	echo "Build failed with exit code ${BUILD_EXIT_CODE}"
+	exit ${BUILD_EXIT_CODE}
 fi
 
 echo "Done! Your image(s) should be in deploy/"

@@ -211,56 +211,6 @@ prepare_build() {
     # Create build directory
     mkdir -p "$BUILD_DIR"
     
-    # Create custom stage for CUPCAKE
-    local stage_dir="$PI_GEN_DIR/stage-cupcake"
-    mkdir -p "$stage_dir"
-    
-    # Copy stage configuration
-    cp "$CONFIG_DIR/pi-gen-config/stage-cupcake/"* "$stage_dir/" 2>/dev/null || true
-    
-    # Create files directory for custom files
-    local files_dir="$stage_dir/01-cupcake/files"
-    mkdir -p "$files_dir"
-    
-    # Copy system configuration files
-    info "Copying system configuration files..."
-    cp -r "$CONFIG_DIR/system/"* "$files_dir/"
-    
-    # Copy scripts
-    info "Copying deployment scripts..."
-    mkdir -p "$files_dir/opt/cupcake/scripts"
-    cp "$SCRIPTS_DIR/"* "$files_dir/opt/cupcake/scripts/"
-    chmod +x "$files_dir/opt/cupcake/scripts/"*
-    
-    # Copy config files (systemd services, etc.)
-    info "Copying configuration files..."
-    mkdir -p "$files_dir/opt/cupcake/config"
-    cp -r "$CONFIG_DIR/"* "$files_dir/opt/cupcake/config/" 2>/dev/null || true
-
-    # Ensure NVMe setup script is executable
-    chmod +x "$files_dir/opt/cupcake/scripts/setup-nvme.sh"
-    
-    # Copy CUPCAKE source code
-    info "Copying CUPCAKE source code..."
-    mkdir -p "$files_dir/opt/cupcake/src"
-    
-    # Copy essential CUPCAKE files (excluding development files)
-    rsync -av --exclude='__pycache__' \
-              --exclude='*.pyc' \
-              --exclude='.git' \
-              --exclude='node_modules' \
-              --exclude='venv' \
-              --exclude='env' \
-              --exclude='.env' \
-              --exclude='build' \
-              --exclude='dist' \
-              --exclude='raspberry-pi' \
-              "$CUPCAKE_DIR/" "$files_dir/opt/cupcake/src/"
-    
-    # Copy assets
-    info "Copying assets..."
-    cp -r "$ASSETS_DIR/"* "$files_dir/opt/cupcake/assets/" 2>/dev/null || true
-    
     log "Build environment prepared"
 }
 
@@ -333,12 +283,73 @@ create_custom_stage() {
     
     local stage_dir="$PI_GEN_DIR/stage-cupcake"
     
-    # Ensure clean stage directory
+    # Create clean stage directory
     rm -rf "$stage_dir"
     mkdir -p "$stage_dir/01-cupcake/files"
+    local files_dir="$stage_dir/01-cupcake/files"
     
-    # Copy files to be installed in rootfs
-    cp -r "$FILES_DIR/"* "$stage_dir/01-cupcake/files/" 2>/dev/null || true
+    # Copy stage configuration if it exists
+    if [ -d "$CONFIG_DIR/pi-gen-config/stage-cupcake" ]; then
+        cp "$CONFIG_DIR/pi-gen-config/stage-cupcake/"* "$stage_dir/" 2>/dev/null || true
+    fi
+    
+    # Copy system configuration files if they exist
+    if [ -d "$CONFIG_DIR/system" ]; then
+        info "Copying system configuration files..."
+        cp -r "$CONFIG_DIR/system/"* "$files_dir/" 2>/dev/null || true
+    else
+        warn "System config directory not found: $CONFIG_DIR/system"
+    fi
+    
+    # Copy scripts if they exist
+    if [ -d "$SCRIPTS_DIR" ]; then
+        info "Copying deployment scripts..."
+        mkdir -p "$files_dir/opt/cupcake/scripts"
+        cp "$SCRIPTS_DIR/"* "$files_dir/opt/cupcake/scripts/" 2>/dev/null || true
+        chmod +x "$files_dir/opt/cupcake/scripts/"* 2>/dev/null || true
+    else
+        warn "Scripts directory not found: $SCRIPTS_DIR"
+        mkdir -p "$files_dir/opt/cupcake/scripts"
+    fi
+    
+    # Copy config files (systemd services, etc.) if they exist
+    if [ -d "$CONFIG_DIR" ]; then
+        info "Copying configuration files..."
+        mkdir -p "$files_dir/opt/cupcake/config"
+        cp -r "$CONFIG_DIR/"* "$files_dir/opt/cupcake/config/" 2>/dev/null || true
+    else
+        warn "Config directory not found: $CONFIG_DIR"
+        mkdir -p "$files_dir/opt/cupcake/config"
+    fi
+    
+    # Copy CUPCAKE source code
+    info "Copying CUPCAKE source code..."
+    mkdir -p "$files_dir/opt/cupcake/src"
+    
+    # Copy essential CUPCAKE files (excluding development files)
+    rsync -av --exclude='__pycache__' \
+              --exclude='*.pyc' \
+              --exclude='.git' \
+              --exclude='node_modules' \
+              --exclude='venv' \
+              --exclude='env' \
+              --exclude='.env' \
+              --exclude='build' \
+              --exclude='dist' \
+              --exclude='raspberry-pi' \
+              "$CUPCAKE_DIR/" "$files_dir/opt/cupcake/src/"
+    
+    # Copy assets if they exist
+    if [ -d "$ASSETS_DIR" ]; then
+        info "Copying assets..."
+        mkdir -p "$files_dir/opt/cupcake/assets"
+        cp -r "$ASSETS_DIR/"* "$files_dir/opt/cupcake/assets/" 2>/dev/null || true
+    else
+        warn "Assets directory not found: $ASSETS_DIR"
+        mkdir -p "$files_dir/opt/cupcake/assets"
+    fi
+    
+    log "Stage files prepared"
 
     # Create stage prerun script - this runs BEFORE the chroot
     cat > "$stage_dir/prerun.sh" << 'EOF'

@@ -157,10 +157,16 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
             QuerySet: Filtered protocol queryset
         """
         user = self.request.user
+        
+        # Vaulting logic: exclude vaulted items by default unless include_vaulted=true
+        include_vaulted = self.request.query_params.get('include_vaulted', 'false').lower() == 'true'
+        vault_filter = Q() if include_vaulted else Q(is_vaulted=False)
+        
         if user.is_authenticated:
-            return ProtocolModel.objects.filter(Q(user=user)|Q(enabled=True)|Q(viewers=user)|Q(editors=user))
+            permission_filter = Q(user=user)|Q(enabled=True)|Q(viewers=user)|Q(editors=user)
+            return ProtocolModel.objects.filter(permission_filter & vault_filter)
         else:
-            return ProtocolModel.objects.filter(enabled=True)
+            return ProtocolModel.objects.filter(Q(enabled=True) & vault_filter)
 
     def get_object(self):
         """
@@ -3473,6 +3479,13 @@ class TagViewSet(ModelViewSet, FilterMixin):
     filterset_fields = ['tag']
     serializer_class = TagSerializer
 
+    def get_queryset(self):
+        # Vaulting logic: exclude vaulted items by default unless include_vaulted=true
+        include_vaulted = self.request.query_params.get('include_vaulted', 'false').lower() == 'true'
+        if not include_vaulted:
+            return Tag.objects.filter(is_vaulted=False)
+        return Tag.objects.all()
+
     def create(self, request, *args, **kwargs):
         tag = Tag()
         tag.tag = request.data['tag']
@@ -3542,7 +3555,14 @@ class ProjectViewSet(ModelViewSet, FilterMixin):
 
     def get_queryset(self):
         user = self.request.user
-        return Project.objects.filter(owner=user)
+        query = Q(owner=user)
+        
+        # Vaulting logic: exclude vaulted items by default unless include_vaulted=true
+        include_vaulted = self.request.query_params.get('include_vaulted', 'false').lower() == 'true'
+        if not include_vaulted:
+            query &= Q(is_vaulted=False)
+        
+        return Project.objects.filter(query)
 
     def get_object(self):
         obj = super().get_object()
@@ -4049,6 +4069,9 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
         serial_number = self.request.query_params.get('serial_number', None)
         accepts_bookings = self.request.query_params.get('accepts_bookings', None)
 
+        # Vaulting logic: exclude vaulted items by default unless include_vaulted=true
+        include_vaulted = self.request.query_params.get('include_vaulted', 'false').lower() == 'true'
+        vault_filter = Q() if include_vaulted else Q(is_vaulted=False)
 
         query = Q()
         if serial_number:
@@ -4056,6 +4079,10 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
         if accepts_bookings:
             accepts_bookings = True if accepts_bookings.lower() == 'true' else False
             query = query & Q(accepts_bookings=accepts_bookings)
+        
+        # Apply vaulting filter to all query paths
+        query = query & vault_filter
+        
         if user.is_staff:
             return self.queryset.filter(query)
         if user.is_authenticated:
@@ -4066,9 +4093,9 @@ class InstrumentViewSet(ModelViewSet, FilterMixin):
                 instruments = []
                 for i in i_permission:
                     instruments.append(i.instrument.id)
-                return Instrument.objects.filter(id__in=instruments)
+                return Instrument.objects.filter(Q(id__in=instruments) & vault_filter)
 
-        return Instrument.objects.filter(enabled=True)
+        return Instrument.objects.filter(Q(enabled=True) & vault_filter)
 
     def get_object(self):
         obj = super().get_object()
@@ -4796,6 +4823,12 @@ class StorageObjectViewSet(ModelViewSet, FilterMixin):
         exclude_objects = self.request.query_params.get('exclude_objects', None)
         if exclude_objects:
             query &= ~Q(id__in=exclude_objects.split(","))
+        
+        # Vaulting logic: exclude vaulted items by default unless include_vaulted=true
+        include_vaulted = self.request.query_params.get('include_vaulted', 'false').lower() == 'true'
+        if not include_vaulted:
+            query &= Q(is_vaulted=False)
+        
         return self.queryset.filter(query)
 
     def get_object(self):
@@ -5112,6 +5145,12 @@ class StoredReagentViewSet(ModelViewSet, FilterMixin):
         if lab_group:
             lab_group = LabGroup.objects.get(id=lab_group)
             query &= Q(storage_object__in=lab_group.storage_objects.all())
+        
+        # Vaulting logic: exclude vaulted items by default unless include_vaulted=true
+        include_vaulted = self.request.query_params.get('include_vaulted', 'false').lower() == 'true'
+        if not include_vaulted:
+            query &= Q(is_vaulted=False)
+        
         result = StoredReagent.objects.filter(query)
         return result
 

@@ -30,7 +30,7 @@ from cc.viewsets import ProtocolViewSet, SessionViewSet, StepViewSet, Annotation
     MaintenanceLogViewSet, MessageThreadViewSet, MessageViewSet, MessageRecipientViewSet, MessageAttachmentViewSet, \
     ReagentDocumentViewSet, SiteSettingsViewSet, SharedDocumentViewSet, DocumentPermissionViewSet, \
     ImportTrackerViewSet, HistoricalRecordsViewSet, ServiceTierViewSet, ServicePriceViewSet, BillingRecordViewSet, \
-    JobStatusViewSet, PublicPricingViewSet, BillingManagementViewSet, BackupViewSet, SamplePoolViewSet
+    JobStatusViewSet, PublicPricingViewSet, BillingManagementViewSet, BackupViewSet, SamplePoolViewSet, RemoteHostViewSet
 
 router = routers.DefaultRouter()
 router.register(r'protocol', ProtocolViewSet)
@@ -86,6 +86,7 @@ router.register(r'job-status', JobStatusViewSet, basename='job-status')
 router.register(r'public_pricing', PublicPricingViewSet, basename='public_pricing')
 router.register(r'billing_management', BillingManagementViewSet, basename='billing_management')
 router.register(r'sample_pools', SamplePoolViewSet)
+router.register(r'remote_hosts', RemoteHostViewSet)
 
 urlpatterns = [
     path('admin/', admin.site.urls),

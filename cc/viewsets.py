@@ -47,7 +47,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, Session, StepVari
     FavouriteMetadataOption, Preset, MetadataTableTemplate, MaintenanceLog, SupportInformation, ExternalContact, \
     ExternalContactDetails, Message, MessageRecipient, MessageAttachment, MessageRecipient, MessageThread, \
     ReagentSubscription, SiteSettings, BackupLog, DocumentPermission, ImportTracker, ServiceTier, ServicePrice, \
-    BillingRecord, ProtocolStepSuggestionCache, SamplePool
+    BillingRecord, ProtocolStepSuggestionCache, SamplePool, RemoteHost
 from cc.permissions import OwnerOrReadOnly, InstrumentUsagePermission, InstrumentViewSetPermission, IsParticipantOrAdmin, IsCoreFacilityPermission
 from cc.rq_tasks import transcribe_audio_from_video, transcribe_audio, create_docx, llama_summary, remove_html_tags, \
     ocr_b64_image, export_data, import_data, dry_run_import_data, llama_summary_transcript, export_sqlite, export_instrument_job_metadata, \
@@ -65,7 +65,7 @@ from cc.serializers import ProtocolModelSerializer, ProtocolStepSerializer, Anno
     MessageRecipientSerializer, MessageThreadSerializer, MessageThreadDetailSerializer, ReagentSubscriptionSerializer, \
     SiteSettingsSerializer, BackupLogSerializer, DocumentPermissionSerializer, SharedDocumentSerializer, \
     UserBasicSerializer, ImportTrackerSerializer, ImportTrackerListSerializer, HistoricalRecordSerializer, \
-    ServiceTierSerializer, ServicePriceSerializer, BillingRecordSerializer, SamplePoolSerializer
+    ServiceTierSerializer, ServicePriceSerializer, BillingRecordSerializer, SamplePoolSerializer, RemoteHostSerializer
 from cc.rq_tasks import analyze_protocol_step_task, analyze_full_protocol_task
 from cc.utils import user_metadata, staff_metadata, send_slack_notification
 from cc.utils.user_data_import_revised import ImportReverter
@@ -11783,3 +11783,209 @@ class SamplePoolViewSet(ModelViewSet):
                 {'error': f'Failed to update metadata: {str(e)}'}, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class RemoteHostViewSet(ModelViewSet):
+    """ViewSet for managing RemoteHost instances for distributed sync"""
+    
+    queryset = RemoteHost.objects.all()
+    serializer_class = RemoteHostSerializer
+    authentication_classes = [TokenAuthentication, SessionAuthentication]
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    search_fields = ['host_name', 'host_description']
+    ordering_fields = ['host_name', 'created_at', 'updated_at']
+    filterset_fields = ['host_protocol']
+    
+    def get_queryset(self):
+        """Filter RemoteHost instances - for now, show all to authenticated users"""
+        queryset = RemoteHost.objects.all()
+        
+        # Add any additional filtering logic here if needed
+        # For example, could restrict based on user permissions in the future
+        
+        return queryset.order_by('-created_at')
+    
+    @action(detail=True, methods=['post'], url_path='test-connection')
+    def test_connection(self, request, pk=None):
+        """Test connection to a remote host"""
+        remote_host = self.get_object()
+        
+        from cc.utils.sync_auth import SyncAuthenticator
+        
+        try:
+            with SyncAuthenticator(remote_host) as auth:
+                result = auth.test_connection()
+                
+                if result['success']:
+                    return Response({
+                        'success': True,
+                        'status': 'connected',
+                        'message': result['message'],
+                        'response_time': result.get('response_time'),
+                        'host_name': result['host_name'],
+                        'url': result.get('url')
+                    }, status=status.HTTP_200_OK)
+                else:
+                    error_code = result.get('error', 'unknown_error')
+                    if error_code == 'timeout':
+                        status_code = status.HTTP_408_REQUEST_TIMEOUT
+                    elif error_code == 'connection_error':
+                        status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+                    else:
+                        status_code = status.HTTP_400_BAD_REQUEST
+                    
+                    return Response({
+                        'success': False,
+                        'status': error_code,
+                        'message': result['message'],
+                        'details': result.get('details'),
+                        'host_name': result['host_name']
+                    }, status=status_code)
+                
+        except Exception as e:
+            return Response({
+                'success': False,
+                'status': 'error',
+                'message': 'Unexpected error during connection test',
+                'details': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=True, methods=['post'], url_path='test-authentication')
+    def test_authentication(self, request, pk=None):
+        """Test authentication with a remote host"""
+        remote_host = self.get_object()
+        
+        from cc.utils.sync_auth import test_remote_host_auth
+        
+        try:
+            # Run comprehensive authentication test
+            results = test_remote_host_auth(remote_host)
+            
+            if results['success']:
+                return Response({
+                    'success': True,
+                    'message': f'Full authentication test passed for {remote_host.host_name}',
+                    'results': results
+                }, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    'success': False,
+                    'message': f'Authentication test failed for {remote_host.host_name}',
+                    'results': results
+                }, status=status.HTTP_400_BAD_REQUEST)
+                
+        except Exception as e:
+            return Response({
+                'success': False,
+                'message': 'Unexpected error during authentication test',
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=True, methods=['get'], url_path='sync-status')
+    def sync_status(self, request, pk=None):
+        """Get sync status for a remote host"""
+        remote_host = self.get_object()
+        
+        from cc.services.sync_service import SyncService
+        
+        try:
+            with SyncService(remote_host, request.user) as sync_service:
+                status_result = sync_service.get_sync_status()
+                
+                if status_result['success']:
+                    return Response({
+                        'success': True,
+                        'remote_host_id': remote_host.id,
+                        'remote_host_name': remote_host.host_name,
+                        'sync_status': status_result['status']
+                    }, status=status.HTTP_200_OK)
+                else:
+                    return Response({
+                        'success': False,
+                        'error': status_result['error']
+                    }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                    
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=True, methods=['post'], url_path='sync-pull')
+    def sync_pull(self, request, pk=None):
+        """Pull data from a remote host"""
+        remote_host = self.get_object()
+        
+        from cc.services.sync_service import SyncService, SyncError
+        from cc.utils.sync_auth import SyncAuthError
+        
+        # Get parameters from request
+        models_to_sync = request.data.get('models', None)
+        limit_per_model = request.data.get('limit', None)
+        
+        try:
+            with SyncService(remote_host, request.user) as sync_service:
+                # Perform the sync
+                results = sync_service.pull_all_data(
+                    models=models_to_sync,
+                    limit_per_model=limit_per_model
+                )
+                
+                if results['success']:
+                    return Response({
+                        'success': True,
+                        'message': f'Successfully synced data from {remote_host.host_name}',
+                        'results': results
+                    }, status=status.HTTP_200_OK)
+                else:
+                    return Response({
+                        'success': False,
+                        'message': f'Sync completed with errors from {remote_host.host_name}',
+                        'results': results
+                    }, status=status.HTTP_207_MULTI_STATUS)  # Partial success
+                    
+        except SyncAuthError as e:
+            return Response({
+                'success': False,
+                'error': 'authentication_failed',
+                'message': f'Authentication failed: {str(e)}'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+            
+        except SyncError as e:
+            return Response({
+                'success': False,
+                'error': 'sync_failed',
+                'message': f'Sync failed: {str(e)}'
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': 'unexpected_error',
+                'message': f'Unexpected error: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['get'], url_path='connection-summary')
+    def connection_summary(self, request):
+        """Get a summary of connection status for all remote hosts"""
+        remote_hosts = self.get_queryset()
+        
+        summary = {
+            'total_hosts': remote_hosts.count(),
+            'hosts': []
+        }
+        
+        for host in remote_hosts:
+            host_info = {
+                'id': host.id,
+                'name': host.host_name,
+                'url': f"{host.host_protocol}://{host.host_name}:{host.host_port}",
+                'description': host.host_description,
+                'created_at': host.created_at,
+                'last_connection_test': None,  # TODO: Track this in Phase 2
+                'status': 'unknown'  # TODO: Implement status tracking
+            }
+            summary['hosts'].append(host_info)
+        
+        return Response(summary, status=status.HTTP_200_OK)

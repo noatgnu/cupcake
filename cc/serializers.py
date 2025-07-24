@@ -11,7 +11,7 @@ from cc.models import ProtocolModel, ProtocolStep, Annotation, StepVariation, Se
     Preset, MetadataTableTemplate, ExternalContactDetails, SupportInformation, ExternalContact, MaintenanceLog, \
     MessageRecipient, MessageThread, Message, MessageAttachment, ReagentSubscription, SiteSettings, BackupLog, DocumentPermission, \
     ImportTracker, ImportedObject, ImportedFile, ImportedRelationship, ServiceTier, ServicePrice, BillingRecord, ProtocolStepSuggestionCache, \
-    SamplePool
+    SamplePool, RemoteHost
 
 
 class UserBasicSerializer(ModelSerializer):
@@ -1796,3 +1796,90 @@ class ProtocolStepSuggestionCacheSerializer(ModelSerializer):
             'cache_age_hours', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class RemoteHostSerializer(ModelSerializer):
+    """Serializer for RemoteHost model to manage distributed sync endpoints"""
+    host_url = SerializerMethodField()
+    connection_status = SerializerMethodField()
+    last_sync_status = SerializerMethodField()
+    
+    def get_host_url(self, obj):
+        """Build full URL from protocol, host_name, and port"""
+        return f"{obj.host_protocol}://{obj.host_name}:{obj.host_port}"
+    
+    def get_connection_status(self, obj):
+        """Check connection status - placeholder for now"""
+        # TODO: Implement actual connection checking in Phase 2
+        return "unknown"
+    
+    def get_last_sync_status(self, obj):
+        """Get last sync status - placeholder for now"""
+        # TODO: Implement sync tracking in Phase 2
+        return None
+    
+    def validate_host_name(self, value):
+        """Validate hostname format"""
+        if not value or len(value.strip()) == 0:
+            raise ValidationError("Host name cannot be empty")
+        
+        # Basic hostname validation - allow IP addresses and domain names
+        import re
+        if not re.match(r'^[a-zA-Z0-9.-]+$', value):
+            raise ValidationError("Host name contains invalid characters")
+        
+        return value.strip()
+    
+    def validate_host_port(self, value):
+        """Validate port number"""
+        if value < 1 or value > 65535:
+            raise ValidationError("Port must be between 1 and 65535")
+        return value
+    
+    def validate_host_protocol(self, value):
+        """Validate protocol"""
+        if value not in ['http', 'https']:
+            raise ValidationError("Protocol must be 'http' or 'https'")
+        return value
+    
+    def create(self, validated_data):
+        """Create RemoteHost instance"""
+        # Don't expose the raw token in API responses
+        host_token = validated_data.pop('host_token', None)
+        
+        remote_host = RemoteHost.objects.create(**validated_data)
+        
+        if host_token:
+            remote_host.encrypt_token(host_token)
+            remote_host.save()
+        
+        return remote_host
+    
+    def update(self, instance, validated_data):
+        """Update RemoteHost instance"""
+        # Handle token encryption separately
+        host_token = validated_data.pop('host_token', None)
+        
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        
+        if host_token:
+            instance.encrypt_token(host_token)
+        
+        instance.save()
+        return instance
+    
+    class Meta:
+        model = RemoteHost
+        fields = [
+            'id', 'host_name', 'host_port', 'host_protocol', 'host_description',
+            'host_url', 'connection_status', 'last_sync_status',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'id', 'host_url', 'connection_status', 'last_sync_status',
+            'created_at', 'updated_at'
+        ]
+        extra_kwargs = {
+            'host_token': {'write_only': True}  # Don't expose token in responses
+        }

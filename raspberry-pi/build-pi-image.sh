@@ -926,8 +926,8 @@ generate_self_signed() {
     # Generate certificate signing request
     openssl req -new -key "$SSL_DIR/cupcake.key" -out "$SSL_DIR/cupcake.csr" -subj "/C=${CUPCAKE_SSL_COUNTRY:-US}/ST=${CUPCAKE_SSL_STATE:-California}/L=${CUPCAKE_SSL_CITY:-Berkeley}/O=${CUPCAKE_SSL_ORG:-CUPCAKE Lab}/CN=$HOSTNAME.local"
     
-    # Generate self-signed certificate
-    openssl x509 -req -days 365 -in "$SSL_DIR/cupcake.csr" -signkey "$SSL_DIR/cupcake.key" -out "$SSL_DIR/cupcake.crt" -extensions v3_req -extfile <(cat <<EOF
+    # Create temporary config file for certificate extensions
+    cat > "$SSL_DIR/cert_extensions.conf" <<EOF
 [v3_req]
 keyUsage = keyEncipherment, dataEncipherment
 extendedKeyUsage = serverAuth
@@ -939,7 +939,12 @@ DNS.2 = $HOSTNAME
 DNS.3 = localhost
 IP.1 = 127.0.0.1
 EOF
-)
+    
+    # Generate self-signed certificate
+    openssl x509 -req -days 365 -in "$SSL_DIR/cupcake.csr" -signkey "$SSL_DIR/cupcake.key" -out "$SSL_DIR/cupcake.crt" -extensions v3_req -extfile "$SSL_DIR/cert_extensions.conf"
+    
+    # Clean up temporary config file
+    rm -f "$SSL_DIR/cert_extensions.conf"
     
     # Copy to nginx directory
     cp "$SSL_DIR/cupcake.crt" "$NGINX_SSL_DIR/"

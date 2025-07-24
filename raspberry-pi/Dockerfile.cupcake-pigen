@@ -11,7 +11,9 @@ RUN apt-get -y update && \
         binfmt-support ca-certificates fdisk gpg pigz arch-test \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy pi-gen source (will be mounted or copied)
+# Copy pi-gen source code into the container
+COPY . /pi-gen/
+
 VOLUME [ "/pi-gen/work", "/pi-gen/deploy"]
 
 WORKDIR /pi-gen

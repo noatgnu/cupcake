@@ -9,7 +9,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/logging.sh"
 create_custom_stage() {
     log "Creating custom CUPCAKE stage..."
     
-    local stage_dir="$PI_GEN_DIR/stage-cupcake"
+    # Use numeric stage name to follow pi-gen conventions (comes after stage2)
+    local stage_dir="$PI_GEN_DIR/stage3-cupcake"
     
     # Create clean stage directory
     rm -rf "$stage_dir"

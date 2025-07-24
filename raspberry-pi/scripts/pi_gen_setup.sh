@@ -64,10 +64,12 @@ prepare_build() {
     
     cd "$PI_GEN_DIR"
     
-    # Clean any previous builds
-    log "Cleaning previous build artifacts..."
+    # Clean any previous builds and configurations
+    log "Cleaning previous build artifacts and config..."
     sudo docker system prune -f 2>/dev/null || true
     rm -rf work/ deploy/ || true
+    rm -rf stage-cupcake/ stage3-cupcake/ || true
+    rm -f config || true
     
     log "Build environment prepared"
 }
@@ -101,9 +103,9 @@ WORK_DIR=$PI_GEN_DIR/work
 DEPLOY_DIR=$PI_GEN_DIR/deploy
 LOG_FILE=$PI_GEN_DIR/build.log
 
-# Stage configuration
+# Stage configuration - skip stages 4,5 (full desktop, lite-desktop) 
+# Note: We're replacing stage3 with our custom stage3-cupcake
 SKIP_IMAGES="4,5"
-STAGE_LIST="stage0,stage1,stage2,stage-cupcake"
 
 # Docker build settings
 USE_DOCKER=1

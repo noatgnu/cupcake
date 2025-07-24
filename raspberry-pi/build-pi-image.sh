@@ -390,9 +390,79 @@ apt-get install -y \
 echo "System packages installed successfully"
 CHROOT_EOF
 
-# Install Node.js and build frontend outside of problematic chroot operations
-echo "Setting up Node.js and building frontend..."
-on_chroot << 'CHROOT_EOF'
+# Frontend setup - use pre-built or build from source
+setup_frontend() {
+    log "Setting up frontend..."
+    
+    local frontend_source=""
+    local use_prebuilt=false
+    
+    # Check for pre-built frontend in various locations
+    local prebuilt_locations=(
+        "${PREBUILT_FRONTEND_DIR}"                    # Custom environment variable
+        "../raspberry-pi/frontend-dist"               # GitHub Actions location
+        "./frontend-dist"                             # Local build location
+        "../frontend-dist"                            # Parent directory
+    )
+    
+    for location in "${prebuilt_locations[@]}"; do
+        if [ -n "$location" ] && [ -d "$location" ] && [ "$(ls -A "$location" 2>/dev/null)" ]; then
+            frontend_source="$location"
+            use_prebuilt=true
+            break
+        fi
+    done
+    
+    # Force pre-build if USE_PREBUILT_FRONTEND is set but no pre-built frontend found
+    if [ "${USE_PREBUILT_FRONTEND}" = "1" ] && [ "$use_prebuilt" = false ]; then
+        warn "USE_PREBUILT_FRONTEND=1 but no pre-built frontend found"
+        info "Attempting to pre-build frontend using prebuild-frontend.sh..."
+        
+        # Try to run the pre-build script
+        if [ -f "./prebuild-frontend.sh" ]; then
+            ./prebuild-frontend.sh --hostname "$HOSTNAME" --output-dir "./frontend-dist"
+            if [ -d "./frontend-dist" ]; then
+                frontend_source="./frontend-dist"
+                use_prebuilt=true
+                log "Successfully pre-built frontend"
+            else
+                warn "Pre-build script completed but no output found"
+            fi
+        else
+            warn "prebuild-frontend.sh not found, will build in QEMU"
+        fi
+    fi
+    
+    if [ "$use_prebuilt" = true ]; then
+        log "Using pre-built frontend from: $frontend_source"
+        
+        # Copy pre-built frontend directly to the target directory
+        mkdir -p "${ROOTFS_DIR}/opt/cupcake/frontend"
+        cp -r "$frontend_source"/* "${ROOTFS_DIR}/opt/cupcake/frontend/"
+        
+        # Create build info in the target
+        if [ -f "$frontend_source/.build-info" ]; then
+            cp "$frontend_source/.build-info" "${ROOTFS_DIR}/opt/cupcake/frontend/"
+            info "Frontend build info:"
+            cat "$frontend_source/.build-info" | grep -E "(BUILD_DATE|BUILD_PLATFORM|NODE_VERSION)" || true
+        fi
+        
+        # Just clean up apt cache (no Node.js build needed)
+        on_chroot << 'CHROOT_EOF'
+export DEBIAN_FRONTEND=noninteractive
+
+# Clean up apt cache
+apt-get autoremove -y
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+
+echo "Pre-built frontend integration completed"
+CHROOT_EOF
+        
+        log "Pre-built frontend integration completed"
+    else
+        warn "Building frontend from source in QEMU (this will be slow)..."
+        on_chroot << 'CHROOT_EOF'
 # Install Node.js
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt-get install -y nodejs
@@ -410,6 +480,7 @@ sed -i 's;https://cupcake.proteo.info;http://cupcake-pi.local;g' src/environment
 sed -i 's;http://localhost;http://cupcake-pi.local;g' src/environments/environment.ts
 
 # Install dependencies and build (with increased memory for Pi build)
+export NODE_OPTIONS="--max-old-space-size=1024"
 npm install --no-optional
 npm run build --prod
 
@@ -428,6 +499,13 @@ rm -rf /var/lib/apt/lists/*
 
 echo "Frontend build completed"
 CHROOT_EOF
+        
+        log "QEMU frontend build completed"
+    fi
+}
+
+# Call the frontend setup function
+setup_frontend
 
 # Set permissions after copying files
 if [ -d "${ROOTFS_DIR}/opt/cupcake/scripts" ]; then

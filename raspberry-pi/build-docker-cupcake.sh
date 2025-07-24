@@ -93,9 +93,9 @@ fi
 # Modify original build-options to allow config file to be mounted in the docker container
 BUILD_OPTS="$(echo "${BUILD_OPTS:-}" | sed -E 's@\-c\s?([^ ]+)@-c /config@')"
 
-# Build our custom Bookworm-based pi-gen Docker image
-echo "Building CUPCAKE pi-gen Docker image (Bookworm-based)..."
-${DOCKER} build --build-arg BASE_IMAGE=debian:bookworm -f "${DIR}/Dockerfile.cupcake-pigen" -t cupcake-pi-gen "${PI_GEN_DIR}"
+# Build our custom pi-gen Docker image (using compatible Bullseye base)
+echo "Building CUPCAKE pi-gen Docker image (Bullseye base for compatibility)..."
+${DOCKER} build --build-arg BASE_IMAGE=debian:bullseye -f "${DIR}/Dockerfile.cupcake-pigen" -t cupcake-pi-gen "${PI_GEN_DIR}"
 
 if [ "${CONTAINER_EXISTS}" != "" ]; then
   DOCKER_CMDLINE_NAME="${CONTAINER_NAME}_cont"
@@ -139,6 +139,32 @@ echo "Build options: ${BUILD_OPTS}"
 echo "Container name: ${DOCKER_CMDLINE_NAME}"
 echo "Config file: ${CONFIG_FILE}"
 
+# Debug the Docker command first
+echo "Debug: DOCKER_CMDLINE_PRE=${DOCKER_CMDLINE_PRE}"
+echo "Debug: DOCKER_CMDLINE_POST=${DOCKER_CMDLINE_POST}"
+
+# Test if the Docker image exists
+if ! ${DOCKER} image inspect cupcake-pi-gen >/dev/null 2>&1; then
+    echo "ERROR: Docker image 'cupcake-pi-gen' not found!"
+    echo "Available Docker images:"
+    ${DOCKER} images | grep -E "(cupcake|pi-gen)" || echo "No matching images found"
+    exit 1
+fi
+
+echo "Docker image exists, starting container..."
+
+# Run a simple test first
+echo "Testing Docker container startup..."
+${DOCKER} run --rm cupcake-pi-gen bash -c "echo 'Container test successful'; ls -la /pi-gen/ | head -5"
+TEST_EXIT=$?
+
+if [ $TEST_EXIT -ne 0 ]; then
+    echo "ERROR: Docker container test failed with exit code $TEST_EXIT"
+    exit 1
+fi
+
+echo "Container test passed, running full build..."
+
 # Run Docker container and capture exit code properly
 ${DOCKER} run \
   $DOCKER_CMDLINE_PRE \
@@ -149,23 +175,27 @@ ${DOCKER} run \
   -e "GIT_HASH=${GIT_HASH}" \
   $DOCKER_CMDLINE_POST \
   cupcake-pi-gen \
-  bash -e -o pipefail -c "
-    echo 'Container started, setting up qemu...'
-    dpkg-reconfigure qemu-user-static
-    echo 'qemu-user-static configured'
+  bash -c "
+    set -e
+    echo 'Container started successfully'
+    echo 'Current directory:' \$(pwd)
+    echo 'Contents of /pi-gen:'
+    ls -la /pi-gen/ | head -10
     
-    # binfmt_misc is sometimes not mounted with debian bookworm image
-    (mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc || true)
-    echo 'binfmt_misc setup complete'
+    echo 'Checking if build.sh exists and is executable:'
+    ls -la /pi-gen/build.sh
     
-    echo 'Checking pi-gen directory...'
-    ls -la /pi-gen/
+    echo 'Setting up qemu...'
+    dpkg-reconfigure qemu-user-static || echo 'qemu-user-static setup failed'
     
-    echo 'Starting pi-gen build...'
-    cd /pi-gen && ./build.sh ${BUILD_OPTS}
+    echo 'Setting up binfmt_misc...'
+    mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc || echo 'binfmt_misc already mounted'
     
-    echo 'Build completed, copying logs...'
-    rsync -av work/*/build.log deploy/ || echo 'No build logs to copy'
+    echo 'Starting pi-gen build with options: ${BUILD_OPTS}'
+    cd /pi-gen
+    ./build.sh ${BUILD_OPTS}
+    
+    echo 'Build process completed'
   "
 
 BUILD_EXIT_CODE=$?

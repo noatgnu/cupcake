@@ -125,7 +125,7 @@ apt-get install -y ca-certificates gnupg lsb-release curl
 # Add PostgreSQL signing key properly for Docker environment
 curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg
 
-# Add repository for Bookworm (target Pi image), not Bullseye (Docker build environment)
+# Add repository for Bookworm (target Pi image) - this runs inside the Pi chroot, not Docker
 echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list
 
 # Update package lists

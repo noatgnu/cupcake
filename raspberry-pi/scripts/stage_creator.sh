@@ -153,28 +153,54 @@ fi
 
 cd app
 
-# Install Poetry and system dependencies
-log_cupcake "Installing Poetry and system dependencies..."
-apt-get install -y python3-dev python3-setuptools python3-wheel build-essential curl
-apt-get install -y libssl-dev libffi-dev libjpeg-dev libpng-dev libfreetype6-dev
-apt-get install -y python3-cryptography python3-cffi
+# Install additional Poetry and worker dependencies 
+log_cupcake "Installing additional dependencies for Poetry and workers..."
+# Python packaging tools (python3-dev already installed above)
+apt-get install -y python3-setuptools python3-wheel
+# Cryptography and SSL libraries  
+apt-get install -y libssl-dev libffi-dev libjpeg-dev libpng-dev libfreetype6-dev python3-cryptography python3-cffi
+# Worker-specific tools (postgresql, ffmpeg, git, build-essential, curl already installed above)
+apt-get install -y postgresql-client-14 cmake tesseract-ocr tesseract-ocr-eng
 
-# Install Poetry system-wide
-log_cupcake "Installing Poetry..."
-curl -sSL https://install.python-poetry.org | python3 -
+# Install Poetry using pip (more reliable in chroot environment)
+log_cupcake "Installing Poetry via pip..."
+python3 -m pip install --user poetry
 export PATH="/root/.local/bin:$PATH"
 
-# Configure Poetry for this environment
+# Make Poetry available system-wide
+ln -sf /root/.local/bin/poetry /usr/local/bin/poetry
+
+# Configure Poetry for ARM/piwheels
 log_cupcake "Configuring Poetry for Pi environment..."
-su - cupcake -c "cd /opt/cupcake/app && /root/.local/bin/poetry config virtualenvs.create true"
-su - cupcake -c "cd /opt/cupcake/app && /root/.local/bin/poetry config virtualenvs.in-project true"
+su - cupcake -c "cd /opt/cupcake/app && poetry config virtualenvs.create true"
+su - cupcake -c "cd /opt/cupcake/app && poetry config virtualenvs.in-project true"
 
-# Configure Poetry to use piwheels for ARM packages
-su - cupcake -c "cd /opt/cupcake/app && /root/.local/bin/poetry source add --priority=primary piwheels https://www.piwheels.org/simple/"
+# Configure piwheels as primary source for ARM packages
+log_cupcake "Adding piwheels repository for ARM packages..."
+su - cupcake -c "cd /opt/cupcake/app && poetry source add --priority=explicit piwheels https://www.piwheels.org/simple/"
 
-# Install dependencies using Poetry
-log_cupcake "Installing Python dependencies with Poetry..."
-su - cupcake -c "cd /opt/cupcake/app && /root/.local/bin/poetry install --only=main --no-dev"
+# Install only main dependencies, avoiding problematic packages
+log_cupcake "Installing Python dependencies with Poetry (ARM-optimized)..."
+su - cupcake -c "cd /opt/cupcake/app && poetry install --only=main --no-dev --source piwheels || poetry install --only=main --no-dev"
+
+# Setup Whisper.cpp for transcription worker
+log_cupcake "Setting up Whisper.cpp for transcription..."
+cd /opt/cupcake
+su - cupcake -c "cd /opt/cupcake && git clone https://github.com/ggerganov/whisper.cpp.git"
+cd /opt/cupcake/whisper.cpp
+
+# Download appropriate models for Pi (smaller models for better performance)
+log_cupcake "Downloading Whisper models (optimized for Pi)..."
+su - cupcake -c "cd /opt/cupcake/whisper.cpp && ./models/download-ggml-model.sh base.en"
+su - cupcake -c "cd /opt/cupcake/whisper.cpp && ./models/download-ggml-model.sh small.en"
+
+# Build Whisper.cpp
+log_cupcake "Building Whisper.cpp..."
+su - cupcake -c "cd /opt/cupcake/whisper.cpp && cmake -B build"
+su - cupcake -c "cd /opt/cupcake/whisper.cpp && cmake --build build --config Release -j 2"
+
+# Return to app directory
+cd /opt/cupcake/app
 
 # Activate the virtual environment for subsequent commands
 log_cupcake "Poetry installation completed, virtual environment ready"
@@ -202,12 +228,12 @@ chown cupcake:cupcake /opt/cupcake/app/.env
 # Run Django setup
 log_cupcake "Running Django migrations and setup..."
 cd /opt/cupcake/app
-su - cupcake -c "cd /opt/cupcake/app && /root/.local/bin/poetry run python manage.py migrate"
-su - cupcake -c "cd /opt/cupcake/app && /root/.local/bin/poetry run python manage.py collectstatic --noinput"
+su - cupcake -c "cd /opt/cupcake/app && poetry run python manage.py migrate"
+su - cupcake -c "cd /opt/cupcake/app && poetry run python manage.py collectstatic --noinput"
 
 # Create Django superuser
 log_cupcake "Creating Django superuser..."
-su - cupcake -c "cd /opt/cupcake/app && /root/.local/bin/poetry run python manage.py shell" <<PYEOF
+su - cupcake -c "cd /opt/cupcake/app && poetry run python manage.py shell" <<PYEOF
 from django.contrib.auth.models import User
 if not User.objects.filter(username='admin').exists():
     User.objects.create_superuser('admin', 'admin@cupcake.local', 'cupcake123')
@@ -231,8 +257,8 @@ Type=exec
 User=cupcake
 Group=cupcake
 WorkingDirectory=/opt/cupcake/app
-Environment=PATH=/opt/cupcake/app/venv/bin
-ExecStart=/bin/bash -c 'cd /opt/cupcake/app && /root/.local/bin/poetry run gunicorn cupcake.wsgi:application --bind 127.0.0.1:8000 --workers 3'
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash -c 'cd /opt/cupcake/app && poetry run gunicorn --workers=3 cupcake.asgi:application --bind 127.0.0.1:8000 --timeout 300 -k uvicorn.workers.UvicornWorker'
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -242,7 +268,7 @@ StandardError=journal
 WantedBy=multi-user.target
 SERVICEEOF
 
-# CUPCAKE worker service (for background tasks)
+# CUPCAKE default worker service (for background tasks)
 cat > /etc/systemd/system/cupcake-worker.service <<WORKEREOF
 [Unit]
 Description=CUPCAKE Background Worker
@@ -254,8 +280,8 @@ Type=exec
 User=cupcake
 Group=cupcake
 WorkingDirectory=/opt/cupcake/app
-Environment=PATH=/opt/cupcake/app/venv/bin
-ExecStart=/opt/cupcake/app/venv/bin/python manage.py rqworker default
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash -c 'cd /opt/cupcake/app && poetry run python manage.py rqworker default'
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -265,8 +291,123 @@ StandardError=journal
 WantedBy=multi-user.target
 WORKEREOF
 
+# CUPCAKE export worker service
+cat > /etc/systemd/system/cupcake-worker-export.service <<EXPORTEOF
+[Unit]
+Description=CUPCAKE Export Worker
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=exec
+User=cupcake
+Group=cupcake
+WorkingDirectory=/opt/cupcake/app
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash -c 'cd /opt/cupcake/app && poetry run python manage.py rqworker export'
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EXPORTEOF
+
+# CUPCAKE import worker service
+cat > /etc/systemd/system/cupcake-worker-import.service <<IMPORTEOF
+[Unit]
+Description=CUPCAKE Import Worker
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=exec
+User=cupcake
+Group=cupcake
+WorkingDirectory=/opt/cupcake/app
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash -c 'cd /opt/cupcake/app && poetry run python manage.py rqworker import-data'
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+IMPORTEOF
+
+# CUPCAKE maintenance worker service
+cat > /etc/systemd/system/cupcake-worker-maintenance.service <<MAINTENANCEEOF
+[Unit]
+Description=CUPCAKE Maintenance Worker
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=exec
+User=cupcake
+Group=cupcake
+WorkingDirectory=/opt/cupcake/app
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash -c 'cd /opt/cupcake/app && poetry run python manage.py rqworker maintenance'
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+MAINTENANCEEOF
+
+# CUPCAKE transcribe worker service (for audio/speech processing)
+cat > /etc/systemd/system/cupcake-worker-transcribe.service <<TRANSCRIBEEOF
+[Unit]
+Description=CUPCAKE Transcribe Worker
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=exec
+User=cupcake
+Group=cupcake
+WorkingDirectory=/opt/cupcake/app
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash -c 'cd /opt/cupcake/app && poetry run python manage.py rqworker transcribe'
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+TRANSCRIBEEOF
+
+# CUPCAKE OCR worker service (for document processing)
+cat > /etc/systemd/system/cupcake-worker-ocr.service <<OCREOF
+[Unit]
+Description=CUPCAKE OCR Worker
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=exec
+User=cupcake
+Group=cupcake
+WorkingDirectory=/opt/cupcake/app
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash -c 'cd /opt/cupcake/app && poetry run python manage.py rqworker ocr'
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+OCREOF
+
 # Enable services
-systemctl enable cupcake-web cupcake-worker
+systemctl enable cupcake-web cupcake-worker cupcake-worker-export cupcake-worker-import cupcake-worker-maintenance cupcake-worker-transcribe cupcake-worker-ocr
 systemctl enable nginx postgresql redis-server
 
 # Configure nginx
@@ -326,7 +467,7 @@ if [ -f "/boot/cupcake-config.txt" ]; then
     if [ -n "\$CUPCAKE_ADMIN_USER" ] && [ -n "\$CUPCAKE_ADMIN_PASSWORD" ]; then
         echo "Creating CUPCAKE admin user: \$CUPCAKE_ADMIN_USER"
         cd /opt/cupcake/app
-        su - cupcake -c "cd /opt/cupcake/app && ./venv/bin/python manage.py shell" <<PYEOF
+        su - cupcake -c "cd /opt/cupcake/app && poetry run python manage.py shell" <<PYEOF
 from django.contrib.auth.models import User
 try:
     user = User.objects.get(username='\$CUPCAKE_ADMIN_USER')
@@ -346,7 +487,7 @@ fi
 # Start services
 echo "Starting CUPCAKE services..."
 systemctl start postgresql redis-server
-systemctl start cupcake-web cupcake-worker
+systemctl start cupcake-web cupcake-worker cupcake-worker-export cupcake-worker-import cupcake-worker-maintenance cupcake-worker-transcribe cupcake-worker-ocr
 systemctl start nginx
 
 # Mark setup as complete

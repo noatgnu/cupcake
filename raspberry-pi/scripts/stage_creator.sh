@@ -153,14 +153,31 @@ fi
 
 cd app
 
-# Create Python virtual environment
-log_cupcake "Setting up Python virtual environment..."
-su - cupcake -c "cd /opt/cupcake/app && python3 -m venv venv"
-su - cupcake -c "cd /opt/cupcake/app && ./venv/bin/pip install --upgrade pip"
+# Install Poetry and system dependencies
+log_cupcake "Installing Poetry and system dependencies..."
+apt-get install -y python3-dev python3-setuptools python3-wheel build-essential curl
+apt-get install -y libssl-dev libffi-dev libjpeg-dev libpng-dev libfreetype6-dev
+apt-get install -y python3-cryptography python3-cffi
 
-# Install Python dependencies
-log_cupcake "Installing Python dependencies..."
-su - cupcake -c "cd /opt/cupcake/app && ./venv/bin/pip install -r requirements.txt"
+# Install Poetry system-wide
+log_cupcake "Installing Poetry..."
+curl -sSL https://install.python-poetry.org | python3 -
+export PATH="/root/.local/bin:$PATH"
+
+# Configure Poetry for this environment
+log_cupcake "Configuring Poetry for Pi environment..."
+su - cupcake -c "cd /opt/cupcake/app && /root/.local/bin/poetry config virtualenvs.create true"
+su - cupcake -c "cd /opt/cupcake/app && /root/.local/bin/poetry config virtualenvs.in-project true"
+
+# Configure Poetry to use piwheels for ARM packages
+su - cupcake -c "cd /opt/cupcake/app && /root/.local/bin/poetry source add --priority=primary piwheels https://www.piwheels.org/simple/"
+
+# Install dependencies using Poetry
+log_cupcake "Installing Python dependencies with Poetry..."
+su - cupcake -c "cd /opt/cupcake/app && /root/.local/bin/poetry install --only=main --no-dev"
+
+# Activate the virtual environment for subsequent commands
+log_cupcake "Poetry installation completed, virtual environment ready"
 
 # Configure PostgreSQL
 log_cupcake "Configuring PostgreSQL database..."
@@ -185,12 +202,12 @@ chown cupcake:cupcake /opt/cupcake/app/.env
 # Run Django setup
 log_cupcake "Running Django migrations and setup..."
 cd /opt/cupcake/app
-su - cupcake -c "cd /opt/cupcake/app && ./venv/bin/python manage.py migrate"
-su - cupcake -c "cd /opt/cupcake/app && ./venv/bin/python manage.py collectstatic --noinput"
+su - cupcake -c "cd /opt/cupcake/app && /root/.local/bin/poetry run python manage.py migrate"
+su - cupcake -c "cd /opt/cupcake/app && /root/.local/bin/poetry run python manage.py collectstatic --noinput"
 
 # Create Django superuser
 log_cupcake "Creating Django superuser..."
-su - cupcake -c "cd /opt/cupcake/app && ./venv/bin/python manage.py shell" <<PYEOF
+su - cupcake -c "cd /opt/cupcake/app && /root/.local/bin/poetry run python manage.py shell" <<PYEOF
 from django.contrib.auth.models import User
 if not User.objects.filter(username='admin').exists():
     User.objects.create_superuser('admin', 'admin@cupcake.local', 'cupcake123')
@@ -215,7 +232,7 @@ User=cupcake
 Group=cupcake
 WorkingDirectory=/opt/cupcake/app
 Environment=PATH=/opt/cupcake/app/venv/bin
-ExecStart=/opt/cupcake/app/venv/bin/gunicorn cupcake.wsgi:application --bind 127.0.0.1:8000 --workers 3
+ExecStart=/bin/bash -c 'cd /opt/cupcake/app && /root/.local/bin/poetry run gunicorn cupcake.wsgi:application --bind 127.0.0.1:8000 --workers 3'
 Restart=always
 RestartSec=5
 StandardOutput=journal

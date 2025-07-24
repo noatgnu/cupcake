@@ -224,9 +224,9 @@ EOF
     rm -f /etc/nginx/sites-enabled/default
     
     # Test configuration
-    nginx -t
-    systemctl restart nginx
-    systemctl enable nginx
+    sudo nginx -t
+    sudo systemctl restart nginx
+    sudo systemctl enable nginx
     
     log "Nginx setup completed"
 }

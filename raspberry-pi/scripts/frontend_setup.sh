@@ -14,13 +14,17 @@ setup_frontend() {
         error "Files directory not provided to setup_frontend"
     fi
     
+    # Get the directory of the raspberry-pi directory (parent of scripts)
+    local script_base_dir="$(dirname "$(dirname "${BASH_SOURCE[0]}")")"
+    
     # Check if we should use pre-built frontend
     if [ "$USE_PREBUILT_FRONTEND" = "1" ]; then
-        log "Using pre-built frontend from ./frontend-dist"
+        log "Using pre-built frontend from $script_base_dir/frontend-dist"
         
-        if [ -d "./frontend-dist" ]; then
+        if [ -d "$script_base_dir/frontend-dist" ]; then
             log "Copying pre-built frontend to stage..."
-            cp -r ./frontend-dist "$files_dir/opt/cupcake/frontend"
+            mkdir -p "$files_dir/opt/cupcake"
+            cp -r "$script_base_dir/frontend-dist" "$files_dir/opt/cupcake/frontend"
             log "✓ Pre-built frontend copied successfully"
             return 0
         else
@@ -31,27 +35,29 @@ setup_frontend() {
     # Build frontend using the prebuild script
     log "Building frontend using prebuild script..."
     
+    local prebuild_script="$script_base_dir/prebuild-frontend.sh"
+    
     # Ensure prebuild script exists and is executable
-    if [ ! -f "./prebuild-frontend.sh" ]; then
-        error "prebuild-frontend.sh not found"
+    if [ ! -f "$prebuild_script" ]; then
+        error "prebuild-frontend.sh not found at $prebuild_script"
     fi
     
-    chmod +x ./prebuild-frontend.sh
+    chmod +x "$prebuild_script"
     
     # Run the prebuild script with Pi-specific hostname
     local pi_hostname="${HOSTNAME:-cupcake-pi}.local"
-    if ! bash ./prebuild-frontend.sh --hostname "$pi_hostname" --output-dir ./frontend-build-output; then
+    if ! bash "$prebuild_script" --hostname "$pi_hostname" --output-dir "$script_base_dir/frontend-build-output"; then
         error "Frontend build failed"
     fi
     
     # Copy built frontend to stage
-    if [ -d "./frontend-build-output" ]; then
+    if [ -d "$script_base_dir/frontend-build-output" ]; then
         log "Copying built frontend to stage..."
         mkdir -p "$files_dir/opt/cupcake"
-        cp -r ./frontend-build-output "$files_dir/opt/cupcake/frontend"
+        cp -r "$script_base_dir/frontend-build-output" "$files_dir/opt/cupcake/frontend"
         
         # Clean up build output
-        rm -rf ./frontend-build-output
+        rm -rf "$script_base_dir/frontend-build-output"
         
         log "✓ Frontend built and copied successfully"
     else

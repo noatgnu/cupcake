@@ -394,51 +394,61 @@ EOF
     cat > "$stage_dir/00-install-cupcake/01-run.sh" << 'EOF'
 #!/bin/bash -e
 
+# Logging functions for pi-gen stage context
+log() {
+    echo -e "[$(date +'%Y-%m-%d %H:%M:%S')] $1"
+}
+
+warn() {
+    echo -e "[$(date +'%Y-%m-%d %H:%M:%S')] WARNING: $1"
+}
+
+error() {
+    echo -e "[$(date +'%Y-%m-%d %H:%M:%S')] ERROR: $1"
+    exit 1
+}
+
+info() {
+    echo -e "[$(date +'%Y-%m-%d %H:%M:%S')] $1"
+}
+
 # At this point, pi-gen should have set up ROOTFS_DIR properly via prerun.sh
-echo "Starting CUPCAKE installation..."
-echo "ROOTFS_DIR: ${ROOTFS_DIR}"
+log "Starting CUPCAKE installation..."
+log "ROOTFS_DIR: ${ROOTFS_DIR}"
 
 # Basic validation that we're in the right context
 if [ -z "${ROOTFS_DIR}" ]; then
-    echo "ERROR: ROOTFS_DIR not set - this script must run within pi-gen context"
-    exit 1
+    error "ROOTFS_DIR not set - this script must run within pi-gen context"
 fi
 
 if [ ! -d "${ROOTFS_DIR}" ]; then
-    echo "ERROR: ROOTFS_DIR does not exist: ${ROOTFS_DIR}"
-    echo "This suggests the prerun.sh script didn't work correctly"
-    exit 1
+    error "ROOTFS_DIR does not exist: ${ROOTFS_DIR} - prerun.sh script didn't work correctly"
 fi
 
-echo "ROOTFS_DIR validated: ${ROOTFS_DIR}"
+log "ROOTFS_DIR validated: ${ROOTFS_DIR}"
 
 # Copy configuration files from the files directory
 if [ -d "files" ]; then
-    echo "Copying configuration files..."
-    echo "Files directory structure:"
+    log "Copying configuration files..."
+    info "Files directory structure:"
     find files -type f | head -10
     
     # Check if files directory has content
     if [ "$(ls -A files 2>/dev/null)" ]; then
         cp -r files/* "${ROOTFS_DIR}/" || {
-            echo "ERROR: Failed to copy files to ${ROOTFS_DIR}"
-            echo "Files directory contents:"
-            ls -la files/ || true
-            echo "ROOTFS_DIR directory info:"
-            ls -la "${ROOTFS_DIR}/" | head -10 || true
-            exit 1
+            error "Failed to copy files to ${ROOTFS_DIR}"
         }
-        echo "Successfully copied configuration files"
+        log "Successfully copied configuration files"
     else
-        echo "Files directory is empty, nothing to copy"
+        info "Files directory is empty, nothing to copy"
     fi
 else
-    echo "No files directory found, skipping file copy"
-    echo "This is normal if no system configuration files need to be copied"
+    info "No files directory found, skipping file copy"
+    info "This is normal if no system configuration files need to be copied"
 fi
 
 # Install system packages in chroot
-echo "Installing system packages..."
+log "Installing system packages..."
 on_chroot << 'CHROOT_EOF'
 export DEBIAN_FRONTEND=noninteractive
 
@@ -456,7 +466,7 @@ apt-get install -y \
     git curl wget unzip htop nvme-cli \
     supervisor
 
-echo "System packages installed successfully"
+log "System packages installed successfully"
 CHROOT_EOF
 
 # Frontend setup - use pre-built or build from source
@@ -465,8 +475,7 @@ setup_frontend() {
     
     # Ensure ROOTFS_DIR is available for frontend setup
     if [ -z "${ROOTFS_DIR}" ]; then
-        echo "ERROR: ROOTFS_DIR is not set in frontend setup"
-        exit 1
+        error "ROOTFS_DIR is not set in frontend setup"
     fi
     
     local frontend_source=""
@@ -584,10 +593,10 @@ setup_frontend
 
 # Set permissions after copying files
 if [ -n "${ROOTFS_DIR}" ] && [ -d "${ROOTFS_DIR}/opt/cupcake/scripts" ]; then
-    echo "Setting script permissions..."
-    chmod +x "${ROOTFS_DIR}/opt/cupcake/scripts/"* || echo "WARNING: Failed to set script permissions"
+    log "Setting script permissions..."
+    chmod +x "${ROOTFS_DIR}/opt/cupcake/scripts/"* || warn "Failed to set script permissions"
 else
-    echo "WARNING: Cannot set script permissions - ROOTFS_DIR not set or scripts directory not found"
+    warn "Cannot set script permissions - ROOTFS_DIR not set or scripts directory not found"
 fi
 
 # Create cupcake user and directories
@@ -622,7 +631,7 @@ fi
 
 CHROOT_EOF
 
-echo "CUPCAKE stage completed successfully"
+log "CUPCAKE stage completed successfully"
 EOF
 
     chmod +x "$stage_dir/00-install-cupcake/01-run.sh"

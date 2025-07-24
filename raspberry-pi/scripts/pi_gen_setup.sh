@@ -68,7 +68,7 @@ prepare_build() {
     log "Cleaning previous build artifacts and config..."
     sudo docker system prune -f 2>/dev/null || true
     rm -rf work/ deploy/ || true
-    rm -rf stage-cupcake/ stage3-cupcake/ || true
+    rm -rf stage-cupcake/ stage3-cupcake/ stage2z-cupcake/ || true
     rm -f config || true
     
     log "Build environment prepared"
@@ -89,12 +89,16 @@ TARGET_HOSTNAME=${HOSTNAME:-cupcake-pi}
 KEYBOARD_KEYMAP=us
 KEYBOARD_LAYOUT="English (US)"
 TIMEZONE_DEFAULT=UTC
+
+# Ensure lite build (no desktop environment)
+DISABLE_FIRST_BOOT_USER_RENAME=1
+IMG_DATE="$(date -u +%Y-%m-%d)"
 FIRST_USER_NAME=${DEFAULT_USER:-cupcake}
 FIRST_USER_PASS=${DEFAULT_PASSWORD:-cupcake123}
 WPA_ESSID="${WIFI_SSID:-}"
 WPA_PASSWORD="${WIFI_PASSWORD:-}"
 WPA_COUNTRY=US
-ENABLE_SSH=${ENABLE_SSH:-1}
+ENABLE_SSH=1
 PUBKEY_SSH_FIRST_USER=""
 PUBKEY_ONLY_SSH=0
 
@@ -103,9 +107,9 @@ WORK_DIR=$PI_GEN_DIR/work
 DEPLOY_DIR=$PI_GEN_DIR/deploy
 LOG_FILE=$PI_GEN_DIR/build.log
 
-# Stage configuration - skip stages 4,5 (full desktop, lite-desktop) 
-# Note: We're replacing stage3 with our custom stage3-cupcake
-SKIP_IMAGES="4,5"
+# Stage configuration - lite environment only with SSH
+# Skip all desktop stages (3,4,5) - build stops at stage2 (lite) + our custom stage
+SKIP_IMAGES="3,4,5"
 
 # Docker build settings
 USE_DOCKER=1

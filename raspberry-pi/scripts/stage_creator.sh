@@ -9,8 +9,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/logging.sh"
 create_custom_stage() {
     log "Creating custom CUPCAKE stage..."
     
-    # Use numeric stage name to follow pi-gen conventions (comes after stage2)
-    local stage_dir="$PI_GEN_DIR/stage3-cupcake"
+    # Use stage name that comes after stage2 (lite) alphabetically  
+    local stage_dir="$PI_GEN_DIR/stage2z-cupcake"
     
     # Create clean stage directory
     rm -rf "$stage_dir"
@@ -155,17 +155,17 @@ cd app
 
 # Create Python virtual environment
 log_cupcake "Setting up Python virtual environment..."
-sudo -u cupcake python3 -m venv venv
-sudo -u cupcake ./venv/bin/pip install --upgrade pip
+su - cupcake -c "cd /opt/cupcake/app && python3 -m venv venv"
+su - cupcake -c "cd /opt/cupcake/app && ./venv/bin/pip install --upgrade pip"
 
 # Install Python dependencies
 log_cupcake "Installing Python dependencies..."
-sudo -u cupcake ./venv/bin/pip install -r requirements.txt
+su - cupcake -c "cd /opt/cupcake/app && ./venv/bin/pip install -r requirements.txt"
 
 # Configure PostgreSQL
 log_cupcake "Configuring PostgreSQL database..."
-sudo -u postgres createuser -D -A -P cupcake || true
-sudo -u postgres createdb -O cupcake cupcake || true
+su - postgres -c "createuser -D -A -P cupcake" || true
+su - postgres -c "createdb -O cupcake cupcake" || true
 
 # Configure environment
 log_cupcake "Setting up environment configuration..."
@@ -185,12 +185,12 @@ chown cupcake:cupcake /opt/cupcake/app/.env
 # Run Django setup
 log_cupcake "Running Django migrations and setup..."
 cd /opt/cupcake/app
-sudo -u cupcake ./venv/bin/python manage.py migrate
-sudo -u cupcake ./venv/bin/python manage.py collectstatic --noinput
+su - cupcake -c "cd /opt/cupcake/app && ./venv/bin/python manage.py migrate"
+su - cupcake -c "cd /opt/cupcake/app && ./venv/bin/python manage.py collectstatic --noinput"
 
 # Create Django superuser
 log_cupcake "Creating Django superuser..."
-sudo -u cupcake ./venv/bin/python manage.py shell <<PYEOF
+su - cupcake -c "cd /opt/cupcake/app && ./venv/bin/python manage.py shell" <<PYEOF
 from django.contrib.auth.models import User
 if not User.objects.filter(username='admin').exists():
     User.objects.create_superuser('admin', 'admin@cupcake.local', 'cupcake123')
@@ -309,7 +309,7 @@ if [ -f "/boot/cupcake-config.txt" ]; then
     if [ -n "\$CUPCAKE_ADMIN_USER" ] && [ -n "\$CUPCAKE_ADMIN_PASSWORD" ]; then
         echo "Creating CUPCAKE admin user: \$CUPCAKE_ADMIN_USER"
         cd /opt/cupcake/app
-        sudo -u cupcake ./venv/bin/python manage.py shell <<PYEOF
+        su - cupcake -c "cd /opt/cupcake/app && ./venv/bin/python manage.py shell" <<PYEOF
 from django.contrib.auth.models import User
 try:
     user = User.objects.get(username='\$CUPCAKE_ADMIN_USER')

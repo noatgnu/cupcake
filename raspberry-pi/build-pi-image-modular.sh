@@ -96,12 +96,15 @@ run_pi_gen_build() {
     # Ensure Docker BuildKit is available
     export DOCKER_BUILDKIT=1
     
-    # Run the Docker-based build
-    if [ -f "./build-docker.sh" ]; then
-        log "Using official Docker build method..."
+    # Run the custom Bookworm-based Docker build
+    if [ -f "$CONFIG_DIR/raspberry-pi/build-docker-cupcake.sh" ]; then
+        log "Using custom CUPCAKE Docker build method (Bookworm-based)..."
+        timeout 7200 "$CONFIG_DIR/raspberry-pi/build-docker-cupcake.sh" 2>&1 | tee build-output.log
+    elif [ -f "./build-docker.sh" ]; then
+        log "Falling back to official Docker build method..."
         timeout 7200 ./build-docker.sh 2>&1 | tee build-output.log
     else
-        error "build-docker.sh not found in pi-gen directory"
+        error "Neither custom nor official build-docker.sh found"
     fi
     
     # Check if build succeeded

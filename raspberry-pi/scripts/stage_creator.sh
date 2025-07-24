@@ -115,14 +115,24 @@ log_cupcake "Updating system packages..."
 apt-get update
 apt-get upgrade -y
 
-# Add PostgreSQL official repository FIRST (matching native script lines 354-360)
-log_cupcake "Adding PostgreSQL official repository..."
-curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | tee /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg > /dev/null
-echo 'deb http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main' > /etc/apt/sources.list.d/pgdg.list
+# Add PostgreSQL 14 repository (fix for pi-gen Docker/QEMU environment)
+log_cupcake "Adding PostgreSQL 14 repository for pi-gen Docker environment..."
+export DEBIAN_FRONTEND=noninteractive
+
+# Install prerequisites 
+apt-get install -y ca-certificates gnupg lsb-release curl
+
+# Add PostgreSQL signing key properly for Docker environment
+curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg
+
+# Add repository for Bookworm (target Pi image), not Bullseye (Docker build environment)
+echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+
+# Update package lists
 apt-get update
 
-# Install required packages (matching native script pattern)
-log_cupcake "Installing CUPCAKE dependencies..."
+# Install required packages (PostgreSQL 14 as required)
+log_cupcake "Installing CUPCAKE dependencies with PostgreSQL 14..."
 apt-get install -y \
     python3 python3-pip python3-venv python3-dev \
     postgresql-14 postgresql-client-14 postgresql-contrib-14 \

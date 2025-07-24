@@ -62,11 +62,9 @@ jobs:
     - name: Setup kernel modules for pi-gen
       run: |
         sudo modprobe binfmt_misc
-        # Install binfmt-support if not present
-        if ! dpkg -l | grep -q "^ii  binfmt-support "; then
-          sudo apt-get update
-          sudo apt-get install -y binfmt-support
-        fi
+        # Install required packages
+        sudo apt-get update
+        sudo apt-get install -y binfmt-support dos2unix
         # Only restart if service exists
         if systemctl list-unit-files | grep -q "binfmt-support.service"; then
           sudo systemctl restart binfmt-support
@@ -75,7 +73,10 @@ jobs:
     - name: Pre-build Frontend (x86 fast build)
       run: |
         cd raspberry-pi
-        bash prebuild-frontend.sh --hostname cupcake-pi4.local --output-dir ./frontend-dist
+        # Ensure script has correct line endings and is executable
+        dos2unix prebuild-frontend.sh 2>/dev/null || true
+        chmod +x prebuild-frontend.sh
+        bash ./prebuild-frontend.sh --hostname cupcake-pi4.local --output-dir ./frontend-dist
         
     - name: Build Pi 4 image using enhanced build script
       run: |
@@ -84,9 +85,19 @@ jobs:
         export USE_PREBUILT_FRONTEND=1
         bash build-pi-image.sh pi4 "${{ inputs.image_version || 'latest' }}" "${{ inputs.enable_ssh && '1' || '0' }}"
         
-        # Move built image to workspace root
-        sudo mv build/cupcake-pi4-*.img ../
-        sudo chown runner:runner ../cupcake-pi4-*.img
+        # Find and move built image to workspace root
+        echo "Looking for built Pi 4 images..."
+        find . -name "*cupcake-pi4*.img" -type f || true
+        
+        # Move built image(s) to workspace root
+        if ls $HOME/build/pi-gen/deploy/*cupcake-pi4*.img 1> /dev/null 2>&1; then
+          sudo mv $HOME/build/pi-gen/deploy/*cupcake-pi4*.img ../
+          sudo chown runner:runner ../cupcake-pi4-*.img
+        else
+          echo "Error: No Pi 4 image found in expected locations"
+          find $HOME/build -name "*cupcake*" -name "*.img" -type f || true
+          exit 1
+        fi
 
     - name: Compress Pi 4 image
       run: |
@@ -126,11 +137,9 @@ jobs:
     - name: Setup kernel modules for pi-gen
       run: |
         sudo modprobe binfmt_misc
-        # Install binfmt-support if not present
-        if ! dpkg -l | grep -q "^ii  binfmt-support "; then
-          sudo apt-get update
-          sudo apt-get install -y binfmt-support
-        fi
+        # Install required packages
+        sudo apt-get update
+        sudo apt-get install -y binfmt-support dos2unix
         # Only restart if service exists
         if systemctl list-unit-files | grep -q "binfmt-support.service"; then
           sudo systemctl restart binfmt-support
@@ -139,7 +148,10 @@ jobs:
     - name: Pre-build Frontend (x86 fast build)
       run: |
         cd raspberry-pi
-        bash prebuild-frontend.sh --hostname cupcake-pi5.local --output-dir ./frontend-dist
+        # Ensure script has correct line endings and is executable
+        dos2unix prebuild-frontend.sh 2>/dev/null || true
+        chmod +x prebuild-frontend.sh
+        bash ./prebuild-frontend.sh --hostname cupcake-pi5.local --output-dir ./frontend-dist
         
     - name: Build Pi 5 image using enhanced build script
       run: |
@@ -148,9 +160,19 @@ jobs:
         export USE_PREBUILT_FRONTEND=1
         bash build-pi-image.sh pi5 "${{ inputs.image_version || 'latest' }}" "${{ inputs.enable_ssh && '1' || '0' }}"
         
-        # Move built image to workspace root
-        sudo mv build/cupcake-pi5-*.img ../
-        sudo chown runner:runner ../cupcake-pi5-*.img
+        # Find and move built image to workspace root
+        echo "Looking for built Pi 5 images..."
+        find . -name "*cupcake-pi5*.img" -type f || true
+        
+        # Move built image(s) to workspace root
+        if ls $HOME/build/pi-gen/deploy/*cupcake-pi5*.img 1> /dev/null 2>&1; then
+          sudo mv $HOME/build/pi-gen/deploy/*cupcake-pi5*.img ../
+          sudo chown runner:runner ../cupcake-pi5-*.img
+        else
+          echo "Error: No Pi 5 image found in expected locations"
+          find $HOME/build -name "*cupcake*" -name "*.img" -type f || true
+          exit 1
+        fi
 
     - name: Compress Pi 5 image
       run: |

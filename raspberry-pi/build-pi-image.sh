@@ -373,10 +373,76 @@ EOF
 
 echo "Starting CUPCAKE installation..."
 
+# Debug: Show environment and working directory
+echo "Working directory: $(pwd)"
+echo "Environment variables:"
+env | grep -E "(ROOTFS|WORK|STAGE)" || true
+
+# Try to determine ROOTFS_DIR if not set
+if [ -z "${ROOTFS_DIR}" ]; then
+    echo "ROOTFS_DIR not set, attempting to detect..."
+    
+    # Common pi-gen paths where rootfs might be located
+    POSSIBLE_PATHS=(
+        "${WORK_DIR}/rootfs"
+        "$(pwd)/work/rootfs"  
+        "../work/rootfs"
+        "${PWD%/*}/work/rootfs"
+        "${BUILD_DIR}/work/rootfs"
+    )
+    
+    for path in "${POSSIBLE_PATHS[@]}"; do
+        if [ -d "$path" ]; then
+            echo "Found potential rootfs at: $path"
+            export ROOTFS_DIR="$path"
+            break
+        fi
+    done
+    
+    if [ -z "${ROOTFS_DIR}" ]; then
+        echo "ERROR: Cannot determine ROOTFS_DIR location"
+        echo "Available directories:"
+        find . -maxdepth 3 -type d -name "*rootfs*" 2>/dev/null || true
+        exit 1
+    fi
+fi
+
+echo "Using ROOTFS_DIR: ${ROOTFS_DIR}"
+
+# Ensure ROOTFS_DIR exists and is writable
+if [ ! -d "${ROOTFS_DIR}" ]; then
+    echo "ERROR: ROOTFS_DIR directory does not exist: ${ROOTFS_DIR}"
+    exit 1
+fi
+
+if [ ! -w "${ROOTFS_DIR}" ]; then
+    echo "ERROR: ROOTFS_DIR is not writable: ${ROOTFS_DIR}"
+    exit 1
+fi
+
 # Copy configuration files from the files directory
 if [ -d "files" ]; then
     echo "Copying configuration files..."
-    cp -r files/* "${ROOTFS_DIR}/"
+    echo "Files directory structure:"
+    find files -type f | head -10
+    
+    # Check if files directory has content
+    if [ "$(ls -A files 2>/dev/null)" ]; then
+        cp -r files/* "${ROOTFS_DIR}/" || {
+            echo "ERROR: Failed to copy files to ${ROOTFS_DIR}"
+            echo "Files directory contents:"
+            ls -la files/ || true
+            echo "ROOTFS_DIR directory info:"
+            ls -la "${ROOTFS_DIR}/" | head -10 || true
+            exit 1
+        }
+        echo "Successfully copied configuration files"
+    else
+        echo "Files directory is empty, nothing to copy"
+    fi
+else
+    echo "No files directory found, skipping file copy"
+    echo "This is normal if no system configuration files need to be copied"
 fi
 
 # Install system packages in chroot
@@ -404,6 +470,12 @@ CHROOT_EOF
 # Frontend setup - use pre-built or build from source
 setup_frontend() {
     log "Setting up frontend..."
+    
+    # Ensure ROOTFS_DIR is available for frontend setup
+    if [ -z "${ROOTFS_DIR}" ]; then
+        echo "ERROR: ROOTFS_DIR is not set in frontend setup"
+        exit 1
+    fi
     
     local frontend_source=""
     local use_prebuilt=false
@@ -519,8 +591,11 @@ CHROOT_EOF
 setup_frontend
 
 # Set permissions after copying files
-if [ -d "${ROOTFS_DIR}/opt/cupcake/scripts" ]; then
-    chmod +x "${ROOTFS_DIR}/opt/cupcake/scripts/"*
+if [ -n "${ROOTFS_DIR}" ] && [ -d "${ROOTFS_DIR}/opt/cupcake/scripts" ]; then
+    echo "Setting script permissions..."
+    chmod +x "${ROOTFS_DIR}/opt/cupcake/scripts/"* || echo "WARNING: Failed to set script permissions"
+else
+    echo "WARNING: Cannot set script permissions - ROOTFS_DIR not set or scripts directory not found"
 fi
 
 # Create cupcake user and directories

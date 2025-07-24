@@ -115,11 +115,17 @@ log_cupcake "Updating system packages..."
 apt-get update
 apt-get upgrade -y
 
-# Install required packages
+# Add PostgreSQL official repository FIRST (matching native script lines 354-360)
+log_cupcake "Adding PostgreSQL official repository..."
+curl https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor | tee /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg > /dev/null
+echo 'deb http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main' > /etc/apt/sources.list.d/pgdg.list
+apt-get update
+
+# Install required packages (matching native script pattern)
 log_cupcake "Installing CUPCAKE dependencies..."
 apt-get install -y \
     python3 python3-pip python3-venv python3-dev \
-    postgresql postgresql-contrib \
+    postgresql-14 postgresql-client-14 postgresql-contrib-14 \
     redis-server \
     nginx \
     git curl wget unzip \
@@ -153,35 +159,69 @@ fi
 
 cd app
 
-# Install additional Poetry and worker dependencies 
-log_cupcake "Installing additional dependencies for Poetry and workers..."
-# Python packaging tools (python3-dev already installed above)
+# Install additional dependencies for workers (matching native script)
+log_cupcake "Installing additional dependencies for workers..."
+# Python packaging tools and cryptography libraries
 apt-get install -y python3-setuptools python3-wheel
-# Cryptography and SSL libraries  
-apt-get install -y libssl-dev libffi-dev libjpeg-dev libpng-dev libfreetype6-dev python3-cryptography python3-cffi
-# Worker-specific tools (postgresql, ffmpeg, git, build-essential, curl already installed above)
-apt-get install -y postgresql-client-14 cmake tesseract-ocr tesseract-ocr-eng
+apt-get install -y libssl-dev libffi-dev libjpeg-dev libpng-dev libfreetype6-dev
+# Worker-specific tools (postgresql-client-14 already installed above)
+apt-get install -y cmake tesseract-ocr tesseract-ocr-eng
 
-# Install Poetry using pip (more reliable in chroot environment)
-log_cupcake "Installing Poetry via pip..."
-python3 -m pip install --user poetry
-export PATH="/root/.local/bin:$PATH"
+# Create Python virtual environment (matching native script approach)
+log_cupcake "Setting up Python virtual environment..."
+su - cupcake -c "python3 -m venv /opt/cupcake/venv"
 
-# Make Poetry available system-wide
-ln -sf /root/.local/bin/poetry /usr/local/bin/poetry
-
-# Configure Poetry for ARM/piwheels
-log_cupcake "Configuring Poetry for Pi environment..."
-su - cupcake -c "cd /opt/cupcake/app && poetry config virtualenvs.create true"
-su - cupcake -c "cd /opt/cupcake/app && poetry config virtualenvs.in-project true"
-
-# Configure piwheels as primary source for ARM packages
-log_cupcake "Adding piwheels repository for ARM packages..."
-su - cupcake -c "cd /opt/cupcake/app && poetry source add --priority=explicit piwheels https://www.piwheels.org/simple/"
-
-# Install only main dependencies, avoiding problematic packages
-log_cupcake "Installing Python dependencies with Poetry (ARM-optimized)..."
-su - cupcake -c "cd /opt/cupcake/app && poetry install --only=main --no-dev --source piwheels || poetry install --only=main --no-dev"
+# Install Python dependencies using pip (matching native script lines 520-562)
+log_cupcake "Installing Python dependencies with pip..."
+su - cupcake -c "
+    source /opt/cupcake/venv/bin/activate
+    pip install --upgrade pip setuptools wheel
+    
+    # Install CUPCAKE Python dependencies (matching native script exact packages)
+    pip install \
+        'Django>=4.2,<5.0' \
+        djangorestframework \
+        django-cors-headers \
+        psycopg2-binary \
+        redis \
+        'django-rq>=2.0' \
+        rq \
+        gunicorn \
+        uvicorn \
+        channels \
+        channels-redis \
+        requests \
+        psutil \
+        numpy \
+        pandas \
+        Pillow \
+        openpyxl \
+        python-multipart \
+        pydantic \
+        fastapi \
+        websockets \
+        aiofiles \
+        python-jose \
+        passlib \
+        bcrypt \
+        python-dotenv \
+        python-magic \
+        pathvalidate \
+        chardet \
+        lxml \
+        beautifulsoup4 \
+        markdown \
+        bleach \
+        django-extensions \
+        django-debug-toolbar \
+        django-filter \
+        djangorestframework-simplejwt \
+        django-oauth-toolkit \
+        social-auth-app-django \
+        whitenoise \
+        dj-database-url \
+        python-decouple
+"
 
 # Setup Whisper.cpp for transcription worker
 log_cupcake "Setting up Whisper.cpp for transcription..."
@@ -202,8 +242,10 @@ su - cupcake -c "cd /opt/cupcake/whisper.cpp && cmake --build build --config Rel
 # Return to app directory
 cd /opt/cupcake/app
 
-# Activate the virtual environment for subsequent commands
-log_cupcake "Poetry installation completed, virtual environment ready"
+# Fix ownership of virtual environment
+chown -R cupcake:cupcake /opt/cupcake/venv
+
+log_cupcake "Python virtual environment setup completed"
 
 # Configure PostgreSQL
 log_cupcake "Configuring PostgreSQL database..."
@@ -225,15 +267,15 @@ ENVEOF
 
 chown cupcake:cupcake /opt/cupcake/app/.env
 
-# Run Django setup
+# Run Django setup using virtual environment (matching native script)
 log_cupcake "Running Django migrations and setup..."
 cd /opt/cupcake/app
-su - cupcake -c "cd /opt/cupcake/app && poetry run python manage.py migrate"
-su - cupcake -c "cd /opt/cupcake/app && poetry run python manage.py collectstatic --noinput"
+su - cupcake -c "cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py migrate"
+su - cupcake -c "cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py collectstatic --noinput"
 
 # Create Django superuser
 log_cupcake "Creating Django superuser..."
-su - cupcake -c "cd /opt/cupcake/app && poetry run python manage.py shell" <<PYEOF
+su - cupcake -c "cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py shell" <<PYEOF
 from django.contrib.auth.models import User
 if not User.objects.filter(username='admin').exists():
     User.objects.create_superuser('admin', 'admin@cupcake.local', 'cupcake123')
@@ -245,7 +287,7 @@ PYEOF
 # Configure services
 log_cupcake "Setting up systemd services..."
 
-# CUPCAKE web service
+# CUPCAKE web service (matching native script service pattern)
 cat > /etc/systemd/system/cupcake-web.service <<SERVICEEOF
 [Unit]
 Description=CUPCAKE Web Server
@@ -257,8 +299,12 @@ Type=exec
 User=cupcake
 Group=cupcake
 WorkingDirectory=/opt/cupcake/app
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=/bin/bash -c 'cd /opt/cupcake/app && poetry run gunicorn --workers=3 cupcake.asgi:application --bind 127.0.0.1:8000 --timeout 300 -k uvicorn.workers.UvicornWorker'
+Environment=PATH=/opt/cupcake/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake@localhost:5432/cupcake
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+ExecStart=/bin/bash -c 'cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && gunicorn --workers=3 cupcake.asgi:application --bind 127.0.0.1:8000 --timeout 300 -k uvicorn.workers.UvicornWorker'
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -280,8 +326,12 @@ Type=exec
 User=cupcake
 Group=cupcake
 WorkingDirectory=/opt/cupcake/app
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=/bin/bash -c 'cd /opt/cupcake/app && poetry run python manage.py rqworker default'
+Environment=PATH=/opt/cupcake/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake@localhost:5432/cupcake
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+ExecStart=/bin/bash -c 'cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py rqworker default'
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -303,8 +353,12 @@ Type=exec
 User=cupcake
 Group=cupcake
 WorkingDirectory=/opt/cupcake/app
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=/bin/bash -c 'cd /opt/cupcake/app && poetry run python manage.py rqworker export'
+Environment=PATH=/opt/cupcake/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake@localhost:5432/cupcake
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+ExecStart=/bin/bash -c 'cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py rqworker export'
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -326,8 +380,12 @@ Type=exec
 User=cupcake
 Group=cupcake
 WorkingDirectory=/opt/cupcake/app
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=/bin/bash -c 'cd /opt/cupcake/app && poetry run python manage.py rqworker import-data'
+Environment=PATH=/opt/cupcake/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake@localhost:5432/cupcake
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+ExecStart=/bin/bash -c 'cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py rqworker import-data'
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -349,8 +407,12 @@ Type=exec
 User=cupcake
 Group=cupcake
 WorkingDirectory=/opt/cupcake/app
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=/bin/bash -c 'cd /opt/cupcake/app && poetry run python manage.py rqworker maintenance'
+Environment=PATH=/opt/cupcake/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake@localhost:5432/cupcake
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+ExecStart=/bin/bash -c 'cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py rqworker maintenance'
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -372,8 +434,12 @@ Type=exec
 User=cupcake
 Group=cupcake
 WorkingDirectory=/opt/cupcake/app
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=/bin/bash -c 'cd /opt/cupcake/app && poetry run python manage.py rqworker transcribe'
+Environment=PATH=/opt/cupcake/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake@localhost:5432/cupcake
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+ExecStart=/bin/bash -c 'cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py rqworker transcribe'
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -395,8 +461,12 @@ Type=exec
 User=cupcake
 Group=cupcake
 WorkingDirectory=/opt/cupcake/app
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=/bin/bash -c 'cd /opt/cupcake/app && poetry run python manage.py rqworker ocr'
+Environment=PATH=/opt/cupcake/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=DATABASE_URL=postgresql://cupcake:cupcake@localhost:5432/cupcake
+Environment=REDIS_URL=redis://localhost:6379/0
+Environment=PYTHONPATH=/opt/cupcake/app
+ExecStart=/bin/bash -c 'cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py rqworker ocr'
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -467,7 +537,7 @@ if [ -f "/boot/cupcake-config.txt" ]; then
     if [ -n "\$CUPCAKE_ADMIN_USER" ] && [ -n "\$CUPCAKE_ADMIN_PASSWORD" ]; then
         echo "Creating CUPCAKE admin user: \$CUPCAKE_ADMIN_USER"
         cd /opt/cupcake/app
-        su - cupcake -c "cd /opt/cupcake/app && poetry run python manage.py shell" <<PYEOF
+        su - cupcake -c "cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py shell" <<PYEOF
 from django.contrib.auth.models import User
 try:
     user = User.objects.get(username='\$CUPCAKE_ADMIN_USER')

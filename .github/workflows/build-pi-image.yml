@@ -75,16 +75,14 @@ jobs:
     - name: Pre-build Frontend (x86 fast build)
       run: |
         cd raspberry-pi
-        chmod +x prebuild-frontend.sh
-        ./prebuild-frontend.sh --hostname cupcake-pi4.local --output-dir ./frontend-dist
+        bash prebuild-frontend.sh --hostname cupcake-pi4.local --output-dir ./frontend-dist
         
     - name: Build Pi 4 image using enhanced build script
       run: |
         cd raspberry-pi
-        chmod +x build-pi-image.sh prebuild-frontend.sh
         # Set environment variable to use pre-built frontend
         export USE_PREBUILT_FRONTEND=1
-        ./build-pi-image.sh pi4 "${{ inputs.image_version || 'latest' }}" "${{ inputs.enable_ssh && '1' || '0' }}"
+        bash build-pi-image.sh pi4 "${{ inputs.image_version || 'latest' }}" "${{ inputs.enable_ssh && '1' || '0' }}"
         
         # Move built image to workspace root
         sudo mv build/cupcake-pi4-*.img ../
@@ -141,16 +139,14 @@ jobs:
     - name: Pre-build Frontend (x86 fast build)
       run: |
         cd raspberry-pi
-        chmod +x prebuild-frontend.sh
-        ./prebuild-frontend.sh --hostname cupcake-pi5.local --output-dir ./frontend-dist
+        bash prebuild-frontend.sh --hostname cupcake-pi5.local --output-dir ./frontend-dist
         
     - name: Build Pi 5 image using enhanced build script
       run: |
         cd raspberry-pi
-        chmod +x build-pi-image.sh prebuild-frontend.sh
         # Set environment variable to use pre-built frontend
         export USE_PREBUILT_FRONTEND=1
-        ./build-pi-image.sh pi5 "${{ inputs.image_version || 'latest' }}" "${{ inputs.enable_ssh && '1' || '0' }}"
+        bash build-pi-image.sh pi5 "${{ inputs.image_version || 'latest' }}" "${{ inputs.enable_ssh && '1' || '0' }}"
         
         # Move built image to workspace root
         sudo mv build/cupcake-pi5-*.img ../

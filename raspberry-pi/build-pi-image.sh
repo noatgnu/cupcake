@@ -375,28 +375,18 @@ EOF
     
     log "Stage files prepared"
 
-    # Create stage prerun script - this runs BEFORE the chroot
+    # Create stage prerun script - this copies rootfs from previous stage
     cat > "$stage_dir/prerun.sh" << 'EOF'
 #!/bin/bash -e
 
-# CUPCAKE Stage Prerun - runs on host before chroot
-echo "CUPCAKE stage prerun starting..."
-echo "ROOTFS_DIR: ${ROOTFS_DIR}"
-echo "Checking if ROOTFS_DIR exists: $(ls -ld "${ROOTFS_DIR}" 2>/dev/null || echo "DOES NOT EXIST")"
+# CUPCAKE Stage Prerun - copy rootfs from previous stage if it doesn't exist
+# This is the standard pi-gen pattern used by all official stages
 
-# Ensure rootfs directory exists (pi-gen should create this, but let's be sure)
 if [ ! -d "${ROOTFS_DIR}" ]; then
-    echo "ERROR: ROOTFS_DIR does not exist: ${ROOTFS_DIR}"
-    echo "This suggests a pi-gen configuration issue"
-    exit 1
+    copy_previous
 fi
 
-# Clean up problematic systemd files
-if [ -f "${ROOTFS_DIR}/etc/systemd/system/dhcpcd.service.d/wait.conf" ]; then
-    rm -f "${ROOTFS_DIR}/etc/systemd/system/dhcpcd.service.d/wait.conf"
-fi
-
-echo "CUPCAKE stage prerun completed"
+echo "CUPCAKE stage prerun completed - rootfs ready"
 EOF
     chmod +x "$stage_dir/prerun.sh"
     
@@ -404,68 +394,23 @@ EOF
     cat > "$stage_dir/00-install-cupcake/01-run.sh" << 'EOF'
 #!/bin/bash -e
 
+# At this point, pi-gen should have set up ROOTFS_DIR properly via prerun.sh
 echo "Starting CUPCAKE installation..."
+echo "ROOTFS_DIR: ${ROOTFS_DIR}"
 
-# Debug: Show environment and working directory
-echo "Working directory: $(pwd)"
-echo "Environment variables:"
-env | grep -E "(ROOTFS|WORK|STAGE)" || true
-
-# In pi-gen, ROOTFS_DIR should be set by the build system
-# If it's not set, we're not running in the correct pi-gen context
+# Basic validation that we're in the right context
 if [ -z "${ROOTFS_DIR}" ]; then
     echo "ERROR: ROOTFS_DIR not set - this script must run within pi-gen context"
-    echo "Current environment:"
-    env | grep -E "(DIR|PATH)" | sort
-    echo "Working directory: $(pwd)"
-    echo "Directory contents:"
-    ls -la
     exit 1
 fi
 
-# Ensure parent directory exists before checking ROOTFS_DIR
-ROOTFS_PARENT="$(dirname "${ROOTFS_DIR}")"
-if [ ! -d "${ROOTFS_PARENT}" ]; then
-    echo "ERROR: Parent directory of ROOTFS_DIR does not exist: ${ROOTFS_PARENT}"
-    echo "This suggests pi-gen work directory setup failed"
-    exit 1
-fi
-
-echo "Using ROOTFS_DIR: ${ROOTFS_DIR}"
-
-# Pi-gen should create ROOTFS_DIR before running our script
-# If it doesn't exist, something is wrong with the pi-gen setup
 if [ ! -d "${ROOTFS_DIR}" ]; then
-    echo "CRITICAL ERROR: ROOTFS_DIR does not exist: ${ROOTFS_DIR}"
-    echo "This indicates a pi-gen configuration or timing issue"
-    echo ""
-    echo "Diagnostic information:"
-    echo "Current working directory: $(pwd)"
-    echo "ROOTFS_DIR: ${ROOTFS_DIR}"
-    echo "ROOTFS_DIR parent: $(dirname "${ROOTFS_DIR}")"
-    echo ""
-    echo "Available directories in work area:"
-    find "$(dirname "${ROOTFS_DIR}")/../.." -type d -name "*rootfs*" 2>/dev/null || true
-    echo ""
-    echo "Full directory structure:"
-    find "$(dirname "${ROOTFS_DIR}")/../.." -maxdepth 3 -type d 2>/dev/null | head -20 || true
-    
-    echo ""
-    echo "This suggests that:"
-    echo "1. Pi-gen hasn't extracted the base rootfs yet"  
-    echo "2. Our stage is running too early in the build process"
-    echo "3. The pi-gen configuration is incorrect"
-    
+    echo "ERROR: ROOTFS_DIR does not exist: ${ROOTFS_DIR}"
+    echo "This suggests the prerun.sh script didn't work correctly"
     exit 1
 fi
 
-# Check if ROOTFS_DIR is writable
-if [ ! -w "${ROOTFS_DIR}" ]; then
-    echo "ERROR: ROOTFS_DIR is not writable: ${ROOTFS_DIR}"
-    echo "This may be a permissions issue"
-    ls -ld "${ROOTFS_DIR}" || true
-    exit 1
-fi
+echo "ROOTFS_DIR validated: ${ROOTFS_DIR}"
 
 # Copy configuration files from the files directory
 if [ -d "files" ]; then

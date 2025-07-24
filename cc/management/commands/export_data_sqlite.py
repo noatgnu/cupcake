@@ -12,7 +12,7 @@ from django.db import connections
 from shutil import copyfile
 from cc.models import Session, ProtocolModel, ProtocolStep, ProtocolSection, AnnotationFolder, Annotation, TimeKeeper, \
     StoredReagent, ReagentAction, StepVariation, ProtocolRating, ProtocolReagent, StepReagent, Reagent, StorageObject, \
-    MetadataColumn, Instrument, InstrumentUsage
+    MetadataColumn, Instrument, InstrumentUsage, DocumentPermission
 
 import hashlib
 from django.core.signing import Signer
@@ -103,6 +103,28 @@ class Command(BaseCommand):
             annotation_placeholders = ', '.join(['?'] * len(annotation_columns))
             if annotations:
                 cursor.executemany(f'INSERT INTO {annotation_table_name} ({", ".join(annotation_columns)}) VALUES ({annotation_placeholders})', annotations)
+                conn.commit()
+                
+                # Export DocumentPermission for annotations with files (shared documents)
+                document_permission_table_name = DocumentPermission._meta.db_table
+                annotation_ids = [annotation[0] for annotation in annotations]
+                django_cursor.execute(f'SELECT * FROM {document_permission_table_name} WHERE annotation_id IN ({", ".join(["%s"] * len(annotation_ids))})', annotation_ids)
+                document_permissions = django_cursor.fetchall()
+                if document_permissions:
+                    document_permission_columns = [col[0] for col in django_cursor.description]
+                    document_permission_placeholders = ', '.join(['?'] * len(document_permission_columns))
+                    cursor.executemany(f'INSERT INTO {document_permission_table_name} ({", ".join(document_permission_columns)}) VALUES ({document_permission_placeholders})', document_permissions)
+                    conn.commit()
+            
+            # Export DocumentPermission for annotation folders (shared document folders)
+            folder_ids = [folder[0] for folder in annotation_folders]
+            document_permission_table_name = DocumentPermission._meta.db_table
+            django_cursor.execute(f'SELECT * FROM {document_permission_table_name} WHERE folder_id IN ({", ".join(["%s"] * len(folder_ids))})', folder_ids)
+            folder_document_permissions = django_cursor.fetchall()
+            if folder_document_permissions:
+                document_permission_columns = [col[0] for col in django_cursor.description]
+                document_permission_placeholders = ', '.join(['?'] * len(document_permission_columns))
+                cursor.executemany(f'INSERT INTO {document_permission_table_name} ({", ".join(document_permission_columns)}) VALUES ({document_permission_placeholders})', folder_document_permissions)
                 conn.commit()
 
         for f in Session._meta.get_fields():

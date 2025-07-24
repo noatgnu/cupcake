@@ -260,7 +260,9 @@ class ProtocolModelSerializer(ModelSerializer):
             'duration_rating',
             'reagents',
             'tags',
-            'metadata_columns'
+            'metadata_columns',
+            'user',
+            'is_vaulted'
         ]
 
 class ProtocolStepSerializer(ModelSerializer):
@@ -475,7 +477,7 @@ class ProtocolTagSerializer(ModelSerializer):
 class TagSerializer(ModelSerializer):
     class Meta:
         model = Tag
-        fields = ['id', 'tag', 'created_at', 'updated_at']
+        fields = ['id', 'tag', 'created_at', 'updated_at', 'user', 'is_vaulted']
 
 class AnnotationFolderSerializer(ModelSerializer):
     owner = UserBasicSerializer(read_only=True)
@@ -496,7 +498,7 @@ class ProjectSerializer(ModelSerializer):
 
     class Meta:
         model = Project
-        fields = ['id', 'project_name', 'created_at', 'updated_at', 'project_description', 'owner', 'sessions']
+        fields = ['id', 'project_name', 'created_at', 'updated_at', 'project_description', 'owner', 'sessions', 'is_vaulted']
 
 class MaintenanceLogSerializer(ModelSerializer):
     annotations = SerializerMethodField()
@@ -584,7 +586,9 @@ class InstrumentSerializer(ModelSerializer):
             'days_before_warranty_notification',
             'last_maintenance_notification_sent',
             'last_warranty_notification_sent',
-            'accepts_bookings'
+            'accepts_bookings',
+            'user',
+            'is_vaulted'
         ]
 
 
@@ -674,7 +678,8 @@ class StorageObjectSerializer(ModelSerializer):
             'user',
             'access_lab_groups',
             'path_to_root',
-            'child_count'
+            'child_count',
+            'is_vaulted'
         ]
 
 class ReagentSubscriptionSerializer(ModelSerializer):
@@ -782,7 +787,7 @@ class StoredReagentSerializer(ModelSerializer):
             'created_by_step', 'metadata_columns',
             'notify_on_low_stock', 'last_notification_sent', 'low_stock_threshold',
             'notify_days_before_expiry', 'notify_on_expiry', 'last_expiry_notification_sent',
-            'is_subscribed', 'subscription', 'subscriber_count'
+            'is_subscribed', 'subscription', 'subscriber_count', 'is_vaulted'
         ]
         read_only_fields = ['created_at', 'updated_at', 'last_notification_sent', 'last_expiry_notification_sent']
 

@@ -333,57 +333,71 @@ create_custom_stage() {
     
     local stage_dir="$PI_GEN_DIR/stage-cupcake"
     
-    # The stage directory should already exist from prepare_build, but ensure it's clean
-    rm -rf "$stage_dir/01-cupcake"
-    mkdir -p "$stage_dir/01-cupcake"
+    # Ensure clean stage directory
+    rm -rf "$stage_dir"
+    mkdir -p "$stage_dir/01-cupcake/files"
+    
+    # Copy files to be installed in rootfs
+    cp -r "$FILES_DIR/"* "$stage_dir/01-cupcake/files/" 2>/dev/null || true
 
-    # Create stage prerun script
+    # Create stage prerun script - this runs BEFORE the chroot
     cat > "$stage_dir/prerun.sh" << 'EOF'
 #!/bin/bash -e
 
-# CUPCAKE Stage Prerun
+# CUPCAKE Stage Prerun - runs on host before chroot
+echo "CUPCAKE stage prerun starting..."
+
+# Clean up problematic systemd files
 if [ -f "${ROOTFS_DIR}/etc/systemd/system/dhcpcd.service.d/wait.conf" ]; then
     rm -f "${ROOTFS_DIR}/etc/systemd/system/dhcpcd.service.d/wait.conf"
 fi
+
+echo "CUPCAKE stage prerun completed"
 EOF
     chmod +x "$stage_dir/prerun.sh"
     
-    # Create the main setup script (restore working version)
+    # Create the main setup script - this runs in pi-gen context
     cat > "$stage_dir/01-cupcake/01-run.sh" << 'EOF'
 #!/bin/bash -e
 
-# Copy configuration files first
+echo "Starting CUPCAKE installation..."
+
+# Copy configuration files from the files directory
 if [ -d "files" ]; then
+    echo "Copying configuration files..."
     cp -r files/* "${ROOTFS_DIR}/"
 fi
 
-# Install system packages
+# Install system packages in chroot
+echo "Installing system packages..."
 on_chroot << 'CHROOT_EOF'
 export DEBIAN_FRONTEND=noninteractive
 
 # Update package list
 apt-get update
 
-# Install PostgreSQL
-apt-get install -y postgresql postgresql-contrib postgresql-client
+# Install core system packages
+apt-get install -y \
+    postgresql postgresql-contrib postgresql-client \
+    redis-server \
+    nginx \
+    python3 python3-pip python3-venv python3-dev \
+    build-essential libpq-dev libffi-dev libssl-dev \
+    libxml2-dev libxslt1-dev libjpeg-dev zlib1g-dev \
+    git curl wget unzip htop nvme-cli \
+    supervisor
 
-# Install Redis
-apt-get install -y redis-server
+echo "System packages installed successfully"
+CHROOT_EOF
 
-# Install Nginx
-apt-get install -y nginx
-
-# Install Python and essential packages for native deployment
-apt-get install -y python3 python3-pip python3-venv python3-dev
-
-# Install system dependencies for Python packages
-apt-get install -y build-essential libpq-dev libffi-dev libssl-dev
-apt-get install -y libxml2-dev libxslt1-dev libjpeg-dev zlib1g-dev
-apt-get install -y git curl wget unzip htop nvme-cli
-
-# Install Node.js for frontend builds
+# Install Node.js and build frontend outside of problematic chroot operations
+echo "Setting up Node.js and building frontend..."
+on_chroot << 'CHROOT_EOF'
+# Install Node.js
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt-get install -y nodejs
+
+echo "Node.js installed, version: $(node --version)"
 
 # Build CUPCAKE Angular frontend
 echo "Building CUPCAKE Angular frontend..."
@@ -395,24 +409,24 @@ cd cupcake-ng
 sed -i 's;https://cupcake.proteo.info;http://cupcake-pi.local;g' src/environments/environment.ts
 sed -i 's;http://localhost;http://cupcake-pi.local;g' src/environments/environment.ts
 
-# Install dependencies and build
-npm install
-npm run build
+# Install dependencies and build (with increased memory for Pi build)
+npm install --no-optional
+npm run build --prod
 
 # Copy built frontend to nginx directory
 mkdir -p /opt/cupcake/frontend
 cp -r dist/browser/* /opt/cupcake/frontend/
-chown -R cupcake:cupcake /opt/cupcake/frontend
 
 # Clean up build directory
 cd /
 rm -rf /tmp/cupcake-ng
 
-# Clean up
+# Clean up apt cache
 apt-get autoremove -y
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 
+echo "Frontend build completed"
 CHROOT_EOF
 
 # Set permissions after copying files
@@ -434,7 +448,7 @@ mkdir -p /var/log/cupcake
 mkdir -p /var/lib/cupcake
 mkdir -p /opt/cupcake/{data,logs,backup,media}
 
-# Set ownership
+# Set ownership (including frontend files)
 chown -R cupcake:cupcake /opt/cupcake
 chown -R cupcake:cupcake /var/log/cupcake
 chown -R cupcake:cupcake /var/lib/cupcake

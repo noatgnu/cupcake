@@ -116,7 +116,9 @@ class Project(models.Model):
     sessions = models.ManyToManyField("Session", related_name="projects", blank=True)
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="projects", blank=True, null=True)
     remote_host = models.ForeignKey("RemoteHost", on_delete=models.CASCADE, related_name="projects", blank=True, null=True)
-
+    
+    # Vaulting system for imported data
+    is_vaulted = models.BooleanField(default=False, help_text="True if this project is in a user's import vault")
 
     class Meta:
         app_label = "cc"
@@ -176,6 +178,9 @@ class ProtocolModel(models.Model):
     remote_id = models.BigIntegerField(blank=True, null=True)
     model_hash = models.TextField(blank=True, null=True)
     remote_host = models.ForeignKey("RemoteHost", on_delete=models.CASCADE, related_name="protocols", blank=True, null=True)
+    
+    # Vaulting system for imported data
+    is_vaulted = models.BooleanField(default=False, help_text="True if this protocol is in a user's import vault")
 
     @staticmethod
     def create_protocol_from_url(url):
@@ -809,6 +814,10 @@ class Instrument(models.Model):
     days_before_warranty_notification = models.IntegerField(blank=True, null=True, default=30)
     days_before_maintenance_notification = models.IntegerField(blank=True, null=True, default=14)
     accepts_bookings = models.BooleanField(default=True)
+    
+    # Vaulting system for imported data
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="owned_instruments", blank=True, null=True, help_text="Owner of this instrument")
+    is_vaulted = models.BooleanField(default=False, help_text="True if this instrument is in a user's import vault")
 
     def __str__(self):
         return self.instrument_name
@@ -1378,6 +1387,10 @@ class Tag(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     remote_id = models.BigIntegerField(blank=True, null=True)
+    
+    # Vaulting system for imported data
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="owned_tags", blank=True, null=True, help_text="Owner of this tag")
+    is_vaulted = models.BooleanField(default=False, help_text="True if this tag is in a user's import vault")
 
     class Meta:
         app_label = "cc"
@@ -1489,7 +1502,9 @@ class StorageObject(models.Model):
     png_base64 = models.TextField(blank=True, null=True)
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="storage_objects", blank=True, null=True)
     access_lab_groups = models.ManyToManyField("LabGroup", related_name="storage_objects", blank=True)
-
+    
+    # Vaulting system for imported data  
+    is_vaulted = models.BooleanField(default=False, help_text="True if this storage object is in a user's import vault")
 
     class Meta:
         app_label = "cc"
@@ -1543,6 +1558,9 @@ class StoredReagent(models.Model):
                                                     help_text="Days before expiration to send notification")
     notify_on_expiry = models.BooleanField(default=False)
     last_expiry_notification_sent = models.DateTimeField(blank=True, null=True)
+    
+    # Vaulting system for imported data
+    is_vaulted = models.BooleanField(default=False, help_text="True if this reagent is in a user's import vault")
 
     class Meta:
         app_label = "cc"

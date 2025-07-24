@@ -13,7 +13,7 @@ import shutil
 
 
 class Command(BaseCommand):
-    help = 'Import user data from SQLite export archive. Always performs dry run analysis first with confirmation prompt unless --dry-run-only is specified.'
+    help = 'Import user data from SQLite export archive. Data is vaulted by default for user isolation. Always performs dry run analysis first with confirmation prompt unless --dry-run-only is specified.'
 
     def add_arguments(self, parser):
         parser.add_argument(

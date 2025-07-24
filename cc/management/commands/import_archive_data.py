@@ -4,23 +4,36 @@ import tarfile
 import tempfile
 from django.core.management.base import BaseCommand
 from django.db import transaction, connection
+from django.contrib.auth.models import User
 from cc.models import Session, ProtocolModel, ProtocolStep, ProtocolSection, AnnotationFolder, Annotation, TimeKeeper, \
     StoredReagent, ReagentAction, StepVariation, ProtocolRating, ProtocolReagent, StepReagent, Reagent, StorageObject, \
-    MetadataColumn, InstrumentUsage, Instrument
+    MetadataColumn, InstrumentUsage, Instrument, Project, Tag
 
 class Command(BaseCommand):
-    help = 'Import exported data from a .cupcake archive'
+    help = 'Import exported data from a .cupcake archive. Data is vaulted by default for user isolation.'
 
     def add_arguments(self, parser):
         parser.add_argument('archive_path', type=str, help='Path to the .cupcake archive file')
         parser.add_argument('owner_id', type=int, help='ID of the user who owns the imported data')
+        parser.add_argument('--no-vault', action='store_true', help='Import data without vaulting (default: vault items)', default=False)
 
     def handle(self, *args, **kwargs):
         archive_path = kwargs['archive_path']
+        self.owner_id = kwargs['owner_id']
+        self.vault_items = not kwargs['no_vault']  # Default to True unless --no-vault is specified
+        
+        # Get the importing user
+        try:
+            self.importing_user = User.objects.get(id=self.owner_id)
+        except User.DoesNotExist:
+            self.stdout.write(self.style.ERROR(f'User with ID {self.owner_id} does not exist.'))
+            return
+            
         with tempfile.TemporaryDirectory() as temp_dir:
             self.extract_archive(archive_path, temp_dir)
             self.import_data(temp_dir)
-            self.stdout.write(self.style.SUCCESS('Data imported successfully.'))
+            vault_msg = " into user vault" if self.vault_items else " (no vaulting)"
+            self.stdout.write(self.style.SUCCESS(f'Data imported successfully{vault_msg}.'))
 
     def extract_archive(self, archive_path, extract_to):
         with tarfile.open(archive_path, 'r:xz') as tar:
@@ -60,7 +73,9 @@ class Command(BaseCommand):
             'protocol_reagent': {},
             'step_reagent': {},
             'reagent': {},
-            'storage_object': {}
+            'storage_object': {},
+            'project': {},
+            'tag': {}
         }
         many_to_many_session_protocols = []
         for table_name in tables:
@@ -135,6 +150,10 @@ class Command(BaseCommand):
             self.insert_reagent(data)
         elif table_name == StorageObject._meta.db_table:
             self.insert_storage_object(data)
+        elif table_name == Project._meta.db_table:
+            self.insert_project(data)
+        elif table_name == Tag._meta.db_table:
+            self.insert_tag(data)
 
     def insert_annotation(self, data):
         old_id = data.pop('id')
@@ -149,6 +168,12 @@ class Command(BaseCommand):
 
     def insert_protocol(self, data):
         old_id = data.pop('id')
+        
+        # Apply vaulting if enabled
+        if self.vault_items:
+            data['is_vaulted'] = True
+            data['user'] = self.importing_user
+        
         protocol = ProtocolModel.objects.create(**data)
         self.id_map['protocol'][old_id] = protocol.id
 
@@ -166,6 +191,12 @@ class Command(BaseCommand):
 
     def insert_instrument(self, data):
         old_id = data.pop('id')
+        
+        # Apply vaulting if enabled
+        if self.vault_items:
+            data['is_vaulted'] = True
+            data['user'] = self.importing_user
+        
         instrument = Instrument.objects.create(**data)
         self.id_map['instrument'][old_id] = instrument.id
 
@@ -203,6 +234,15 @@ class Command(BaseCommand):
     def insert_stored_reagent(self, data):
         old_id = data.pop('id')
         data['reagent_id'] = self.id_map['reagent'].get(data['reagent_id'], None)
+        
+        # Apply vaulting if enabled
+        if self.vault_items:
+            data['is_vaulted'] = True
+            data['user'] = self.importing_user
+            # Vault items are not shareable by default
+            data['shareable'] = False
+            data['access_all'] = False
+        
         stored_reagent = StoredReagent.objects.create(**data)
         self.id_map['stored_reagent'][old_id] = stored_reagent.id
 
@@ -237,8 +277,36 @@ class Command(BaseCommand):
 
     def insert_storage_object(self, data):
         old_id = data.pop('id')
+        
+        # Apply vaulting if enabled
+        if self.vault_items:
+            data['is_vaulted'] = True
+            data['user'] = self.importing_user
+        
         storage_object = StorageObject.objects.create(**data)
         self.id_map['storage_object'][old_id] = storage_object.id
+
+    def insert_project(self, data):
+        old_id = data.pop('id')
+        
+        # Apply vaulting if enabled
+        if self.vault_items:
+            data['is_vaulted'] = True
+            data['owner'] = self.importing_user
+        
+        project = Project.objects.create(**data)
+        self.id_map['project'][old_id] = project.id
+
+    def insert_tag(self, data):
+        old_id = data.pop('id')
+        
+        # Apply vaulting if enabled
+        if self.vault_items:
+            data['is_vaulted'] = True
+            data['user'] = self.importing_user
+        
+        tag = Tag.objects.create(**data)
+        self.id_map['tag'][old_id] = tag.id
 
     def import_media_files(self, media_dir):
         for root, _, files in os.walk(media_dir):

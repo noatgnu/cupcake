@@ -114,8 +114,8 @@ jobs:
         WORK_DIR=\$(pwd)/work
         DEPLOY_DIR=\$(pwd)/deploy
         
-        # Stage configuration - lite build only
-        SKIP_IMAGES="3,4,5"
+        # Stage configuration - lite build only, stop after our custom stage
+        STAGE_LIST="stage0 stage1 stage2 stage2z-cupcake"
         EOF
         
         # WiFi configuration (if provided)
@@ -218,8 +218,8 @@ jobs:
         WORK_DIR=\$(pwd)/work
         DEPLOY_DIR=\$(pwd)/deploy
         
-        # Stage configuration - lite build only
-        SKIP_IMAGES="3,4,5"
+        # Stage configuration - lite build only, stop after our custom stage
+        STAGE_LIST="stage0 stage1 stage2 stage2z-cupcake"
         EOF
         
         # WiFi configuration (if provided)

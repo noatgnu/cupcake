@@ -119,6 +119,11 @@ jobs:
         # Copy our custom stage as stage5 (after desktop installation)
         sudo cp -r ../stage2z-cupcake ./stage5
         
+        # Remove any EXPORT_IMAGE files from intermediate stages to prevent multiple image creation
+        sudo rm -f ./stage2/EXPORT_IMAGE || true
+        sudo rm -f ./stage3/EXPORT_IMAGE || true
+        sudo rm -f ./stage4/EXPORT_IMAGE || true
+        
         # Create pi-gen config file
         cat > config <<EOF
         IMG_NAME=cupcake-pi4-${{ inputs.image_version || 'latest' }}
@@ -149,6 +154,9 @@ jobs:
         # Debootstrap configuration for better cross-architecture support
         BOOTSTRAP_KEYRING=debian-archive-keyring
         TARGET_ARCH=arm64
+        
+        # Export configuration - only export final image from stage5
+        EXPORT_ROOTFS_DIR=stage5
         EOF
         
         # WiFi configuration (if provided)
@@ -184,8 +192,13 @@ jobs:
         echo "Available disk space before build:"
         df -h
         
-        # Run native pi-gen build (force native, not Docker)
-        sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh
+        # Run native pi-gen build (force native, not Docker) with timeout
+        timeout 14400 sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh || {
+          echo "Build timed out or failed"
+          # Show any available logs
+          find work/ -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; || true
+          exit 1
+        }
         
         # Check build results
         echo "Build completed, checking results:"
@@ -280,6 +293,11 @@ jobs:
         # Copy our custom stage as stage5 (after desktop installation)
         sudo cp -r ../stage2z-cupcake ./stage5
         
+        # Remove any EXPORT_IMAGE files from intermediate stages to prevent multiple image creation
+        sudo rm -f ./stage2/EXPORT_IMAGE || true
+        sudo rm -f ./stage3/EXPORT_IMAGE || true
+        sudo rm -f ./stage4/EXPORT_IMAGE || true
+        
         # Create pi-gen config file
         cat > config <<EOF
         IMG_NAME=cupcake-pi5-${{ inputs.image_version || 'latest' }}
@@ -310,6 +328,9 @@ jobs:
         # Debootstrap configuration for better cross-architecture support
         BOOTSTRAP_KEYRING=debian-archive-keyring
         TARGET_ARCH=arm64
+        
+        # Export configuration - only export final image from stage5
+        EXPORT_ROOTFS_DIR=stage5
         EOF
         
         # WiFi configuration (if provided)
@@ -345,8 +366,13 @@ jobs:
         echo "Available disk space before build:"
         df -h
         
-        # Run native pi-gen build (force native, not Docker)
-        sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh
+        # Run native pi-gen build (force native, not Docker) with timeout
+        timeout 14400 sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh || {
+          echo "Build timed out or failed"
+          # Show any available logs
+          find work/ -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; || true
+          exit 1
+        }
         
         # Check build results
         echo "Build completed, checking results:"

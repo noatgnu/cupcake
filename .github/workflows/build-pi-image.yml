@@ -69,23 +69,25 @@ jobs:
         # Show available space
         df -h
 
-    - name: Setup Docker and QEMU for pi-gen
+    - name: Setup native pi-gen build environment
       run: |
-        # Install required packages for Docker-based pi-gen build
+        # Install required packages for native pi-gen build
         sudo apt-get update
-        sudo apt-get install -y binfmt-support qemu-user-static dos2unix
+        sudo apt-get install -y \
+          binfmt-support qemu-user-static dos2unix \
+          coreutils quilt parted qemu-user-static debootstrap zerofree zip \
+          dosfstools libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc \
+          gpg pigz xxd
         
-        # Setup binfmt for ARM emulation (required for Docker pi-gen)
+        # Setup binfmt for ARM emulation (required for native pi-gen)
         sudo modprobe binfmt_misc
         if systemctl list-unit-files | grep -q "binfmt-support.service"; then
           sudo systemctl restart binfmt-support
         fi
         
-        # Verify Docker is available
-        docker --version
-        
-        # Enable ARM emulation for Docker
-        docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+        # Enable ARM emulation for native builds
+        echo ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-arm-static:' | sudo tee /proc/sys/fs/binfmt_misc/register
+        echo ':aarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-aarch64-static:' | sudo tee /proc/sys/fs/binfmt_misc/register
 
     - name: Pre-build Frontend (x86 fast build)
       run: |
@@ -95,14 +97,14 @@ jobs:
         chmod +x prebuild-frontend.sh
         bash ./prebuild-frontend.sh --hostname cupcake-pi4.local --output-dir ./frontend-dist
         
-    - name: Build Pi 4 image using official pi-gen Docker
+    - name: Build Pi 4 image using native pi-gen
       run: |
         # Clone official pi-gen repository
         git clone https://github.com/RPi-Distro/pi-gen.git
         cd pi-gen
         
         # Copy our custom stage as stage5 (after desktop installation)
-        cp -r ../stage2z-cupcake ./stage5
+        sudo cp -r ../stage2z-cupcake ./stage5
         
         # Create pi-gen config file
         cat > config <<EOF
@@ -148,8 +150,8 @@ jobs:
         echo "Available disk space before build:"
         df -h
         
-        # Run pi-gen Docker build
-        ./build-docker.sh
+        # Run native pi-gen build
+        sudo ./build.sh
         
         # Check build results
         echo "Build completed, checking results:"
@@ -194,23 +196,25 @@ jobs:
         # Show available space
         df -h
 
-    - name: Setup Docker and QEMU for pi-gen
+    - name: Setup native pi-gen build environment
       run: |
-        # Install required packages for Docker-based pi-gen build
+        # Install required packages for native pi-gen build
         sudo apt-get update
-        sudo apt-get install -y binfmt-support qemu-user-static dos2unix
+        sudo apt-get install -y \
+          binfmt-support qemu-user-static dos2unix \
+          coreutils quilt parted qemu-user-static debootstrap zerofree zip \
+          dosfstools libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc \
+          gpg pigz xxd
         
-        # Setup binfmt for ARM emulation (required for Docker pi-gen)
+        # Setup binfmt for ARM emulation (required for native pi-gen)
         sudo modprobe binfmt_misc
         if systemctl list-unit-files | grep -q "binfmt-support.service"; then
           sudo systemctl restart binfmt-support
         fi
         
-        # Verify Docker is available
-        docker --version
-        
-        # Enable ARM emulation for Docker
-        docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+        # Enable ARM emulation for native builds
+        echo ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-arm-static:' | sudo tee /proc/sys/fs/binfmt_misc/register
+        echo ':aarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-aarch64-static:' | sudo tee /proc/sys/fs/binfmt_misc/register
 
     - name: Pre-build Frontend (x86 fast build)
       run: |
@@ -220,14 +224,14 @@ jobs:
         chmod +x prebuild-frontend.sh
         bash ./prebuild-frontend.sh --hostname cupcake-pi5.local --output-dir ./frontend-dist
         
-    - name: Build Pi 5 image using official pi-gen Docker
+    - name: Build Pi 5 image using native pi-gen
       run: |
         # Clone official pi-gen repository
         git clone https://github.com/RPi-Distro/pi-gen.git
         cd pi-gen
         
         # Copy our custom stage as stage5 (after desktop installation)
-        cp -r ../stage2z-cupcake ./stage5
+        sudo cp -r ../stage2z-cupcake ./stage5
         
         # Create pi-gen config file
         cat > config <<EOF
@@ -273,8 +277,8 @@ jobs:
         echo "Available disk space before build:"
         df -h
         
-        # Run pi-gen Docker build
-        ./build-docker.sh
+        # Run native pi-gen build
+        sudo ./build.sh
         
         # Check build results
         echo "Build completed, checking results:"

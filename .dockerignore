@@ -12,3 +12,4 @@ staticfiles
 *.zip
 *.md
 *.tar
+*.gguf

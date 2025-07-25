@@ -179,9 +179,90 @@ jobs:
         path: ${{ steps.build.outputs.image-path }}
         retention-days: 30
 
+  build-native-arm64:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.pi_model == 'pi4' || inputs.pi_model == 'both' }}
+    runs-on: macos-14  # macOS with Apple Silicon (ARM64)
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup native ARM64 build environment
+      run: |
+        # Install required tools for native pi-gen build
+        brew install gnu-sed gnutar coreutils
+        
+        # Install Docker for ARM64 builds
+        brew install --cask docker
+        
+        # Wait for Docker to start
+        sudo /Applications/Docker.app/Contents/MacOS/Docker --unattended &
+        sleep 30
+        
+        # Verify Docker is running
+        docker --version
+
+    - name: Setup native ARM64 pi-gen
+      run: |
+        cd raspberry-pi
+        
+        # Clone pi-gen for native ARM64 build
+        git clone https://github.com/RPi-Distro/pi-gen.git
+        
+        # Copy our custom stage
+        cp -r ../stage2z-cupcake pi-gen/
+        
+        # Create pi-gen config for native ARM64
+        cat > pi-gen/config <<EOF
+        IMG_NAME=cupcake-pi4-native-${{ inputs.image_version || 'latest' }}
+        RELEASE=bookworm
+        DEPLOY_COMPRESSION=xz
+        LOCALE_DEFAULT=en_US.UTF-8
+        TARGET_HOSTNAME=cupcake-pi4
+        KEYBOARD_KEYMAP=us
+        KEYBOARD_LAYOUT="English (US)"
+        TIMEZONE_DEFAULT=UTC
+        
+        # User configuration
+        FIRST_USER_NAME=cupcake
+        FIRST_USER_PASS=cupcake123
+        ENABLE_SSH=1
+        
+        # Build configuration for ARM64 native
+        WORK_DIR=\$(pwd)/work
+        DEPLOY_DIR=\$(pwd)/deploy
+        
+        # Stage configuration - include our custom stage
+        SKIP_IMAGES="3,4,5"
+        
+        # Native ARM64 build (no emulation needed)
+        USE_QEMU=0
+        EOF
+
+    - name: Build Pi image natively on ARM64 macOS
+      run: |
+        cd raspberry-pi/pi-gen
+        
+        # Use native Docker build for ARM64
+        echo "Building Pi image natively on ARM64 macOS..."
+        ./build-docker.sh
+        
+        # Check build results
+        ls -la deploy/
+
+    - name: Upload native ARM64 artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: cupcake-pi4-native-arm64-${{ inputs.image_version || 'latest' }}
+        path: raspberry-pi/pi-gen/deploy/*.img.xz
+        retention-days: 30
+
   create-release:
     if: ${{ github.event_name == 'workflow_dispatch' }}
-    needs: [build-pi4-image, build-pi5-image]
+    needs: [build-pi4-image, build-pi5-image, build-native-arm64]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -204,6 +285,13 @@ jobs:
         name: cupcake-pi5-image-${{ inputs.image_version || 'latest' }}
         path: ./release-artifacts/
 
+    - name: Download native ARM64 artifacts
+      if: ${{ inputs.pi_model == 'pi4' || inputs.pi_model == 'both' }}
+      uses: actions/download-artifact@v4
+      with:
+        name: cupcake-pi4-native-arm64-${{ inputs.image_version || 'latest' }}
+        path: ./release-artifacts/
+
     - name: Create release notes
       run: |
         cat > release-notes.md << 'EOF'
@@ -223,13 +311,15 @@ jobs:
         
         ## 📋 What's Included
         
-        ### Pi 4 Edition
+        ### Pi 4 Edition (2 Variants)
         - ARM64 Raspberry Pi OS Lite
-        - 2.0GHz overclock with cooling optimization
+        - 2.0GHz overclock with cooling optimization  
         - 64MB GPU memory allocation
         - NVMe support with PCIe optimizations
-        - Python 3, PostgreSQL, Redis, Nginx
+        - Python 3, PostgreSQL 14, Redis, Nginx
         - Traditional system service deployment
+        - **Standard build**: Using pi-gen-action (QEMU emulation)
+        - **Native ARM64 build**: Built natively on macOS ARM64 (faster, no emulation)
         
         ### Pi 5 Edition  
         - ARM64 Raspberry Pi OS Lite

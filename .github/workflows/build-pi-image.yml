@@ -85,28 +85,62 @@ jobs:
         chmod +x prebuild-frontend.sh
         bash ./prebuild-frontend.sh --hostname cupcake-pi4.local --output-dir ./frontend-dist
         
-    - name: Build Pi 4 image using official pi-gen-action
-      uses: usimd/pi-gen-action@v1
-      id: build
-      with:
-        image-name: cupcake-pi4-${{ inputs.image_version || 'latest' }}
-        stage-list: stage0 stage1 stage2 ./stage2z-cupcake
-        release: bookworm
-        username: cupcake
-        password: cupcake123
-        enable-ssh: ${{ inputs.enable_ssh && '1' || '0' }}
-        increase-runner-disk-size: true
-        locale: en_US.UTF-8
-        timezone: UTC
-        keyboard-keymap: us
-        compression: xz
-        compression-level: 6
+    - name: Build Pi 4 image using official pi-gen Docker
+      run: |
+        # Clone official pi-gen repository
+        git clone https://github.com/RPi-Distro/pi-gen.git
+        cd pi-gen
+        
+        # Copy our custom stage
+        cp -r ../stage2z-cupcake ./
+        
+        # Create pi-gen config file
+        cat > config <<EOF
+        IMG_NAME=cupcake-pi4-${{ inputs.image_version || 'latest' }}
+        RELEASE=bookworm
+        DEPLOY_COMPRESSION=xz
+        LOCALE_DEFAULT=en_US.UTF-8
+        TARGET_HOSTNAME=cupcake-pi4
+        KEYBOARD_KEYMAP=us
+        KEYBOARD_LAYOUT="English (US)"
+        TIMEZONE_DEFAULT=UTC
+        
+        # User configuration
+        FIRST_USER_NAME=cupcake
+        FIRST_USER_PASS=cupcake123
+        ENABLE_SSH=${{ inputs.enable_ssh && '1' || '0' }}
+        
+        # Build configuration
+        WORK_DIR=\$(pwd)/work
+        DEPLOY_DIR=\$(pwd)/deploy
+        
+        # Stage configuration - lite build only
+        SKIP_IMAGES="3,4,5"
+        EOF
+        
+        # WiFi configuration (if provided)
+        if [ -n "${{ inputs.wifi_ssid }}" ]; then
+          cat >> config <<EOF
+        
+        # WiFi configuration
+        WPA_ESSID="${{ inputs.wifi_ssid }}"
+        WPA_PASSWORD="${{ inputs.wifi_password }}"
+        WPA_COUNTRY=US
+        EOF
+        fi
+        
+        # Run official pi-gen Docker build
+        echo "Starting pi-gen Docker build..."
+        ./build-docker.sh
+        
+        # Check build results
+        ls -la deploy/
 
     - name: Upload Pi 4 artifacts
       uses: actions/upload-artifact@v4
       with:
         name: cupcake-pi4-image-${{ inputs.image_version || 'latest' }}
-        path: ${{ steps.build.outputs.image-path }}
+        path: pi-gen/deploy/*.img.xz
         retention-days: 30
 
   build-pi5-image:
@@ -155,80 +189,22 @@ jobs:
         chmod +x prebuild-frontend.sh
         bash ./prebuild-frontend.sh --hostname cupcake-pi5.local --output-dir ./frontend-dist
         
-    - name: Build Pi 5 image using official pi-gen-action
-      uses: usimd/pi-gen-action@v1
-      id: build
-      with:
-        image-name: cupcake-pi5-${{ inputs.image_version || 'latest' }}
-        stage-list: stage0 stage1 stage2 ./stage2z-cupcake
-        release: bookworm
-        username: cupcake
-        password: cupcake123
-        enable-ssh: ${{ inputs.enable_ssh && '1' || '0' }}
-        increase-runner-disk-size: true
-        locale: en_US.UTF-8
-        timezone: UTC
-        keyboard-keymap: us
-        compression: xz
-        compression-level: 6
-
-    - name: Upload Pi 5 artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: cupcake-pi5-image-${{ inputs.image_version || 'latest' }}
-        path: ${{ steps.build.outputs.image-path }}
-        retention-days: 30
-
-  build-native-arm64:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.pi_model == 'pi4' || inputs.pi_model == 'both' }}
-    runs-on: macos-14  # macOS with Apple Silicon (ARM64)
-    permissions:
-      contents: read
-      packages: write
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Setup native ARM64 build environment
+    - name: Build Pi 5 image using official pi-gen Docker
       run: |
-        # Install required tools for native pi-gen build
-        brew install gnu-sed gnu-tar coreutils
-        
-        # Install Docker for ARM64 builds
-        brew install --cask docker
-        
-        # Start Docker in background
-        open /Applications/Docker.app
-        
-        # Wait for Docker to be ready
-        echo "Waiting for Docker to start..."
-        while ! docker info >/dev/null 2>&1; do
-          echo "Docker not ready yet, waiting..."
-          sleep 5
-        done
-        echo "Docker is ready!"
-        
-        # Verify Docker is running
-        docker --version
-
-    - name: Setup native ARM64 pi-gen
-      run: |
-        cd raspberry-pi
-        
-        # Clone pi-gen for native ARM64 build
+        # Clone official pi-gen repository
         git clone https://github.com/RPi-Distro/pi-gen.git
+        cd pi-gen
         
         # Copy our custom stage
-        cp -r ../stage2z-cupcake pi-gen/
+        cp -r ../stage2z-cupcake ./
         
-        # Create pi-gen config for native ARM64
-        cat > pi-gen/config <<EOF
-        IMG_NAME=cupcake-pi4-native-${{ inputs.image_version || 'latest' }}
+        # Create pi-gen config file
+        cat > config <<EOF
+        IMG_NAME=cupcake-pi5-${{ inputs.image_version || 'latest' }}
         RELEASE=bookworm
         DEPLOY_COMPRESSION=xz
         LOCALE_DEFAULT=en_US.UTF-8
-        TARGET_HOSTNAME=cupcake-pi4
+        TARGET_HOSTNAME=cupcake-pi5
         KEYBOARD_KEYMAP=us
         KEYBOARD_LAYOUT="English (US)"
         TIMEZONE_DEFAULT=UTC
@@ -236,40 +212,45 @@ jobs:
         # User configuration
         FIRST_USER_NAME=cupcake
         FIRST_USER_PASS=cupcake123
-        ENABLE_SSH=1
+        ENABLE_SSH=${{ inputs.enable_ssh && '1' || '0' }}
         
-        # Build configuration for ARM64 native
+        # Build configuration
         WORK_DIR=\$(pwd)/work
         DEPLOY_DIR=\$(pwd)/deploy
         
-        # Stage configuration - include our custom stage
+        # Stage configuration - lite build only
         SKIP_IMAGES="3,4,5"
-        
-        # Native ARM64 build (no emulation needed)
-        USE_QEMU=0
         EOF
-
-    - name: Build Pi image natively on ARM64 macOS
-      run: |
-        cd raspberry-pi/pi-gen
         
-        # Use native Docker build for ARM64
-        echo "Building Pi image natively on ARM64 macOS..."
+        # WiFi configuration (if provided)
+        if [ -n "${{ inputs.wifi_ssid }}" ]; then
+          cat >> config <<EOF
+        
+        # WiFi configuration
+        WPA_ESSID="${{ inputs.wifi_ssid }}"
+        WPA_PASSWORD="${{ inputs.wifi_password }}"
+        WPA_COUNTRY=US
+        EOF
+        fi
+        
+        # Run official pi-gen Docker build
+        echo "Starting pi-gen Docker build..."
         ./build-docker.sh
         
         # Check build results
         ls -la deploy/
 
-    - name: Upload native ARM64 artifacts
+    - name: Upload Pi 5 artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: cupcake-pi4-native-arm64-${{ inputs.image_version || 'latest' }}
-        path: raspberry-pi/pi-gen/deploy/*.img.xz
+        name: cupcake-pi5-image-${{ inputs.image_version || 'latest' }}
+        path: pi-gen/deploy/*.img.xz
         retention-days: 30
+
 
   create-release:
     if: ${{ github.event_name == 'workflow_dispatch' }}
-    needs: [build-pi4-image, build-pi5-image, build-native-arm64]
+    needs: [build-pi4-image, build-pi5-image]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -292,12 +273,6 @@ jobs:
         name: cupcake-pi5-image-${{ inputs.image_version || 'latest' }}
         path: ./release-artifacts/
 
-    - name: Download native ARM64 artifacts
-      if: ${{ inputs.pi_model == 'pi4' || inputs.pi_model == 'both' }}
-      uses: actions/download-artifact@v4
-      with:
-        name: cupcake-pi4-native-arm64-${{ inputs.image_version || 'latest' }}
-        path: ./release-artifacts/
 
     - name: Create release notes
       run: |
@@ -318,15 +293,14 @@ jobs:
         
         ## 📋 What's Included
         
-        ### Pi 4 Edition (2 Variants)
+        ### Pi 4 Edition
         - ARM64 Raspberry Pi OS Lite
         - 2.0GHz overclock with cooling optimization  
         - 64MB GPU memory allocation
         - NVMe support with PCIe optimizations
         - Python 3, PostgreSQL 14, Redis, Nginx
         - Traditional system service deployment
-        - **Standard build**: Using pi-gen-action (QEMU emulation)
-        - **Native ARM64 build**: Built natively on macOS ARM64 (faster, no emulation)
+        - Built using official pi-gen Docker process
         
         ### Pi 5 Edition  
         - ARM64 Raspberry Pi OS Lite

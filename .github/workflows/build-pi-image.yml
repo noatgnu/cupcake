@@ -193,14 +193,21 @@ jobs:
     - name: Setup native ARM64 build environment
       run: |
         # Install required tools for native pi-gen build
-        brew install gnu-sed gnutar coreutils
+        brew install gnu-sed gnu-tar coreutils
         
         # Install Docker for ARM64 builds
         brew install --cask docker
         
-        # Wait for Docker to start
-        sudo /Applications/Docker.app/Contents/MacOS/Docker --unattended &
-        sleep 30
+        # Start Docker in background
+        open /Applications/Docker.app
+        
+        # Wait for Docker to be ready
+        echo "Waiting for Docker to start..."
+        while ! docker info >/dev/null 2>&1; do
+          echo "Docker not ready yet, waiting..."
+          sleep 5
+        done
+        echo "Docker is ready!"
         
         # Verify Docker is running
         docker --version

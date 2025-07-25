@@ -77,17 +77,30 @@ jobs:
           binfmt-support qemu-user-static dos2unix \
           coreutils quilt parted qemu-user-static debootstrap zerofree zip \
           dosfstools libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc \
-          gpg pigz xxd arch-test
+          gpg pigz xxd arch-test debian-archive-keyring
         
         # Setup binfmt for ARM emulation (required for native pi-gen)
         sudo modprobe binfmt_misc
-        if systemctl list-unit-files | grep -q "binfmt-support.service"; then
-          sudo systemctl restart binfmt-support
-        fi
         
-        # Enable ARM emulation for native builds
-        echo ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-arm-static:' | sudo tee /proc/sys/fs/binfmt_misc/register
-        echo ':aarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-aarch64-static:' | sudo tee /proc/sys/fs/binfmt_misc/register
+        # Enable binfmt-support service
+        sudo systemctl enable binfmt-support
+        sudo systemctl start binfmt-support
+        
+        # Use update-binfmts to properly register ARM emulation
+        sudo update-binfmts --enable qemu-arm || true
+        sudo update-binfmts --enable qemu-aarch64 || true
+        
+        # Manual fallback registration if update-binfmts fails
+        echo ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-arm-static:F' | sudo tee /proc/sys/fs/binfmt_misc/register || true
+        echo ':aarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-aarch64-static:F' | sudo tee /proc/sys/fs/binfmt_misc/register || true
+        
+        # Verify emulation is working
+        echo "Checking ARM emulation:"
+        ls -la /proc/sys/fs/binfmt_misc/
+        
+        # Test emulation functionality
+        sudo dpkg --add-architecture armhf
+        sudo dpkg --add-architecture arm64
 
     - name: Pre-build Frontend (x86 fast build)
       run: |
@@ -132,6 +145,10 @@ jobs:
         
         # Stage configuration - run all stages including desktop with CUPCAKE
         # This creates a full Raspberry Pi OS Desktop with CUPCAKE pre-installed
+        
+        # Debootstrap configuration for better cross-architecture support
+        BOOTSTRAP_KEYRING=debian-archive-keyring
+        TARGET_ARCH=arm64
         EOF
         
         # WiFi configuration (if provided)
@@ -149,13 +166,26 @@ jobs:
         echo "Available build scripts:"
         ls -la build*.sh || true
         
+        # Verify ARM emulation is working before build
+        echo "Testing ARM emulation:"
+        /usr/bin/qemu-arm-static --version || echo "ARM emulation not working"
+        /usr/bin/qemu-aarch64-static --version || echo "AArch64 emulation not working"
+        
+        # Set up debootstrap to use QEMU emulation
+        export DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static
+        echo "DEBOOTSTRAP_QEMU_USER_STATIC set to: $DEBOOTSTRAP_QEMU_USER_STATIC"
+        
+        # Create any missing symlinks for debootstrap
+        sudo mkdir -p /usr/lib/arch-test
+        sudo ln -sf /usr/bin/qemu-aarch64-static /usr/lib/arch-test/ || true
+        
         # Run native pi-gen build with monitoring
         echo "Starting native pi-gen build..."
         echo "Available disk space before build:"
         df -h
         
         # Run native pi-gen build (force native, not Docker)
-        sudo USE_DOCKER=0 ./build.sh
+        sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh
         
         # Check build results
         echo "Build completed, checking results:"
@@ -208,17 +238,30 @@ jobs:
           binfmt-support qemu-user-static dos2unix \
           coreutils quilt parted qemu-user-static debootstrap zerofree zip \
           dosfstools libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc \
-          gpg pigz xxd arch-test
+          gpg pigz xxd arch-test debian-archive-keyring
         
         # Setup binfmt for ARM emulation (required for native pi-gen)
         sudo modprobe binfmt_misc
-        if systemctl list-unit-files | grep -q "binfmt-support.service"; then
-          sudo systemctl restart binfmt-support
-        fi
         
-        # Enable ARM emulation for native builds
-        echo ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-arm-static:' | sudo tee /proc/sys/fs/binfmt_misc/register
-        echo ':aarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-aarch64-static:' | sudo tee /proc/sys/fs/binfmt_misc/register
+        # Enable binfmt-support service
+        sudo systemctl enable binfmt-support
+        sudo systemctl start binfmt-support
+        
+        # Use update-binfmts to properly register ARM emulation
+        sudo update-binfmts --enable qemu-arm || true
+        sudo update-binfmts --enable qemu-aarch64 || true
+        
+        # Manual fallback registration if update-binfmts fails
+        echo ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-arm-static:F' | sudo tee /proc/sys/fs/binfmt_misc/register || true
+        echo ':aarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-aarch64-static:F' | sudo tee /proc/sys/fs/binfmt_misc/register || true
+        
+        # Verify emulation is working
+        echo "Checking ARM emulation:"
+        ls -la /proc/sys/fs/binfmt_misc/
+        
+        # Test emulation functionality
+        sudo dpkg --add-architecture armhf
+        sudo dpkg --add-architecture arm64
 
     - name: Pre-build Frontend (x86 fast build)
       run: |
@@ -263,6 +306,10 @@ jobs:
         
         # Stage configuration - run all stages including desktop with CUPCAKE
         # This creates a full Raspberry Pi OS Desktop with CUPCAKE pre-installed
+        
+        # Debootstrap configuration for better cross-architecture support
+        BOOTSTRAP_KEYRING=debian-archive-keyring
+        TARGET_ARCH=arm64
         EOF
         
         # WiFi configuration (if provided)
@@ -280,13 +327,26 @@ jobs:
         echo "Available build scripts:"
         ls -la build*.sh || true
         
+        # Verify ARM emulation is working before build
+        echo "Testing ARM emulation:"
+        /usr/bin/qemu-arm-static --version || echo "ARM emulation not working"
+        /usr/bin/qemu-aarch64-static --version || echo "AArch64 emulation not working"
+        
+        # Set up debootstrap to use QEMU emulation
+        export DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static
+        echo "DEBOOTSTRAP_QEMU_USER_STATIC set to: $DEBOOTSTRAP_QEMU_USER_STATIC"
+        
+        # Create any missing symlinks for debootstrap
+        sudo mkdir -p /usr/lib/arch-test
+        sudo ln -sf /usr/bin/qemu-aarch64-static /usr/lib/arch-test/ || true
+        
         # Run native pi-gen build with monitoring
         echo "Starting native pi-gen build..."
         echo "Available disk space before build:"
         df -h
         
         # Run native pi-gen build (force native, not Docker)
-        sudo USE_DOCKER=0 ./build.sh
+        sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh
         
         # Check build results
         echo "Build completed, checking results:"

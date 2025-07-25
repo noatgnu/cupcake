@@ -91,8 +91,8 @@ jobs:
         git clone https://github.com/RPi-Distro/pi-gen.git
         cd pi-gen
         
-        # Copy our custom stage
-        cp -r ../stage2z-cupcake ./
+        # Copy our custom stage as stage3
+        cp -r ../stage2z-cupcake ./stage3
         
         # Create pi-gen config file
         cat > config <<EOF
@@ -114,8 +114,8 @@ jobs:
         WORK_DIR=\$(pwd)/work
         DEPLOY_DIR=\$(pwd)/deploy
         
-        # Stage configuration - lite build only, stop after our custom stage
-        STAGE_LIST="stage0 stage1 stage2 stage2z-cupcake"
+        # Stage configuration - lite build, skip only desktop stages 4,5
+        SKIP_IMAGES="4,5"
         EOF
         
         # WiFi configuration (if provided)
@@ -195,8 +195,8 @@ jobs:
         git clone https://github.com/RPi-Distro/pi-gen.git
         cd pi-gen
         
-        # Copy our custom stage
-        cp -r ../stage2z-cupcake ./
+        # Copy our custom stage as stage3
+        cp -r ../stage2z-cupcake ./stage3
         
         # Create pi-gen config file
         cat > config <<EOF
@@ -218,8 +218,8 @@ jobs:
         WORK_DIR=\$(pwd)/work
         DEPLOY_DIR=\$(pwd)/deploy
         
-        # Stage configuration - lite build only, stop after our custom stage
-        STAGE_LIST="stage0 stage1 stage2 stage2z-cupcake"
+        # Stage configuration - lite build, skip only desktop stages 4,5
+        SKIP_IMAGES="4,5"
         EOF
         
         # WiFi configuration (if provided)

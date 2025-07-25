@@ -1,6 +1,7 @@
 name: Build CUPCAKE Raspberry Pi Image
 
 on:
+  # Manual trigger with full configuration options
   workflow_dispatch:
     inputs:
       pi_model:
@@ -30,21 +31,30 @@ on:
         description: 'WiFi Password (optional)'
         required: false
         type: string
+  
+  # Automatic builds every 2 weeks (Sunday at 2 AM UTC)
+  schedule:
+    - cron: '0 2 * * 0/14'
+  
+  # Build and publish when a release is published
   release:
     types: [published]
-  push:
-    branches: [ main, master ]
-    paths:
-      - '.github/workflows/build-pi-image.yml'
-      - 'raspberry-pi/**'
 
 jobs:
   build-pi4-image:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.pi_model == 'pi4' || inputs.pi_model == 'both' }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && (inputs.pi_model == 'pi4' || inputs.pi_model == 'both')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    
+    env:
+      # Set defaults for scheduled/release builds
+      PI_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.pi_model || 'both' }}
+      IMAGE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.image_version || (github.event_name == 'release' && github.ref_name || 'latest') }}
+      ENABLE_SSH: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_ssh || 'true' }}
+      WIFI_SSID: ${{ github.event_name == 'workflow_dispatch' && inputs.wifi_ssid || '' }}
+      WIFI_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && inputs.wifi_password || '' }}
     
     steps:
     - name: Checkout repository
@@ -126,7 +136,7 @@ jobs:
         
         # Create pi-gen config file
         cat > config <<EOF
-        IMG_NAME=cupcake-pi4-${{ inputs.image_version || 'latest' }}
+        IMG_NAME=cupcake-pi4-${{ env.IMAGE_VERSION }}
         RELEASE=bookworm
         DEPLOY_COMPRESSION=xz
         LOCALE_DEFAULT=en_US.UTF-8
@@ -138,7 +148,7 @@ jobs:
         # User configuration
         FIRST_USER_NAME=cupcake
         FIRST_USER_PASS=cupcake123
-        ENABLE_SSH=${{ inputs.enable_ssh && '1' || '0' }}
+        ENABLE_SSH=${{ env.ENABLE_SSH == 'true' && '1' || '0' }}
         
         # Build configuration
         WORK_DIR=\$(pwd)/work
@@ -160,12 +170,12 @@ jobs:
         EOF
         
         # WiFi configuration (if provided)
-        if [ -n "${{ inputs.wifi_ssid }}" ]; then
+        if [ -n "${{ env.WIFI_SSID }}" ]; then
           cat >> config <<EOF
         
         # WiFi configuration
-        WPA_ESSID="${{ inputs.wifi_ssid }}"
-        WPA_PASSWORD="${{ inputs.wifi_password }}"
+        WPA_ESSID="${{ env.WIFI_SSID }}"
+        WPA_PASSWORD="${{ env.WIFI_PASSWORD }}"
         WPA_COUNTRY=US
         EOF
         fi
@@ -209,16 +219,24 @@ jobs:
     - name: Upload Pi 4 artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: cupcake-pi4-image-${{ inputs.image_version || 'latest' }}
+        name: cupcake-pi4-image-${{ env.IMAGE_VERSION }}
         path: pi-gen/deploy/*.img.xz
         retention-days: 30
 
   build-pi5-image:
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.pi_model == 'pi5' || inputs.pi_model == 'both' }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && (inputs.pi_model == 'pi5' || inputs.pi_model == 'both')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    
+    env:
+      # Set defaults for scheduled/release builds
+      PI_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.pi_model || 'both' }}
+      IMAGE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.image_version || (github.event_name == 'release' && github.ref_name || 'latest') }}
+      ENABLE_SSH: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_ssh || 'true' }}
+      WIFI_SSID: ${{ github.event_name == 'workflow_dispatch' && inputs.wifi_ssid || '' }}
+      WIFI_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && inputs.wifi_password || '' }}
     
     steps:
     - name: Checkout repository
@@ -300,7 +318,7 @@ jobs:
         
         # Create pi-gen config file
         cat > config <<EOF
-        IMG_NAME=cupcake-pi5-${{ inputs.image_version || 'latest' }}
+        IMG_NAME=cupcake-pi5-${{ env.IMAGE_VERSION }}
         RELEASE=bookworm
         DEPLOY_COMPRESSION=xz
         LOCALE_DEFAULT=en_US.UTF-8
@@ -312,7 +330,7 @@ jobs:
         # User configuration
         FIRST_USER_NAME=cupcake
         FIRST_USER_PASS=cupcake123
-        ENABLE_SSH=${{ inputs.enable_ssh && '1' || '0' }}
+        ENABLE_SSH=${{ env.ENABLE_SSH == 'true' && '1' || '0' }}
         
         # Build configuration
         WORK_DIR=\$(pwd)/work
@@ -334,12 +352,12 @@ jobs:
         EOF
         
         # WiFi configuration (if provided)
-        if [ -n "${{ inputs.wifi_ssid }}" ]; then
+        if [ -n "${{ env.WIFI_SSID }}" ]; then
           cat >> config <<EOF
         
         # WiFi configuration
-        WPA_ESSID="${{ inputs.wifi_ssid }}"
-        WPA_PASSWORD="${{ inputs.wifi_password }}"
+        WPA_ESSID="${{ env.WIFI_SSID }}"
+        WPA_PASSWORD="${{ env.WIFI_PASSWORD }}"
         WPA_COUNTRY=US
         EOF
         fi
@@ -383,13 +401,13 @@ jobs:
     - name: Upload Pi 5 artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: cupcake-pi5-image-${{ inputs.image_version || 'latest' }}
+        name: cupcake-pi5-image-${{ env.IMAGE_VERSION }}
         path: pi-gen/deploy/*.img.xz
         retention-days: 30
 
 
   create-release:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'release' }}
     needs: [build-pi4-image, build-pi5-image]
     runs-on: ubuntu-latest
     permissions:
@@ -400,24 +418,22 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Download Pi 4 artifacts
-      if: ${{ inputs.pi_model == 'pi4' || inputs.pi_model == 'both' }}
       uses: actions/download-artifact@v4
       with:
-        name: cupcake-pi4-image-${{ inputs.image_version || 'latest' }}
+        name: cupcake-pi4-image-${{ github.ref_name }}
         path: ./release-artifacts/
 
     - name: Download Pi 5 artifacts
-      if: ${{ inputs.pi_model == 'pi5' || inputs.pi_model == 'both' }}
       uses: actions/download-artifact@v4
       with:
-        name: cupcake-pi5-image-${{ inputs.image_version || 'latest' }}
+        name: cupcake-pi5-image-${{ github.ref_name }}
         path: ./release-artifacts/
 
 
     - name: Create release notes
       run: |
         cat > release-notes.md << 'EOF'
-        # CUPCAKE Raspberry Pi Images - ${{ inputs.image_version || 'latest' }}
+        # CUPCAKE Raspberry Pi Images - ${{ github.ref_name }}
         
         Full Raspberry Pi OS Desktop images with CUPCAKE Laboratory Information Management System pre-installed using traditional pi-gen build process.
         
@@ -522,8 +538,8 @@ jobs:
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: pi-image-${{ inputs.image_version || 'latest' }}
-        name: CUPCAKE Pi Images ${{ inputs.image_version || 'latest' }}
+        tag_name: ${{ github.ref_name }}
+        name: CUPCAKE Pi Images ${{ github.ref_name }}
         body_path: release-notes.md
         files: |
           release-artifacts/*

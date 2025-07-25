@@ -77,7 +77,7 @@ jobs:
           binfmt-support qemu-user-static dos2unix \
           coreutils quilt parted qemu-user-static debootstrap zerofree zip \
           dosfstools libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc \
-          gpg pigz xxd
+          gpg pigz xxd arch-test
         
         # Setup binfmt for ARM emulation (required for native pi-gen)
         sudo modprobe binfmt_misc
@@ -145,13 +145,17 @@ jobs:
         EOF
         fi
         
-        # Run official pi-gen Docker build with monitoring
-        echo "Starting pi-gen Docker build..."
+        # Debug: Check what build scripts are available
+        echo "Available build scripts:"
+        ls -la build*.sh || true
+        
+        # Run native pi-gen build with monitoring
+        echo "Starting native pi-gen build..."
         echo "Available disk space before build:"
         df -h
         
-        # Run native pi-gen build
-        sudo ./build.sh
+        # Run native pi-gen build (force native, not Docker)
+        sudo USE_DOCKER=0 ./build.sh
         
         # Check build results
         echo "Build completed, checking results:"
@@ -204,7 +208,7 @@ jobs:
           binfmt-support qemu-user-static dos2unix \
           coreutils quilt parted qemu-user-static debootstrap zerofree zip \
           dosfstools libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc \
-          gpg pigz xxd
+          gpg pigz xxd arch-test
         
         # Setup binfmt for ARM emulation (required for native pi-gen)
         sudo modprobe binfmt_misc
@@ -272,13 +276,17 @@ jobs:
         EOF
         fi
         
-        # Run official pi-gen Docker build with monitoring
-        echo "Starting pi-gen Docker build..."
+        # Debug: Check what build scripts are available
+        echo "Available build scripts:"
+        ls -la build*.sh || true
+        
+        # Run native pi-gen build with monitoring
+        echo "Starting native pi-gen build..."
         echo "Available disk space before build:"
         df -h
         
-        # Run native pi-gen build
-        sudo ./build.sh
+        # Run native pi-gen build (force native, not Docker)
+        sudo USE_DOCKER=0 ./build.sh
         
         # Check build results
         echo "Build completed, checking results:"

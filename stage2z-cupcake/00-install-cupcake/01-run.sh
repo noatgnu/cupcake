@@ -257,5 +257,22 @@ WORKEREOF
 systemctl enable cupcake-web cupcake-worker
 systemctl enable nginx postgresql-14 redis-server
 
+# Clean up to reduce image size
+log_cupcake "Cleaning up installation artifacts..."
+apt-get autoremove -y
+apt-get autoclean
+rm -rf /var/lib/apt/lists/*
+rm -rf /tmp/*
+rm -rf /var/tmp/*
+
+# Clean up Python cache
+find /opt/cupcake -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+find /opt/cupcake -name "*.pyc" -delete 2>/dev/null || true
+
+# Clean up build artifacts
+rm -rf /opt/cupcake/whisper.cpp/build/CMakeCache.txt
+rm -rf /opt/cupcake/whisper.cpp/build/CMakeFiles
+rm -rf /var/cache/apt/archives/*.deb
+
 log_cupcake "CUPCAKE installation completed successfully!"
 log_cupcake "Services will start automatically on first boot"

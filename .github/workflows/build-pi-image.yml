@@ -52,11 +52,21 @@ jobs:
 
     - name: Free up disk space
       run: |
+        # Remove large unused packages
         sudo rm -rf /usr/share/dotnet
         sudo rm -rf /usr/local/lib/android
         sudo rm -rf /opt/ghc
         sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo rm -rf /usr/local/share/boost
+        sudo rm -rf /usr/local/lib/python*
+        sudo rm -rf /opt/az
+        
+        # Clean docker and system caches
         sudo docker image prune --all --force
+        sudo apt-get clean
+        sudo apt-get autoremove -y
+        
+        # Show available space
         df -h
 
     - name: Setup Docker and QEMU for pi-gen
@@ -114,6 +124,10 @@ jobs:
         WORK_DIR=\$(pwd)/work
         DEPLOY_DIR=\$(pwd)/deploy
         
+        # Image size configuration (increase for CUPCAKE installation)
+        IMG_SIZE=8G
+        BOOT_SIZE=512M
+        
         # Stage configuration - lite build, skip only desktop stages 4,5
         SKIP_IMAGES="4,5"
         EOF
@@ -131,10 +145,16 @@ jobs:
         
         # Run official pi-gen Docker build
         echo "Starting pi-gen Docker build..."
+        echo "Available disk space before build:"
+        df -h
+        
         ./build-docker.sh
         
         # Check build results
+        echo "Build completed, checking results:"
         ls -la deploy/
+        echo "Final disk space usage:"
+        df -h
 
     - name: Upload Pi 4 artifacts
       uses: actions/upload-artifact@v4
@@ -156,11 +176,21 @@ jobs:
 
     - name: Free up disk space
       run: |
+        # Remove large unused packages
         sudo rm -rf /usr/share/dotnet
         sudo rm -rf /usr/local/lib/android
         sudo rm -rf /opt/ghc
         sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo rm -rf /usr/local/share/boost
+        sudo rm -rf /usr/local/lib/python*
+        sudo rm -rf /opt/az
+        
+        # Clean docker and system caches
         sudo docker image prune --all --force
+        sudo apt-get clean
+        sudo apt-get autoremove -y
+        
+        # Show available space
         df -h
 
     - name: Setup Docker and QEMU for pi-gen
@@ -218,6 +248,10 @@ jobs:
         WORK_DIR=\$(pwd)/work
         DEPLOY_DIR=\$(pwd)/deploy
         
+        # Image size configuration (increase for CUPCAKE installation)
+        IMG_SIZE=8G
+        BOOT_SIZE=512M
+        
         # Stage configuration - lite build, skip only desktop stages 4,5
         SKIP_IMAGES="4,5"
         EOF
@@ -235,10 +269,16 @@ jobs:
         
         # Run official pi-gen Docker build
         echo "Starting pi-gen Docker build..."
+        echo "Available disk space before build:"
+        df -h
+        
         ./build-docker.sh
         
         # Check build results
+        echo "Build completed, checking results:"
         ls -la deploy/
+        echo "Final disk space usage:"
+        df -h
 
     - name: Upload Pi 5 artifacts
       uses: actions/upload-artifact@v4

@@ -156,41 +156,49 @@ jobs:
         echo "=== DEBUGGING: Checking source path ==="
         ls -la ../stage2z-cupcake/
         
-        # Replace existing stage3 with our CUPCAKE stage
-        sudo rm -rf ./stage3
-        sudo cp -r ../stage2z-cupcake ./stage3
+        # Create custom CUPCAKE stage (don't override existing stages)
+        sudo cp -r ../stage2z-cupcake ./stage-cupcake
+        
+        # Fix pi-gen naming convention: 01-run.sh should be 00-run-chroot.sh (runs inside chroot)
+        sudo mv ./stage-cupcake/00-install-cupcake/01-run.sh ./stage-cupcake/00-install-cupcake/00-run-chroot.sh
         
         # Verify the CUPCAKE stage was copied correctly
         echo "=== DEBUGGING: Checking CUPCAKE stage contents ==="
-        ls -la ./stage3/
-        ls -la ./stage3/00-install-cupcake/
+        ls -la ./stage-cupcake/
+        ls -la ./stage-cupcake/00-install-cupcake/
         
         echo "=== CUPCAKE install script preview ==="
-        head -20 ./stage3/00-install-cupcake/01-run.sh
+        head -20 ./stage-cupcake/00-install-cupcake/00-run-chroot.sh
         
         echo "=== DEBUGGING: Checking script permissions ==="
-        ls -la ./stage3/00-install-cupcake/01-run.sh
-        ls -la ./stage3/prerun.sh
+        ls -la ./stage-cupcake/00-install-cupcake/00-run-chroot.sh
+        ls -la ./stage-cupcake/prerun.sh
         
         # Ensure scripts are executable (need sudo since files were copied with sudo)
-        sudo chmod +x ./stage3/00-install-cupcake/01-run.sh
-        sudo chmod +x ./stage3/prerun.sh
+        sudo chmod +x ./stage-cupcake/00-install-cupcake/00-run-chroot.sh
+        sudo chmod +x ./stage-cupcake/prerun.sh
         
         echo "=== DEBUGGING: After permission fix ==="
-        ls -la ./stage3/00-install-cupcake/01-run.sh
-        ls -la ./stage3/prerun.sh
+        ls -la ./stage-cupcake/00-install-cupcake/00-run-chroot.sh
+        ls -la ./stage-cupcake/prerun.sh
         
-        # Ensure the EXPORT_IMAGE file is properly set for lite builds (stage3 should export)
-        echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage3/EXPORT_IMAGE
+        # Ensure the EXPORT_IMAGE file is properly set for lite builds (stage-cupcake should export)
+        echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage-cupcake/EXPORT_IMAGE
         
         # Verify EXPORT_IMAGE was created
         echo "=== DEBUGGING: Checking EXPORT_IMAGE ==="
-        cat ./stage3/EXPORT_IMAGE
+        cat ./stage-cupcake/EXPORT_IMAGE
         
         # Remove any EXPORT_IMAGE files from intermediate stages to prevent multiple image creation
         sudo rm -f ./stage2/EXPORT_IMAGE || true
         sudo rm -f ./stage4/EXPORT_IMAGE || true
         sudo rm -f ./stage5/EXPORT_IMAGE || true
+        
+        # Create SKIP files for stages we don't want to run
+        touch ./stage3/SKIP ./stage4/SKIP ./stage5/SKIP
+        
+        # Ensure stage-cupcake does NOT have SKIP file (so it will run)
+        sudo rm -f ./stage-cupcake/SKIP || true
         
         # Create pi-gen config file for Lite build
         cat > config <<EOF
@@ -217,15 +225,18 @@ jobs:
         IMG_SIZE=8G
         BOOT_SIZE=512M
         
-        # Stage configuration - Lite build with CUPCAKE (stop after stage3)
-        STAGE_LIST="stage0 stage1 stage2 stage3"
+        # Stage configuration - Custom lite build with CUPCAKE (insert custom stage after stage2)  
+        STAGE_LIST="stage0 stage1 stage2 stage-cupcake"
+        
+        # Override any default lite configuration
+        export STAGE_LIST
         
         # Debootstrap configuration for better cross-architecture support
         BOOTSTRAP_KEYRING=debian-archive-keyring
         TARGET_ARCH=arm64
         
-        # Export configuration - only export final image from stage3
-        EXPORT_ROOTFS_DIR=stage3
+        # Export configuration - only export final image from stage-cupcake
+        EXPORT_ROOTFS_DIR=stage-cupcake
         EOF
         
         # WiFi configuration (if provided)
@@ -267,6 +278,15 @@ jobs:
         cat config | grep -E "(STAGE_LIST|IMG_NAME|EXPORT)" || true
         echo ""
         
+        # Debug: Check what stages pi-gen sees
+        echo "=== Available stages ===" 
+        ls -la stage*/ | head -20
+        echo "=== Custom CUPCAKE stage ==="
+        ls -la stage-cupcake/
+        echo "=== Environment variables ==="
+        echo "STAGE_LIST: $STAGE_LIST"
+        export | grep STAGE || true
+        
         timeout 14400 sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh || {
           build_exit_code=$?
           echo "=== BUILD FAILED OR TIMED OUT (exit code: $build_exit_code) ==="
@@ -276,10 +296,10 @@ jobs:
           find work/ -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true
           
           echo "=== Checking for CUPCAKE-specific errors ==="
-          find work/ -name "*.log" -exec grep -l "CUPCAKE\|cupcake\|stage3" {} \; 2>/dev/null | head -5 | xargs cat 2>/dev/null || true
+          find work/ -name "*.log" -exec grep -l "CUPCAKE\|cupcake\|stage-cupcake" {} \; 2>/dev/null | head -5 | xargs cat 2>/dev/null || true
           
-          echo "=== Checking stage3 directory ==="
-          find work/ -name "stage3" -type d 2>/dev/null | head -1 | xargs ls -la 2>/dev/null || true
+          echo "=== Checking stage-cupcake directory ==="
+          find work/ -name "stage-cupcake" -type d 2>/dev/null | head -1 | xargs ls -la 2>/dev/null || true
           
           echo "=== Final work directory structure ==="
           find work/ -maxdepth 3 -type d 2>/dev/null || true
@@ -448,41 +468,49 @@ jobs:
         echo "=== DEBUGGING: Checking source path ==="
         ls -la ../stage2z-cupcake/
         
-        # Replace existing stage3 with our CUPCAKE stage
-        sudo rm -rf ./stage3
-        sudo cp -r ../stage2z-cupcake ./stage3
+        # Create custom CUPCAKE stage (don't override existing stages)
+        sudo cp -r ../stage2z-cupcake ./stage-cupcake
+        
+        # Fix pi-gen naming convention: 01-run.sh should be 00-run-chroot.sh (runs inside chroot)
+        sudo mv ./stage-cupcake/00-install-cupcake/01-run.sh ./stage-cupcake/00-install-cupcake/00-run-chroot.sh
         
         # Verify the CUPCAKE stage was copied correctly
         echo "=== DEBUGGING: Checking CUPCAKE stage contents ==="
-        ls -la ./stage3/
-        ls -la ./stage3/00-install-cupcake/
+        ls -la ./stage-cupcake/
+        ls -la ./stage-cupcake/00-install-cupcake/
         
         echo "=== CUPCAKE install script preview ==="
-        head -20 ./stage3/00-install-cupcake/01-run.sh
+        head -20 ./stage-cupcake/00-install-cupcake/00-run-chroot.sh
         
         echo "=== DEBUGGING: Checking script permissions ==="
-        ls -la ./stage3/00-install-cupcake/01-run.sh
-        ls -la ./stage3/prerun.sh
+        ls -la ./stage-cupcake/00-install-cupcake/00-run-chroot.sh
+        ls -la ./stage-cupcake/prerun.sh
         
         # Ensure scripts are executable (need sudo since files were copied with sudo)
-        sudo chmod +x ./stage3/00-install-cupcake/01-run.sh
-        sudo chmod +x ./stage3/prerun.sh
+        sudo chmod +x ./stage-cupcake/00-install-cupcake/00-run-chroot.sh
+        sudo chmod +x ./stage-cupcake/prerun.sh
         
         echo "=== DEBUGGING: After permission fix ==="
-        ls -la ./stage3/00-install-cupcake/01-run.sh
-        ls -la ./stage3/prerun.sh
+        ls -la ./stage-cupcake/00-install-cupcake/00-run-chroot.sh
+        ls -la ./stage-cupcake/prerun.sh
         
-        # Ensure the EXPORT_IMAGE file is properly set for lite builds (stage3 should export)
-        echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage3/EXPORT_IMAGE
+        # Ensure the EXPORT_IMAGE file is properly set for lite builds (stage-cupcake should export)
+        echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage-cupcake/EXPORT_IMAGE
         
         # Verify EXPORT_IMAGE was created
         echo "=== DEBUGGING: Checking EXPORT_IMAGE ==="
-        cat ./stage3/EXPORT_IMAGE
+        cat ./stage-cupcake/EXPORT_IMAGE
         
         # Remove any EXPORT_IMAGE files from intermediate stages to prevent multiple image creation
         sudo rm -f ./stage2/EXPORT_IMAGE || true
         sudo rm -f ./stage4/EXPORT_IMAGE || true
         sudo rm -f ./stage5/EXPORT_IMAGE || true
+        
+        # Create SKIP files for stages we don't want to run
+        touch ./stage3/SKIP ./stage4/SKIP ./stage5/SKIP
+        
+        # Ensure stage-cupcake does NOT have SKIP file (so it will run)
+        sudo rm -f ./stage-cupcake/SKIP || true
         
         # Create pi-gen config file for Lite build
         cat > config <<EOF
@@ -509,15 +537,18 @@ jobs:
         IMG_SIZE=8G
         BOOT_SIZE=512M
         
-        # Stage configuration - Lite build with CUPCAKE (stop after stage3)
-        STAGE_LIST="stage0 stage1 stage2 stage3"
+        # Stage configuration - Custom lite build with CUPCAKE (insert custom stage after stage2)  
+        STAGE_LIST="stage0 stage1 stage2 stage-cupcake"
+        
+        # Override any default lite configuration
+        export STAGE_LIST
         
         # Debootstrap configuration for better cross-architecture support
         BOOTSTRAP_KEYRING=debian-archive-keyring
         TARGET_ARCH=arm64
         
-        # Export configuration - only export final image from stage3
-        EXPORT_ROOTFS_DIR=stage3
+        # Export configuration - only export final image from stage-cupcake
+        EXPORT_ROOTFS_DIR=stage-cupcake
         EOF
         
         # WiFi configuration (if provided)
@@ -559,6 +590,15 @@ jobs:
         cat config | grep -E "(STAGE_LIST|IMG_NAME|EXPORT)" || true
         echo ""
         
+        # Debug: Check what stages pi-gen sees
+        echo "=== Available stages ===" 
+        ls -la stage*/ | head -20
+        echo "=== Custom CUPCAKE stage ==="
+        ls -la stage-cupcake/
+        echo "=== Environment variables ==="
+        echo "STAGE_LIST: $STAGE_LIST"
+        export | grep STAGE || true
+        
         timeout 14400 sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh || {
           build_exit_code=$?
           echo "=== BUILD FAILED OR TIMED OUT (exit code: $build_exit_code) ==="
@@ -568,10 +608,10 @@ jobs:
           find work/ -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true
           
           echo "=== Checking for CUPCAKE-specific errors ==="
-          find work/ -name "*.log" -exec grep -l "CUPCAKE\|cupcake\|stage3" {} \; 2>/dev/null | head -5 | xargs cat 2>/dev/null || true
+          find work/ -name "*.log" -exec grep -l "CUPCAKE\|cupcake\|stage-cupcake" {} \; 2>/dev/null | head -5 | xargs cat 2>/dev/null || true
           
-          echo "=== Checking stage3 directory ==="
-          find work/ -name "stage3" -type d 2>/dev/null | head -1 | xargs ls -la 2>/dev/null || true
+          echo "=== Checking stage-cupcake directory ==="
+          find work/ -name "stage-cupcake" -type d 2>/dev/null | head -1 | xargs ls -la 2>/dev/null || true
           
           echo "=== Final work directory structure ==="
           find work/ -maxdepth 3 -type d 2>/dev/null || true

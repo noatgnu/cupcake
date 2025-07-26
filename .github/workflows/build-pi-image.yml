@@ -151,7 +151,13 @@ jobs:
         cd pi-gen
         
         # Copy our custom stage as stage3 (after stage2 lite)
-        sudo cp -r ../stage2z-cupcake ./stage3
+        echo "=== DEBUGGING: Current working directory ==="
+        pwd
+        echo "=== DEBUGGING: Checking source path ==="
+        ls -la ../../stage2z-cupcake/
+        
+        sudo mkdir -p ./stage3
+        sudo cp -r ../../stage2z-cupcake/* ./stage3/
         
         # Verify the CUPCAKE stage was copied correctly
         echo "=== DEBUGGING: Checking CUPCAKE stage contents ==="
@@ -389,7 +395,13 @@ jobs:
         cd pi-gen
         
         # Copy our custom stage as stage3 (after stage2 lite)
-        sudo cp -r ../stage2z-cupcake ./stage3
+        echo "=== DEBUGGING: Current working directory ==="
+        pwd
+        echo "=== DEBUGGING: Checking source path ==="
+        ls -la ../../stage2z-cupcake/
+        
+        sudo mkdir -p ./stage3
+        sudo cp -r ../../stage2z-cupcake/* ./stage3/
         
         # Verify the CUPCAKE stage was copied correctly
         echo "=== DEBUGGING: Checking CUPCAKE stage contents ==="

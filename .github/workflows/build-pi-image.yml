@@ -50,9 +50,10 @@ on:
     types: [published]
 
 jobs:
-  build-pi4-desktop:
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && (inputs.pi_model == 'pi4' || inputs.pi_model == 'both') && (inputs.build_type == 'desktop' || inputs.build_type == 'both')) }}
-    runs-on: ubuntu-latest
+  # TEMPORARILY DISABLED - Desktop builds disabled to focus on lite builds
+  # build-pi4-desktop:
+  #   if: ${{ github.event_name == 'schedule' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && (inputs.pi_model == 'pi4' || inputs.pi_model == 'both') && (inputs.build_type == 'desktop' || inputs.build_type == 'both')) }}
+  #   runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write

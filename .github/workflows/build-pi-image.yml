@@ -171,9 +171,9 @@ jobs:
         ls -la ./stage2z/00-install-cupcake/01-run.sh
         ls -la ./stage2z/prerun.sh
         
-        # Ensure scripts are executable
-        chmod +x ./stage2z/00-install-cupcake/01-run.sh
-        chmod +x ./stage2z/prerun.sh
+        # Ensure scripts are executable (need sudo since files were copied with sudo)
+        sudo chmod +x ./stage2z/00-install-cupcake/01-run.sh
+        sudo chmod +x ./stage2z/prerun.sh
         
         echo "=== DEBUGGING: After permission fix ==="
         ls -la ./stage2z/00-install-cupcake/01-run.sh
@@ -463,9 +463,9 @@ jobs:
         ls -la ./stage2z/00-install-cupcake/01-run.sh
         ls -la ./stage2z/prerun.sh
         
-        # Ensure scripts are executable
-        chmod +x ./stage2z/00-install-cupcake/01-run.sh
-        chmod +x ./stage2z/prerun.sh
+        # Ensure scripts are executable (need sudo since files were copied with sudo)
+        sudo chmod +x ./stage2z/00-install-cupcake/01-run.sh
+        sudo chmod +x ./stage2z/prerun.sh
         
         echo "=== DEBUGGING: After permission fix ==="
         ls -la ./stage2z/00-install-cupcake/01-run.sh

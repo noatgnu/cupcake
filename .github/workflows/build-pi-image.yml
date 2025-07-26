@@ -159,6 +159,10 @@ jobs:
         # Create custom CUPCAKE stage using proper pi-gen naming (stage2a - runs after stage2)
         sudo cp -r ../stage2z-cupcake ./stage2a
         
+        # Fix line endings (convert Windows CRLF to Unix LF) and ensure proper format
+        sudo sed -i 's/\r$//' ./stage2a/prerun.sh 2>/dev/null || true
+        sudo sed -i 's/\r$//' ./stage2a/00-install-cupcake/01-run.sh 2>/dev/null || true
+        
         # Fix pi-gen naming convention: 01-run.sh should be 00-run-chroot.sh (runs inside chroot)
         sudo mv ./stage2a/00-install-cupcake/01-run.sh ./stage2a/00-install-cupcake/00-run-chroot.sh
         
@@ -178,9 +182,18 @@ jobs:
         sudo chmod +x ./stage2a/00-install-cupcake/00-run-chroot.sh
         sudo chmod +x ./stage2a/prerun.sh
         
-        echo "=== DEBUGGING: After permission fix ==="
-        ls -la ./stage2a/00-install-cupcake/00-run-chroot.sh
+        # Extra debugging for file issues
+        echo "=== DEBUGGING: File validation ==="
+        echo "prerun.sh file details:"
         ls -la ./stage2a/prerun.sh
+        file ./stage2a/prerun.sh || true
+        echo "prerun.sh content preview:"
+        head -5 ./stage2a/prerun.sh | od -c | head -3
+        echo "prerun.sh shebang check:"
+        head -1 ./stage2a/prerun.sh | xxd
+        
+        echo "=== DEBUGGING: Directory structure ==="
+        find ./stage2a -type f -name "*.sh" -exec ls -la {} \;
         
         # Ensure the EXPORT_IMAGE file is properly set for lite builds (stage2a should export)
         echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage2a/EXPORT_IMAGE
@@ -492,6 +505,10 @@ jobs:
         # Create custom CUPCAKE stage using proper pi-gen naming (stage2a - runs after stage2)
         sudo cp -r ../stage2z-cupcake ./stage2a
         
+        # Fix line endings (convert Windows CRLF to Unix LF) and ensure proper format
+        sudo sed -i 's/\r$//' ./stage2a/prerun.sh 2>/dev/null || true
+        sudo sed -i 's/\r$//' ./stage2a/00-install-cupcake/01-run.sh 2>/dev/null || true
+        
         # Fix pi-gen naming convention: 01-run.sh should be 00-run-chroot.sh (runs inside chroot)
         sudo mv ./stage2a/00-install-cupcake/01-run.sh ./stage2a/00-install-cupcake/00-run-chroot.sh
         
@@ -511,9 +528,18 @@ jobs:
         sudo chmod +x ./stage2a/00-install-cupcake/00-run-chroot.sh
         sudo chmod +x ./stage2a/prerun.sh
         
-        echo "=== DEBUGGING: After permission fix ==="
-        ls -la ./stage2a/00-install-cupcake/00-run-chroot.sh
+        # Extra debugging for file issues
+        echo "=== DEBUGGING: File validation ==="
+        echo "prerun.sh file details:"
         ls -la ./stage2a/prerun.sh
+        file ./stage2a/prerun.sh || true
+        echo "prerun.sh content preview:"
+        head -5 ./stage2a/prerun.sh | od -c | head -3
+        echo "prerun.sh shebang check:"
+        head -1 ./stage2a/prerun.sh | xxd
+        
+        echo "=== DEBUGGING: Directory structure ==="
+        find ./stage2a -type f -name "*.sh" -exec ls -la {} \;
         
         # Ensure the EXPORT_IMAGE file is properly set for lite builds (stage2a should export)
         echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage2a/EXPORT_IMAGE

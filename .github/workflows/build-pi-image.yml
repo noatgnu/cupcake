@@ -1083,7 +1083,7 @@ jobs:
 
   cleanup:
     if: always()
-    needs: [build-pi4-image, build-pi5-image, create-release]
+    needs: [build-pi4-desktop, build-pi4-lite, build-pi5-desktop, build-pi5-lite, create-release]
     runs-on: ubuntu-latest
     
     steps:

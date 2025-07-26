@@ -228,9 +228,6 @@ jobs:
         # Stage configuration - Custom lite build with CUPCAKE (insert custom stage after stage2)  
         STAGE_LIST="stage0 stage1 stage2 stage-cupcake"
         
-        # Override any default lite configuration
-        export STAGE_LIST
-        
         # Debootstrap configuration for better cross-architecture support
         BOOTSTRAP_KEYRING=debian-archive-keyring
         TARGET_ARCH=arm64
@@ -238,6 +235,9 @@ jobs:
         # Export configuration - only export final image from stage-cupcake
         EXPORT_ROOTFS_DIR=stage-cupcake
         EOF
+        
+        # Export STAGE_LIST in current shell environment
+        export STAGE_LIST="stage0 stage1 stage2 stage-cupcake"
         
         # WiFi configuration (if provided)
         if [ -n "${{ env.WIFI_SSID }}" ]; then
@@ -284,8 +284,8 @@ jobs:
         echo "=== Custom CUPCAKE stage ==="
         ls -la stage-cupcake/
         echo "=== Environment variables ==="
-        echo "STAGE_LIST: $STAGE_LIST"
-        export | grep STAGE || true
+        echo "STAGE_LIST: ${STAGE_LIST:-not_set}"
+        export | grep STAGE || echo "No STAGE variables found"
         
         timeout 14400 sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh || {
           build_exit_code=$?
@@ -540,9 +540,6 @@ jobs:
         # Stage configuration - Custom lite build with CUPCAKE (insert custom stage after stage2)  
         STAGE_LIST="stage0 stage1 stage2 stage-cupcake"
         
-        # Override any default lite configuration
-        export STAGE_LIST
-        
         # Debootstrap configuration for better cross-architecture support
         BOOTSTRAP_KEYRING=debian-archive-keyring
         TARGET_ARCH=arm64
@@ -550,6 +547,9 @@ jobs:
         # Export configuration - only export final image from stage-cupcake
         EXPORT_ROOTFS_DIR=stage-cupcake
         EOF
+        
+        # Export STAGE_LIST in current shell environment
+        export STAGE_LIST="stage0 stage1 stage2 stage-cupcake"
         
         # WiFi configuration (if provided)
         if [ -n "${{ env.WIFI_SSID }}" ]; then
@@ -596,8 +596,8 @@ jobs:
         echo "=== Custom CUPCAKE stage ==="
         ls -la stage-cupcake/
         echo "=== Environment variables ==="
-        echo "STAGE_LIST: $STAGE_LIST"
-        export | grep STAGE || true
+        echo "STAGE_LIST: ${STAGE_LIST:-not_set}"
+        export | grep STAGE || echo "No STAGE variables found"
         
         timeout 14400 sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh || {
           build_exit_code=$?

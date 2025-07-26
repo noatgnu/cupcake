@@ -156,7 +156,8 @@ jobs:
         echo "=== DEBUGGING: Checking source path ==="
         ls -la ../stage2z-cupcake/
         
-        # Insert our stage as stage3 to run after stage2 lite
+        # Replace existing stage3 with our CUPCAKE stage
+        sudo rm -rf ./stage3
         sudo cp -r ../stage2z-cupcake ./stage3
         
         # Verify the CUPCAKE stage was copied correctly
@@ -447,7 +448,8 @@ jobs:
         echo "=== DEBUGGING: Checking source path ==="
         ls -la ../stage2z-cupcake/
         
-        # Insert our stage as stage3 to run after stage2 lite
+        # Replace existing stage3 with our CUPCAKE stage
+        sudo rm -rf ./stage3
         sudo cp -r ../stage2z-cupcake ./stage3
         
         # Verify the CUPCAKE stage was copied correctly

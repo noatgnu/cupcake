@@ -168,8 +168,18 @@ jobs:
         
         # Verify the CUPCAKE stage was copied correctly
         echo "=== DEBUGGING: Checking CUPCAKE stage contents ==="
+        echo "Source directory before copy:"
+        ls -la ../stage2z-cupcake/
+        echo "Target directory after copy:"
         ls -la ./stage2a/
+        echo "Install directory:"
         ls -la ./stage2a/00-install-cupcake/
+        echo "Check if prerun.sh exists and is executable (pi-gen requirement):"
+        test -f ./stage2a/prerun.sh && echo "✅ prerun.sh exists" || echo "❌ prerun.sh missing"
+        test -x ./stage2a/prerun.sh && echo "✅ prerun.sh is executable" || echo "❌ prerun.sh not executable"
+        echo "Test pi-gen's exact condition:"
+        cd ./stage2a && test -x prerun.sh && echo "✅ [ -x prerun.sh ] test passes" || echo "❌ [ -x prerun.sh ] test fails"
+        cd ..
         
         echo "=== CUPCAKE install script preview ==="
         head -20 ./stage2a/00-install-cupcake/00-run-chroot.sh
@@ -514,8 +524,18 @@ jobs:
         
         # Verify the CUPCAKE stage was copied correctly
         echo "=== DEBUGGING: Checking CUPCAKE stage contents ==="
+        echo "Source directory before copy:"
+        ls -la ../stage2z-cupcake/
+        echo "Target directory after copy:"
         ls -la ./stage2a/
+        echo "Install directory:"
         ls -la ./stage2a/00-install-cupcake/
+        echo "Check if prerun.sh exists and is executable (pi-gen requirement):"
+        test -f ./stage2a/prerun.sh && echo "✅ prerun.sh exists" || echo "❌ prerun.sh missing"
+        test -x ./stage2a/prerun.sh && echo "✅ prerun.sh is executable" || echo "❌ prerun.sh not executable"
+        echo "Test pi-gen's exact condition:"
+        cd ./stage2a && test -x prerun.sh && echo "✅ [ -x prerun.sh ] test passes" || echo "❌ [ -x prerun.sh ] test fails"
+        cd ..
         
         echo "=== CUPCAKE install script preview ==="
         head -20 ./stage2a/00-install-cupcake/00-run-chroot.sh

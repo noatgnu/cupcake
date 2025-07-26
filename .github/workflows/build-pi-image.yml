@@ -222,7 +222,17 @@ jobs:
         
         # Check build results
         echo "Build completed, checking results:"
-        ls -la deploy/
+        echo "Checking if deploy directory exists:"
+        if [ -d "deploy" ]; then
+          ls -la deploy/
+        else
+          echo "ERROR: Deploy directory not found!"
+          echo "Checking work directory structure:"
+          find work/ -name "*.img*" -o -name "EXPORT*" 2>/dev/null || true
+          echo "Checking all stage directories:"
+          ls -la stage*/EXPORT* 2>/dev/null || true
+          exit 1
+        fi
         echo "Final disk space usage:"
         df -h
         
@@ -230,7 +240,8 @@ jobs:
         echo "Using PiShrink to reduce image size..."
         cd deploy
         
-        # Download and install PiShrink
+        # Fix permissions and download PiShrink
+        sudo chown -R $USER:$USER .
         wget https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh
         chmod +x pishrink.sh
         
@@ -359,6 +370,9 @@ jobs:
         # Copy our custom stage as stage3 (after stage2 lite)
         sudo cp -r ../stage2z-cupcake ./stage3
         
+        # Ensure the EXPORT_IMAGE file is properly set for lite builds
+        echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage3/EXPORT_IMAGE
+        
         # Remove any EXPORT_IMAGE files from intermediate stages to prevent multiple image creation
         sudo rm -f ./stage2/EXPORT_IMAGE || true
         sudo rm -f ./stage4/EXPORT_IMAGE || true
@@ -442,7 +456,17 @@ jobs:
         
         # Check build results
         echo "Build completed, checking results:"
-        ls -la deploy/
+        echo "Checking if deploy directory exists:"
+        if [ -d "deploy" ]; then
+          ls -la deploy/
+        else
+          echo "ERROR: Deploy directory not found!"
+          echo "Checking work directory structure:"
+          find work/ -name "*.img*" -o -name "EXPORT*" 2>/dev/null || true
+          echo "Checking all stage directories:"
+          ls -la stage*/EXPORT* 2>/dev/null || true
+          exit 1
+        fi
         echo "Final disk space usage:"
         df -h
         
@@ -450,7 +474,8 @@ jobs:
         echo "Using PiShrink to reduce image size..."
         cd deploy
         
-        # Download and install PiShrink
+        # Fix permissions and download PiShrink
+        sudo chown -R $USER:$USER .
         wget https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh
         chmod +x pishrink.sh
         
@@ -661,7 +686,17 @@ jobs:
         
         # Check build results
         echo "Build completed, checking results:"
-        ls -la deploy/
+        echo "Checking if deploy directory exists:"
+        if [ -d "deploy" ]; then
+          ls -la deploy/
+        else
+          echo "ERROR: Deploy directory not found!"
+          echo "Checking work directory structure:"
+          find work/ -name "*.img*" -o -name "EXPORT*" 2>/dev/null || true
+          echo "Checking all stage directories:"
+          ls -la stage*/EXPORT* 2>/dev/null || true
+          exit 1
+        fi
         echo "Final disk space usage:"
         df -h
         
@@ -669,7 +704,8 @@ jobs:
         echo "Using PiShrink to reduce image size..."
         cd deploy
         
-        # Download and install PiShrink
+        # Fix permissions and download PiShrink
+        sudo chown -R $USER:$USER .
         wget https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh
         chmod +x pishrink.sh
         
@@ -798,6 +834,9 @@ jobs:
         # Copy our custom stage as stage3 (after stage2 lite)
         sudo cp -r ../stage2z-cupcake ./stage3
         
+        # Ensure the EXPORT_IMAGE file is properly set for lite builds
+        echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage3/EXPORT_IMAGE
+        
         # Remove any EXPORT_IMAGE files from intermediate stages to prevent multiple image creation
         sudo rm -f ./stage2/EXPORT_IMAGE || true
         sudo rm -f ./stage4/EXPORT_IMAGE || true
@@ -881,7 +920,17 @@ jobs:
         
         # Check build results
         echo "Build completed, checking results:"
-        ls -la deploy/
+        echo "Checking if deploy directory exists:"
+        if [ -d "deploy" ]; then
+          ls -la deploy/
+        else
+          echo "ERROR: Deploy directory not found!"
+          echo "Checking work directory structure:"
+          find work/ -name "*.img*" -o -name "EXPORT*" 2>/dev/null || true
+          echo "Checking all stage directories:"
+          ls -la stage*/EXPORT* 2>/dev/null || true
+          exit 1
+        fi
         echo "Final disk space usage:"
         df -h
         
@@ -889,7 +938,8 @@ jobs:
         echo "Using PiShrink to reduce image size..."
         cd deploy
         
-        # Download and install PiShrink
+        # Fix permissions and download PiShrink
+        sudo chown -R $USER:$USER .
         wget https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh
         chmod +x pishrink.sh
         

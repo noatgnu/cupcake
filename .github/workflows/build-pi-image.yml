@@ -150,45 +150,44 @@ jobs:
         git clone https://github.com/RPi-Distro/pi-gen.git
         cd pi-gen
         
-        # Copy our custom stage as stage2z (insert between stage2 and potential stage3)
+        # Copy our custom stage as stage3 (pi-gen expects numbered stages)
         echo "=== DEBUGGING: Current working directory ==="
         pwd
         echo "=== DEBUGGING: Checking source path ==="
         ls -la ../stage2z-cupcake/
         
-        # Insert our stage as stage2z to run after stage2 lite
-        sudo cp -r ../stage2z-cupcake ./stage2z
+        # Insert our stage as stage3 to run after stage2 lite
+        sudo cp -r ../stage2z-cupcake ./stage3
         
         # Verify the CUPCAKE stage was copied correctly
         echo "=== DEBUGGING: Checking CUPCAKE stage contents ==="
-        ls -la ./stage2z/
-        ls -la ./stage2z/00-install-cupcake/
+        ls -la ./stage3/
+        ls -la ./stage3/00-install-cupcake/
         
         echo "=== CUPCAKE install script preview ==="
-        head -20 ./stage2z/00-install-cupcake/01-run.sh
+        head -20 ./stage3/00-install-cupcake/01-run.sh
         
         echo "=== DEBUGGING: Checking script permissions ==="
-        ls -la ./stage2z/00-install-cupcake/01-run.sh
-        ls -la ./stage2z/prerun.sh
+        ls -la ./stage3/00-install-cupcake/01-run.sh
+        ls -la ./stage3/prerun.sh
         
         # Ensure scripts are executable (need sudo since files were copied with sudo)
-        sudo chmod +x ./stage2z/00-install-cupcake/01-run.sh
-        sudo chmod +x ./stage2z/prerun.sh
+        sudo chmod +x ./stage3/00-install-cupcake/01-run.sh
+        sudo chmod +x ./stage3/prerun.sh
         
         echo "=== DEBUGGING: After permission fix ==="
-        ls -la ./stage2z/00-install-cupcake/01-run.sh
-        ls -la ./stage2z/prerun.sh
+        ls -la ./stage3/00-install-cupcake/01-run.sh
+        ls -la ./stage3/prerun.sh
         
-        # Ensure the EXPORT_IMAGE file is properly set for lite builds (stage2z should export)
-        echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage2z/EXPORT_IMAGE
+        # Ensure the EXPORT_IMAGE file is properly set for lite builds (stage3 should export)
+        echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage3/EXPORT_IMAGE
         
         # Verify EXPORT_IMAGE was created
         echo "=== DEBUGGING: Checking EXPORT_IMAGE ==="
-        cat ./stage2z/EXPORT_IMAGE
+        cat ./stage3/EXPORT_IMAGE
         
         # Remove any EXPORT_IMAGE files from intermediate stages to prevent multiple image creation
         sudo rm -f ./stage2/EXPORT_IMAGE || true
-        sudo rm -f ./stage3/EXPORT_IMAGE || true
         sudo rm -f ./stage4/EXPORT_IMAGE || true
         sudo rm -f ./stage5/EXPORT_IMAGE || true
         
@@ -217,15 +216,15 @@ jobs:
         IMG_SIZE=8G
         BOOT_SIZE=512M
         
-        # Stage configuration - Lite build with CUPCAKE (stop after stage2z)
-        STAGE_LIST="stage0 stage1 stage2 stage2z"
+        # Stage configuration - Lite build with CUPCAKE (stop after stage3)
+        STAGE_LIST="stage0 stage1 stage2 stage3"
         
         # Debootstrap configuration for better cross-architecture support
         BOOTSTRAP_KEYRING=debian-archive-keyring
         TARGET_ARCH=arm64
         
-        # Export configuration - only export final image from stage2z
-        EXPORT_ROOTFS_DIR=stage2z
+        # Export configuration - only export final image from stage3
+        EXPORT_ROOTFS_DIR=stage3
         EOF
         
         # WiFi configuration (if provided)
@@ -442,45 +441,44 @@ jobs:
         git clone https://github.com/RPi-Distro/pi-gen.git
         cd pi-gen
         
-        # Copy our custom stage as stage2z (insert between stage2 and potential stage3)
+        # Copy our custom stage as stage3 (pi-gen expects numbered stages)
         echo "=== DEBUGGING: Current working directory ==="
         pwd
         echo "=== DEBUGGING: Checking source path ==="
         ls -la ../stage2z-cupcake/
         
-        # Insert our stage as stage2z to run after stage2 lite
-        sudo cp -r ../stage2z-cupcake ./stage2z
+        # Insert our stage as stage3 to run after stage2 lite
+        sudo cp -r ../stage2z-cupcake ./stage3
         
         # Verify the CUPCAKE stage was copied correctly
         echo "=== DEBUGGING: Checking CUPCAKE stage contents ==="
-        ls -la ./stage2z/
-        ls -la ./stage2z/00-install-cupcake/
+        ls -la ./stage3/
+        ls -la ./stage3/00-install-cupcake/
         
         echo "=== CUPCAKE install script preview ==="
-        head -20 ./stage2z/00-install-cupcake/01-run.sh
+        head -20 ./stage3/00-install-cupcake/01-run.sh
         
         echo "=== DEBUGGING: Checking script permissions ==="
-        ls -la ./stage2z/00-install-cupcake/01-run.sh
-        ls -la ./stage2z/prerun.sh
+        ls -la ./stage3/00-install-cupcake/01-run.sh
+        ls -la ./stage3/prerun.sh
         
         # Ensure scripts are executable (need sudo since files were copied with sudo)
-        sudo chmod +x ./stage2z/00-install-cupcake/01-run.sh
-        sudo chmod +x ./stage2z/prerun.sh
+        sudo chmod +x ./stage3/00-install-cupcake/01-run.sh
+        sudo chmod +x ./stage3/prerun.sh
         
         echo "=== DEBUGGING: After permission fix ==="
-        ls -la ./stage2z/00-install-cupcake/01-run.sh
-        ls -la ./stage2z/prerun.sh
+        ls -la ./stage3/00-install-cupcake/01-run.sh
+        ls -la ./stage3/prerun.sh
         
-        # Ensure the EXPORT_IMAGE file is properly set for lite builds (stage2z should export)
-        echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage2z/EXPORT_IMAGE
+        # Ensure the EXPORT_IMAGE file is properly set for lite builds (stage3 should export)
+        echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage3/EXPORT_IMAGE
         
         # Verify EXPORT_IMAGE was created
         echo "=== DEBUGGING: Checking EXPORT_IMAGE ==="
-        cat ./stage2z/EXPORT_IMAGE
+        cat ./stage3/EXPORT_IMAGE
         
         # Remove any EXPORT_IMAGE files from intermediate stages to prevent multiple image creation
         sudo rm -f ./stage2/EXPORT_IMAGE || true
-        sudo rm -f ./stage3/EXPORT_IMAGE || true
         sudo rm -f ./stage4/EXPORT_IMAGE || true
         sudo rm -f ./stage5/EXPORT_IMAGE || true
         
@@ -509,15 +507,15 @@ jobs:
         IMG_SIZE=8G
         BOOT_SIZE=512M
         
-        # Stage configuration - Lite build with CUPCAKE (stop after stage2z)
-        STAGE_LIST="stage0 stage1 stage2 stage2z"
+        # Stage configuration - Lite build with CUPCAKE (stop after stage3)
+        STAGE_LIST="stage0 stage1 stage2 stage3"
         
         # Debootstrap configuration for better cross-architecture support
         BOOTSTRAP_KEYRING=debian-archive-keyring
         TARGET_ARCH=arm64
         
-        # Export configuration - only export final image from stage2z
-        EXPORT_ROOTFS_DIR=stage2z
+        # Export configuration - only export final image from stage3
+        EXPORT_ROOTFS_DIR=stage3
         EOF
         
         # WiFi configuration (if provided)

@@ -150,31 +150,45 @@ jobs:
         git clone https://github.com/RPi-Distro/pi-gen.git
         cd pi-gen
         
-        # Copy our custom stage as stage3 (after stage2 lite)
+        # Copy our custom stage as stage2z (insert between stage2 and potential stage3)
         echo "=== DEBUGGING: Current working directory ==="
         pwd
         echo "=== DEBUGGING: Checking source path ==="
         ls -la ../stage2z-cupcake/
         
-        sudo mkdir -p ./stage3
-        sudo cp -r ../stage2z-cupcake/* ./stage3/
+        # Insert our stage as stage2z to run after stage2 lite
+        sudo cp -r ../stage2z-cupcake ./stage2z
         
         # Verify the CUPCAKE stage was copied correctly
         echo "=== DEBUGGING: Checking CUPCAKE stage contents ==="
-        ls -la ./stage3/
-        ls -la ./stage3/00-install-cupcake/
-        echo "=== CUPCAKE install script preview ==="
-        head -20 ./stage3/00-install-cupcake/01-run.sh
+        ls -la ./stage2z/
+        ls -la ./stage2z/00-install-cupcake/
         
-        # Ensure the EXPORT_IMAGE file is properly set for lite builds
-        echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage3/EXPORT_IMAGE
+        echo "=== CUPCAKE install script preview ==="
+        head -20 ./stage2z/00-install-cupcake/01-run.sh
+        
+        echo "=== DEBUGGING: Checking script permissions ==="
+        ls -la ./stage2z/00-install-cupcake/01-run.sh
+        ls -la ./stage2z/prerun.sh
+        
+        # Ensure scripts are executable
+        chmod +x ./stage2z/00-install-cupcake/01-run.sh
+        chmod +x ./stage2z/prerun.sh
+        
+        echo "=== DEBUGGING: After permission fix ==="
+        ls -la ./stage2z/00-install-cupcake/01-run.sh
+        ls -la ./stage2z/prerun.sh
+        
+        # Ensure the EXPORT_IMAGE file is properly set for lite builds (stage2z should export)
+        echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage2z/EXPORT_IMAGE
         
         # Verify EXPORT_IMAGE was created
         echo "=== DEBUGGING: Checking EXPORT_IMAGE ==="
-        cat ./stage3/EXPORT_IMAGE
+        cat ./stage2z/EXPORT_IMAGE
         
         # Remove any EXPORT_IMAGE files from intermediate stages to prevent multiple image creation
         sudo rm -f ./stage2/EXPORT_IMAGE || true
+        sudo rm -f ./stage3/EXPORT_IMAGE || true
         sudo rm -f ./stage4/EXPORT_IMAGE || true
         sudo rm -f ./stage5/EXPORT_IMAGE || true
         
@@ -203,15 +217,15 @@ jobs:
         IMG_SIZE=8G
         BOOT_SIZE=512M
         
-        # Stage configuration - Lite build only (stop after stage3 with CUPCAKE)
-        STAGE_LIST="stage0 stage1 stage2 stage3"
+        # Stage configuration - Lite build with CUPCAKE (stop after stage2z)
+        STAGE_LIST="stage0 stage1 stage2 stage2z"
         
         # Debootstrap configuration for better cross-architecture support
         BOOTSTRAP_KEYRING=debian-archive-keyring
         TARGET_ARCH=arm64
         
-        # Export configuration - only export final image from stage3
-        EXPORT_ROOTFS_DIR=stage3
+        # Export configuration - only export final image from stage2z
+        EXPORT_ROOTFS_DIR=stage2z
         EOF
         
         # WiFi configuration (if provided)
@@ -248,28 +262,62 @@ jobs:
         df -h
         
         # Run native pi-gen build (force native, not Docker) with timeout
+        echo "=== Starting pi-gen build process ==="
+        echo "Config summary:"
+        cat config | grep -E "(STAGE_LIST|IMG_NAME|EXPORT)" || true
+        echo ""
+        
         timeout 14400 sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh || {
-          echo "=== BUILD FAILED OR TIMED OUT ==="
-          echo "Showing pi-gen logs..."
-          find work/ -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; || true
+          build_exit_code=$?
+          echo "=== BUILD FAILED OR TIMED OUT (exit code: $build_exit_code) ==="
+          
+          # Show general pi-gen logs with error suppression
+          echo "=== Showing pi-gen logs ==="
+          find work/ -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true
+          
           echo "=== Checking for CUPCAKE-specific errors ==="
-          find work/ -name "*.log" -exec grep -l "CUPCAKE\|cupcake\|stage3" {} \; | head -5 | xargs cat || true
+          find work/ -name "*.log" -exec grep -l "CUPCAKE\|cupcake\|stage3" {} \; 2>/dev/null | head -5 | xargs cat 2>/dev/null || true
+          
           echo "=== Checking stage3 directory ==="
-          find work/ -name "stage3" -type d | head -1 | xargs ls -la || true
+          find work/ -name "stage3" -type d 2>/dev/null | head -1 | xargs ls -la 2>/dev/null || true
+          
+          echo "=== Final work directory structure ==="
+          find work/ -maxdepth 3 -type d 2>/dev/null || true
+          
+          # Check if this was a timeout vs actual failure
+          if [ "$build_exit_code" -eq 124 ]; then
+            echo "=== BUILD TIMED OUT after 4 hours ==="
+          else
+            echo "=== BUILD FAILED with exit code $build_exit_code ==="
+          fi
+          
           exit 1
         }
         
-        # Check build results
+        # Check build results with better error handling
         echo "Build completed, checking results:"
         echo "Checking if deploy directory exists:"
         if [ -d "deploy" ]; then
+          echo "=== Deploy directory contents ==="
           ls -la deploy/
+          
+          # Check for successful image creation
+          image_count=$(find deploy/ -name "*.img*" 2>/dev/null | wc -l)
+          if [ "$image_count" -gt 0 ]; then
+            echo "✓ Found $image_count image file(s) in deploy directory"
+          else
+            echo "⚠ Warning: No image files found in deploy directory"
+          fi
         else
           echo "ERROR: Deploy directory not found!"
           echo "Checking work directory structure:"
           find work/ -name "*.img*" -o -name "EXPORT*" 2>/dev/null || true
           echo "Checking all stage directories:"
           ls -la stage*/EXPORT* 2>/dev/null || true
+          
+          # Try to find any generated images in work directory
+          echo "=== Searching for any generated images ==="
+          find . -name "*.img*" -type f 2>/dev/null || true
           exit 1
         fi
         echo "Final disk space usage:"
@@ -394,31 +442,45 @@ jobs:
         git clone https://github.com/RPi-Distro/pi-gen.git
         cd pi-gen
         
-        # Copy our custom stage as stage3 (after stage2 lite)
+        # Copy our custom stage as stage2z (insert between stage2 and potential stage3)
         echo "=== DEBUGGING: Current working directory ==="
         pwd
         echo "=== DEBUGGING: Checking source path ==="
         ls -la ../stage2z-cupcake/
         
-        sudo mkdir -p ./stage3
-        sudo cp -r ../stage2z-cupcake/* ./stage3/
+        # Insert our stage as stage2z to run after stage2 lite
+        sudo cp -r ../stage2z-cupcake ./stage2z
         
         # Verify the CUPCAKE stage was copied correctly
         echo "=== DEBUGGING: Checking CUPCAKE stage contents ==="
-        ls -la ./stage3/
-        ls -la ./stage3/00-install-cupcake/
-        echo "=== CUPCAKE install script preview ==="
-        head -20 ./stage3/00-install-cupcake/01-run.sh
+        ls -la ./stage2z/
+        ls -la ./stage2z/00-install-cupcake/
         
-        # Ensure the EXPORT_IMAGE file is properly set for lite builds
-        echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage3/EXPORT_IMAGE
+        echo "=== CUPCAKE install script preview ==="
+        head -20 ./stage2z/00-install-cupcake/01-run.sh
+        
+        echo "=== DEBUGGING: Checking script permissions ==="
+        ls -la ./stage2z/00-install-cupcake/01-run.sh
+        ls -la ./stage2z/prerun.sh
+        
+        # Ensure scripts are executable
+        chmod +x ./stage2z/00-install-cupcake/01-run.sh
+        chmod +x ./stage2z/prerun.sh
+        
+        echo "=== DEBUGGING: After permission fix ==="
+        ls -la ./stage2z/00-install-cupcake/01-run.sh
+        ls -la ./stage2z/prerun.sh
+        
+        # Ensure the EXPORT_IMAGE file is properly set for lite builds (stage2z should export)
+        echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage2z/EXPORT_IMAGE
         
         # Verify EXPORT_IMAGE was created
         echo "=== DEBUGGING: Checking EXPORT_IMAGE ==="
-        cat ./stage3/EXPORT_IMAGE
+        cat ./stage2z/EXPORT_IMAGE
         
         # Remove any EXPORT_IMAGE files from intermediate stages to prevent multiple image creation
         sudo rm -f ./stage2/EXPORT_IMAGE || true
+        sudo rm -f ./stage3/EXPORT_IMAGE || true
         sudo rm -f ./stage4/EXPORT_IMAGE || true
         sudo rm -f ./stage5/EXPORT_IMAGE || true
         
@@ -447,15 +509,15 @@ jobs:
         IMG_SIZE=8G
         BOOT_SIZE=512M
         
-        # Stage configuration - Lite build only (stop after stage3 with CUPCAKE)
-        STAGE_LIST="stage0 stage1 stage2 stage3"
+        # Stage configuration - Lite build with CUPCAKE (stop after stage2z)
+        STAGE_LIST="stage0 stage1 stage2 stage2z"
         
         # Debootstrap configuration for better cross-architecture support
         BOOTSTRAP_KEYRING=debian-archive-keyring
         TARGET_ARCH=arm64
         
-        # Export configuration - only export final image from stage3
-        EXPORT_ROOTFS_DIR=stage3
+        # Export configuration - only export final image from stage2z
+        EXPORT_ROOTFS_DIR=stage2z
         EOF
         
         # WiFi configuration (if provided)
@@ -492,28 +554,62 @@ jobs:
         df -h
         
         # Run native pi-gen build (force native, not Docker) with timeout
+        echo "=== Starting pi-gen build process ==="
+        echo "Config summary:"
+        cat config | grep -E "(STAGE_LIST|IMG_NAME|EXPORT)" || true
+        echo ""
+        
         timeout 14400 sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh || {
-          echo "=== BUILD FAILED OR TIMED OUT ==="
-          echo "Showing pi-gen logs..."
-          find work/ -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; || true
+          build_exit_code=$?
+          echo "=== BUILD FAILED OR TIMED OUT (exit code: $build_exit_code) ==="
+          
+          # Show general pi-gen logs with error suppression
+          echo "=== Showing pi-gen logs ==="
+          find work/ -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true
+          
           echo "=== Checking for CUPCAKE-specific errors ==="
-          find work/ -name "*.log" -exec grep -l "CUPCAKE\|cupcake\|stage3" {} \; | head -5 | xargs cat || true
+          find work/ -name "*.log" -exec grep -l "CUPCAKE\|cupcake\|stage3" {} \; 2>/dev/null | head -5 | xargs cat 2>/dev/null || true
+          
           echo "=== Checking stage3 directory ==="
-          find work/ -name "stage3" -type d | head -1 | xargs ls -la || true
+          find work/ -name "stage3" -type d 2>/dev/null | head -1 | xargs ls -la 2>/dev/null || true
+          
+          echo "=== Final work directory structure ==="
+          find work/ -maxdepth 3 -type d 2>/dev/null || true
+          
+          # Check if this was a timeout vs actual failure
+          if [ "$build_exit_code" -eq 124 ]; then
+            echo "=== BUILD TIMED OUT after 4 hours ==="
+          else
+            echo "=== BUILD FAILED with exit code $build_exit_code ==="
+          fi
+          
           exit 1
         }
         
-        # Check build results
+        # Check build results with better error handling
         echo "Build completed, checking results:"
         echo "Checking if deploy directory exists:"
         if [ -d "deploy" ]; then
+          echo "=== Deploy directory contents ==="
           ls -la deploy/
+          
+          # Check for successful image creation
+          image_count=$(find deploy/ -name "*.img*" 2>/dev/null | wc -l)
+          if [ "$image_count" -gt 0 ]; then
+            echo "✓ Found $image_count image file(s) in deploy directory"
+          else
+            echo "⚠ Warning: No image files found in deploy directory"
+          fi
         else
           echo "ERROR: Deploy directory not found!"
           echo "Checking work directory structure:"
           find work/ -name "*.img*" -o -name "EXPORT*" 2>/dev/null || true
           echo "Checking all stage directories:"
           ls -la stage*/EXPORT* 2>/dev/null || true
+          
+          # Try to find any generated images in work directory
+          echo "=== Searching for any generated images ==="
+          find . -name "*.img*" -type f 2>/dev/null || true
           exit 1
         fi
         echo "Final disk space usage:"

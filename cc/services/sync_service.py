@@ -463,3 +463,503 @@ class SyncService:
                 'success': False,
                 'error': str(e)
             }
+    
+    # PHASE 3: BIDIRECTIONAL SYNC (PUSH FUNCTIONALITY)
+    
+    def push_model_data(self, model_name: str, local_objects: List[models.Model], 
+                       conflict_strategy: str = 'timestamp') -> Dict[str, Any]:
+        """
+        Push local objects to remote host
+        
+        Args:
+            model_name: Name of model to push ('protocol', 'project', etc.)
+            local_objects: List of local model instances to push
+            conflict_strategy: Strategy for handling conflicts ('timestamp', 'force_push', 'skip')
+            
+        Returns:
+            dict: Results of push operation
+        """
+        if model_name not in self.SYNCABLE_MODELS:
+            raise SyncError(f"Model '{model_name}' is not syncable")
+            
+        if not self.authenticator:
+            raise SyncError("Must authenticate before pushing data")
+        
+        results = {
+            'success': True,
+            'model_name': model_name,
+            'pushed_count': 0,
+            'updated_count': 0,
+            'skipped_count': 0,
+            'conflicts': [],
+            'errors': []
+        }
+        
+        try:
+            logger.info(f"Pushing {len(local_objects)} {model_name} objects to {self.remote_host.host_name}")
+            
+            for local_obj in local_objects:
+                try:
+                    push_result = self._push_single_object(local_obj, model_name, conflict_strategy)
+                    
+                    if push_result['action'] == 'created':
+                        results['pushed_count'] += 1
+                    elif push_result['action'] == 'updated':
+                        results['updated_count'] += 1
+                    elif push_result['action'] == 'skipped':
+                        results['skipped_count'] += 1
+                    elif push_result['action'] == 'conflict':
+                        results['conflicts'].append(push_result)
+                        results['skipped_count'] += 1
+                        
+                except Exception as e:
+                    error_msg = f"Failed to push {model_name} object {local_obj.id}: {str(e)}"
+                    logger.error(error_msg)
+                    results['errors'].append(error_msg)
+                    results['success'] = False
+            
+            logger.info(f"Push complete for {model_name}: {results['pushed_count']} created, "
+                       f"{results['updated_count']} updated, {results['skipped_count']} skipped")
+            
+            return results
+            
+        except Exception as e:
+            error_msg = f"Failed to push {model_name} data: {str(e)}"
+            logger.error(error_msg)
+            return {
+                'success': False,
+                'model_name': model_name,
+                'error': error_msg
+            }
+    
+    def _push_single_object(self, local_obj: models.Model, model_name: str, 
+                           conflict_strategy: str) -> Dict[str, Any]:
+        """
+        Push a single object to remote host
+        
+        Args:
+            local_obj: Local model instance to push
+            model_name: Name of model
+            conflict_strategy: Strategy for handling conflicts
+            
+        Returns:
+            dict: Result of push operation for this object
+        """
+        # Prepare data for remote API
+        remote_data = self._prepare_remote_data(local_obj, model_name)
+        
+        # Check if object already exists on remote
+        remote_obj = None
+        if hasattr(local_obj, 'remote_id') and local_obj.remote_id:
+            remote_obj = self._get_remote_object(model_name, local_obj.remote_id)
+        
+        # Handle conflict detection and resolution
+        if remote_obj:
+            conflict_result = self._handle_push_conflict(
+                local_obj, remote_obj, model_name, conflict_strategy
+            )
+            if conflict_result['has_conflict']:
+                return conflict_result
+                
+            # Update existing remote object
+            return self._update_remote_object(local_obj, remote_obj, model_name, remote_data)
+        else:
+            # Create new remote object
+            return self._create_remote_object(local_obj, model_name, remote_data)
+    
+    def _get_remote_object(self, model_name: str, remote_id: int) -> Optional[Dict]:
+        """
+        Get object from remote host by ID
+        
+        Args:
+            model_name: Name of model
+            remote_id: Remote object ID
+            
+        Returns:
+            dict or None: Remote object data if found
+        """
+        try:
+            endpoint = model_name if model_name != 'protocol' else 'protocol'
+            response = self.authenticator.session.get(
+                f"{self.authenticator.base_url}/api/{endpoint}/{remote_id}/"
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 404:
+                return None
+            else:
+                raise SyncError(f"Failed to fetch remote object: HTTP {response.status_code}")
+                
+        except Exception as e:
+            logger.warning(f"Could not fetch remote object {remote_id}: {e}")
+            return None
+    
+    def _handle_push_conflict(self, local_obj: models.Model, remote_obj: Dict, 
+                             model_name: str, conflict_strategy: str) -> Dict[str, Any]:
+        """
+        Handle conflicts when pushing objects that exist on both sides
+        
+        Args:
+            local_obj: Local model instance
+            remote_obj: Remote object data
+            model_name: Name of model
+            conflict_strategy: Strategy for resolving conflicts
+            
+        Returns:
+            dict: Conflict resolution result
+        """
+        conflict_info = {
+            'has_conflict': False,
+            'action': 'proceed',
+            'local_id': local_obj.id,
+            'remote_id': remote_obj['id'],
+            'conflict_type': None,
+            'resolution': conflict_strategy
+        }
+        
+        # Check for timestamp conflicts
+        if hasattr(local_obj, 'updated_at') and 'updated_at' in remote_obj:
+            local_updated = local_obj.updated_at
+            remote_updated_str = remote_obj['updated_at']
+            
+            try:
+                remote_updated = datetime.fromisoformat(remote_updated_str.replace('Z', '+00:00'))
+                if remote_updated.tzinfo is None:
+                    remote_updated = remote_updated.replace(tzinfo=timezone.utc)
+                if local_updated.tzinfo is None:
+                    local_updated = local_updated.replace(tzinfo=timezone.utc)
+                
+                # Detect conflict: both objects modified since last sync
+                if remote_updated > local_updated:
+                    conflict_info.update({
+                        'has_conflict': True,
+                        'conflict_type': 'remote_newer',
+                        'local_timestamp': local_updated.isoformat(),
+                        'remote_timestamp': remote_updated.isoformat()
+                    })
+                    
+                    # Apply conflict resolution strategy
+                    if conflict_strategy == 'timestamp':
+                        # Keep remote (newer) version - skip push
+                        conflict_info.update({
+                            'action': 'skipped',
+                            'reason': 'Remote object is newer'
+                        })
+                    elif conflict_strategy == 'force_push':
+                        # Force push local version despite conflict
+                        conflict_info.update({
+                            'action': 'force_update',
+                            'reason': 'Force push strategy applied'
+                        })
+                    elif conflict_strategy == 'skip':
+                        # Skip on any conflict
+                        conflict_info.update({
+                            'action': 'skipped',
+                            'reason': 'Skip strategy applied'
+                        })
+                        
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Failed to compare timestamps for conflict detection: {e}")
+                # Proceed with caution on timestamp parse failure
+                conflict_info['action'] = 'proceed'
+        
+        return conflict_info
+    
+    def _create_remote_object(self, local_obj: models.Model, model_name: str, 
+                             remote_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Create new object on remote host
+        
+        Args:
+            local_obj: Local model instance
+            model_name: Name of model
+            remote_data: Prepared data for remote API
+            
+        Returns:
+            dict: Result of create operation
+        """
+        try:
+            endpoint = model_name if model_name != 'protocol' else 'protocol'
+            response = self.authenticator.session.post(
+                f"{self.authenticator.base_url}/api/{endpoint}/",
+                json=remote_data,
+                headers={'Content-Type': 'application/json'}
+            )
+            
+            if response.status_code in [200, 201]:
+                remote_obj_data = response.json()
+                
+                # Update local object with remote ID
+                if 'id' in remote_obj_data:
+                    local_obj.remote_id = remote_obj_data['id']
+                    local_obj.remote_host = self.remote_host
+                    local_obj.save()
+                
+                return {
+                    'action': 'created',
+                    'local_id': local_obj.id,
+                    'remote_id': remote_obj_data.get('id'),
+                    'success': True
+                }
+            else:
+                return {
+                    'action': 'error',
+                    'local_id': local_obj.id,
+                    'error': f"HTTP {response.status_code}: {response.text}",
+                    'success': False
+                }
+                
+        except Exception as e:
+            return {
+                'action': 'error',
+                'local_id': local_obj.id,
+                'error': str(e),
+                'success': False
+            }
+    
+    def _update_remote_object(self, local_obj: models.Model, remote_obj: Dict, 
+                             model_name: str, remote_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Update existing object on remote host
+        
+        Args:
+            local_obj: Local model instance
+            remote_obj: Remote object data
+            model_name: Name of model
+            remote_data: Prepared data for remote API
+            
+        Returns:
+            dict: Result of update operation
+        """
+        try:
+            endpoint = model_name if model_name != 'protocol' else 'protocol'
+            remote_id = remote_obj['id']
+            
+            response = self.authenticator.session.put(
+                f"{self.authenticator.base_url}/api/{endpoint}/{remote_id}/",
+                json=remote_data,
+                headers={'Content-Type': 'application/json'}
+            )
+            
+            if response.status_code in [200, 201]:
+                return {
+                    'action': 'updated',
+                    'local_id': local_obj.id,
+                    'remote_id': remote_id,
+                    'success': True
+                }
+            else:
+                return {
+                    'action': 'error',
+                    'local_id': local_obj.id,
+                    'remote_id': remote_id,
+                    'error': f"HTTP {response.status_code}: {response.text}",
+                    'success': False
+                }
+                
+        except Exception as e:
+            return {
+                'action': 'error',
+                'local_id': local_obj.id,
+                'remote_id': remote_obj.get('id'),
+                'error': str(e),
+                'success': False
+            }
+    
+    def _prepare_remote_data(self, local_obj: models.Model, model_name: str) -> Dict[str, Any]:
+        """
+        Prepare local object data for remote API
+        
+        Args:
+            local_obj: Local model instance
+            model_name: Name of model
+            
+        Returns:
+            dict: Data formatted for remote API
+        """
+        # Get all model fields except those that shouldn't be synced
+        excluded_fields = {
+            'id', 'remote_id', 'remote_host', 'is_vaulted',
+            'created_at', 'updated_at'  # Let remote handle these
+        }
+        
+        remote_data = {}
+        
+        # Get all field values from the model
+        for field in local_obj._meta.fields:
+            field_name = field.name
+            if field_name not in excluded_fields:
+                field_value = getattr(local_obj, field_name)
+                
+                # Handle foreign key relationships
+                if hasattr(field, 'related_model') and field_value is not None:
+                    # For now, just use the ID - TODO: handle relationship sync
+                    if hasattr(field_value, 'id'):
+                        remote_data[field_name] = field_value.id
+                else:
+                    # Handle datetime serialization
+                    if hasattr(field_value, 'isoformat'):
+                        remote_data[field_name] = field_value.isoformat()
+                    else:
+                        remote_data[field_name] = field_value
+        
+        # Add model-specific transformations
+        remote_data = self._apply_model_transformations(remote_data, model_name, 'push')
+        
+        return remote_data
+    
+    def _apply_model_transformations(self, data: Dict[str, Any], model_name: str, 
+                                   direction: str) -> Dict[str, Any]:
+        """
+        Apply model-specific data transformations for sync
+        
+        Args:
+            data: Object data to transform
+            model_name: Name of model
+            direction: 'push' or 'pull'
+            
+        Returns:
+            dict: Transformed data
+        """
+        # TODO: Add model-specific transformations as needed
+        # Examples:
+        # - Convert file paths for media fields
+        # - Handle protocol-specific fields
+        # - Transform user references
+        
+        return data
+    
+    def push_local_changes(self, models: Optional[List[str]] = None, 
+                          modified_since: Optional[datetime] = None,
+                          conflict_strategy: str = 'timestamp',
+                          limit_per_model: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Push local changes to remote host
+        
+        Args:
+            models: List of model names to push (default: all syncable models)
+            modified_since: Only push objects modified since this date
+            conflict_strategy: Strategy for handling conflicts
+            limit_per_model: Limit objects per model (for testing)
+            
+        Returns:
+            dict: Overall push results
+        """
+        if not models:
+            models = list(self.SYNCABLE_MODELS.keys())
+            
+        # Authenticate first
+        self.authenticate()
+        
+        results = {
+            'success': True,
+            'remote_host': self.remote_host.host_name,
+            'models': {},
+            'summary': {
+                'total_pushed': 0,
+                'total_updated': 0,
+                'total_skipped': 0,
+                'total_conflicts': 0,
+                'total_errors': 0
+            }
+        }
+        
+        try:
+            for model_name in models:
+                try:
+                    logger.info(f"Pushing {model_name} to {self.remote_host.host_name}")
+                    
+                    # Get local objects to push
+                    local_objects = self._get_local_objects_to_push(
+                        model_name, modified_since, limit_per_model
+                    )
+                    
+                    if local_objects:
+                        # Push to remote
+                        push_result = self.push_model_data(
+                            model_name, local_objects, conflict_strategy
+                        )
+                        results['models'][model_name] = push_result
+                        
+                        # Update summary
+                        results['summary']['total_pushed'] += push_result['pushed_count']
+                        results['summary']['total_updated'] += push_result['updated_count']
+                        results['summary']['total_skipped'] += push_result['skipped_count']
+                        results['summary']['total_conflicts'] += len(push_result['conflicts'])
+                        results['summary']['total_errors'] += len(push_result['errors'])
+                        
+                        if not push_result['success']:
+                            results['success'] = False
+                    else:
+                        results['models'][model_name] = {
+                            'message': 'No local objects to push'
+                        }
+                        
+                except Exception as e:
+                    error_msg = f"Failed to push {model_name}: {str(e)}"
+                    logger.error(error_msg)
+                    results['models'][model_name] = {'error': error_msg}
+                    results['summary']['total_errors'] += 1
+                    results['success'] = False
+                    
+        except Exception as e:
+            results['success'] = False
+            results['error'] = str(e)
+            
+        logger.info(f"Push complete: {results['summary']}")
+        
+        return results
+    
+    def _get_local_objects_to_push(self, model_name: str, modified_since: Optional[datetime] = None,
+                                  limit: Optional[int] = None) -> List[models.Model]:
+        """
+        Get local objects that should be pushed to remote
+        
+        Args:
+            model_name: Name of model
+            modified_since: Only include objects modified since this date
+            limit: Maximum number of objects to return
+            
+        Returns:
+            list: Local model instances to push
+        """
+        model_class = self.SYNCABLE_MODELS[model_name]
+        
+        # Build query for local objects
+        queryset = model_class.objects.filter(
+            # Only push objects owned by the current user or accessible to them
+            **self._get_ownership_filter(model_class)
+        ).exclude(
+            # Don't push vaulted objects (they came from remote)
+            is_vaulted=True
+        )
+        
+        # Filter by modification date if specified
+        if modified_since and hasattr(model_class, 'updated_at'):
+            queryset = queryset.filter(updated_at__gte=modified_since)
+            
+        # Apply limit if specified
+        if limit:
+            queryset = queryset[:limit]
+            
+        return list(queryset)
+    
+    def _get_ownership_filter(self, model_class) -> Dict[str, Any]:
+        """
+        Get ownership filter for a model class
+        
+        Args:
+            model_class: Model class to filter
+            
+        Returns:
+            dict: Filter parameters for ownership
+        """
+        # Check common ownership patterns
+        if hasattr(model_class, 'user'):
+            return {'user': self.importing_user}
+        elif hasattr(model_class, 'owner'):
+            return {'owner': self.importing_user}
+        else:
+            # For models without clear ownership, return all (be careful!)
+            return {}

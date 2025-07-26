@@ -11966,6 +11966,90 @@ class RemoteHostViewSet(ModelViewSet):
                 'message': f'Unexpected error: {str(e)}'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
+    @action(detail=True, methods=['post'], url_path='sync-push')
+    def sync_push(self, request, pk=None):
+        """Push local data to a remote host"""
+        remote_host = self.get_object()
+        
+        from cc.services.sync_service import SyncService, SyncError
+        from cc.utils.sync_auth import SyncAuthError
+        from datetime import datetime, timezone
+        
+        # Get parameters from request
+        models_to_sync = request.data.get('models', None)
+        limit_per_model = request.data.get('limit', None)
+        conflict_strategy = request.data.get('conflict_strategy', 'timestamp')
+        modified_since_str = request.data.get('modified_since', None)
+        
+        # Parse modified_since if provided
+        modified_since = None
+        if modified_since_str:
+            try:
+                modified_since = datetime.fromisoformat(modified_since_str.replace('Z', '+00:00'))
+            except (ValueError, TypeError):
+                return Response({
+                    'success': False,
+                    'error': 'invalid_date_format',
+                    'message': 'modified_since must be in ISO format (YYYY-MM-DDTHH:MM:SS[Z])'
+                }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate conflict strategy
+        valid_strategies = ['timestamp', 'force_push', 'skip']
+        if conflict_strategy not in valid_strategies:
+            return Response({
+                'success': False,
+                'error': 'invalid_conflict_strategy',
+                'message': f'conflict_strategy must be one of: {", ".join(valid_strategies)}'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            with SyncService(remote_host, request.user) as sync_service:
+                # Perform the push
+                results = sync_service.push_local_changes(
+                    models=models_to_sync,
+                    modified_since=modified_since,
+                    conflict_strategy=conflict_strategy,
+                    limit_per_model=limit_per_model
+                )
+                
+                if results['success']:
+                    response_status = status.HTTP_200_OK
+                    if results['summary']['total_conflicts'] > 0:
+                        response_status = status.HTTP_207_MULTI_STATUS  # Partial success with conflicts
+                        
+                    return Response({
+                        'success': True,
+                        'message': f'Successfully pushed data to {remote_host.host_name}',
+                        'results': results
+                    }, status=response_status)
+                else:
+                    return Response({
+                        'success': False,
+                        'message': f'Push completed with errors to {remote_host.host_name}',
+                        'results': results
+                    }, status=status.HTTP_207_MULTI_STATUS)  # Partial success
+                    
+        except SyncAuthError as e:
+            return Response({
+                'success': False,
+                'error': 'authentication_failed',
+                'message': f'Authentication failed: {str(e)}'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+            
+        except SyncError as e:
+            return Response({
+                'success': False,
+                'error': 'sync_failed',
+                'message': f'Push failed: {str(e)}'
+            }, status=status.HTTP_400_BAD_REQUEST)
+            
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': 'unexpected_error',
+                'message': f'Unexpected error: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
     @action(detail=False, methods=['get'], url_path='connection-summary')
     def connection_summary(self, request):
         """Get a summary of connection status for all remote hosts"""

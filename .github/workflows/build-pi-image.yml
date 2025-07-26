@@ -128,7 +128,7 @@ jobs:
         # Ensure script has correct line endings and is executable
         dos2unix prebuild-frontend.sh 2>/dev/null || true
         chmod +x prebuild-frontend.sh
-        bash ./prebuild-frontend.sh --hostname cupcake-pi4.local --output-dir ./frontend-dist
+        bash ./prebuild-frontend.sh --hostname cupcake-pi.local --output-dir ./frontend-dist
         
     - name: Build Pi 4 image using native pi-gen
       run: |
@@ -149,10 +149,11 @@ jobs:
         IMG_NAME=cupcake-pi4-desktop-${{ env.IMAGE_VERSION }}
         RELEASE=bookworm
         DEPLOY_COMPRESSION=xz
+        COMPRESSION_LEVEL=9
         LOCALE_DEFAULT=en_US.UTF-8
-        TARGET_HOSTNAME=cupcake-pi4
-        KEYBOARD_KEYMAP=us
-        KEYBOARD_LAYOUT="English (US)"
+        TARGET_HOSTNAME=cupcake-pi
+        KEYBOARD_KEYMAP=gb
+        KEYBOARD_LAYOUT="English (UK)"
         TIMEZONE_DEFAULT=UTC
         
         # User configuration
@@ -245,15 +246,36 @@ jobs:
         wget https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh
         chmod +x pishrink.sh
         
+        # Check available disk space before processing
+        echo "Available disk space before PiShrink:"
+        df -h .
+        
         for img in *.img.xz; do
           if [ -f "$img" ]; then
             echo "Processing $img with PiShrink..."
             
+            # Get current compressed size
+            compressed_size=$(stat -c%s "$img")
+            echo "Current compressed size: $compressed_size bytes ($(($compressed_size / 1024 / 1024)) MB)"
+            
+            # Check if we have enough space (need ~3x the compressed size for safe processing)
+            available_space=$(df --block-size=1 . | awk 'NR==2 {print $4}')
+            required_space=$((compressed_size * 3))
+            
+            if [ $available_space -lt $required_space ]; then
+              echo "WARNING: Insufficient disk space for PiShrink processing"
+              echo "Available: $(($available_space / 1024 / 1024)) MB, Required: $(($required_space / 1024 / 1024)) MB"
+              echo "Skipping PiShrink - using original pi-gen compressed image"
+              continue
+            fi
+            
             # Decompress for PiShrink processing
+            echo "Decompressing $img..."
             xz -d "$img"
             img_uncompressed="${img%.xz}"
             
             # Run PiShrink with xz compression (-Z option)
+            echo "Running PiShrink on $img_uncompressed..."
             sudo ./pishrink.sh -Z "$img_uncompressed"
             
             # Check final size - PiShrink with -Z creates .img.xz directly
@@ -261,11 +283,13 @@ jobs:
               mv "${img_uncompressed}.xz" "$img"
               size=$(stat -c%s "$img")
               echo "PiShrink with xz compression: $size bytes ($(($size / 1024 / 1024)) MB)"
+              echo "Space saved: $(($compressed_size - $size)) bytes"
             else
-              # Fallback to regular compression if PiShrink didn't compress
+              # Fallback: PiShrink didn't create compressed output, compress with level 9
+              echo "PiShrink didn't create compressed output, compressing with xz level 9..."
               xz -9 "$img_uncompressed"
               size=$(stat -c%s "$img")
-              echo "PiShrink + manual xz: $size bytes ($(($size / 1024 / 1024)) MB)"
+              echo "Manual xz level 9 compression: $size bytes ($(($size / 1024 / 1024)) MB)"
             fi
           fi
         done
@@ -359,7 +383,7 @@ jobs:
         # Ensure script has correct line endings and is executable
         dos2unix prebuild-frontend.sh 2>/dev/null || true
         chmod +x prebuild-frontend.sh
-        bash ./prebuild-frontend.sh --hostname cupcake-pi4.local --output-dir ./frontend-dist
+        bash ./prebuild-frontend.sh --hostname cupcake-pi.local --output-dir ./frontend-dist
         
     - name: Build Pi 4 Lite image using native pi-gen
       run: |
@@ -383,10 +407,11 @@ jobs:
         IMG_NAME=cupcake-pi4-lite-${{ env.IMAGE_VERSION }}
         RELEASE=bookworm
         DEPLOY_COMPRESSION=xz
+        COMPRESSION_LEVEL=9
         LOCALE_DEFAULT=en_US.UTF-8
-        TARGET_HOSTNAME=cupcake-pi4
-        KEYBOARD_KEYMAP=us
-        KEYBOARD_LAYOUT="English (US)"
+        TARGET_HOSTNAME=cupcake-pi
+        KEYBOARD_KEYMAP=gb
+        KEYBOARD_LAYOUT="English (UK)"
         TIMEZONE_DEFAULT=UTC
         
         # User configuration
@@ -479,15 +504,36 @@ jobs:
         wget https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh
         chmod +x pishrink.sh
         
+        # Check available disk space before processing
+        echo "Available disk space before PiShrink:"
+        df -h .
+        
         for img in *.img.xz; do
           if [ -f "$img" ]; then
             echo "Processing $img with PiShrink..."
             
+            # Get current compressed size
+            compressed_size=$(stat -c%s "$img")
+            echo "Current compressed size: $compressed_size bytes ($(($compressed_size / 1024 / 1024)) MB)"
+            
+            # Check if we have enough space (need ~3x the compressed size for safe processing)
+            available_space=$(df --block-size=1 . | awk 'NR==2 {print $4}')
+            required_space=$((compressed_size * 3))
+            
+            if [ $available_space -lt $required_space ]; then
+              echo "WARNING: Insufficient disk space for PiShrink processing"
+              echo "Available: $(($available_space / 1024 / 1024)) MB, Required: $(($required_space / 1024 / 1024)) MB"
+              echo "Skipping PiShrink - using original pi-gen compressed image"
+              continue
+            fi
+            
             # Decompress for PiShrink processing
+            echo "Decompressing $img..."
             xz -d "$img"
             img_uncompressed="${img%.xz}"
             
             # Run PiShrink with xz compression (-Z option)
+            echo "Running PiShrink on $img_uncompressed..."
             sudo ./pishrink.sh -Z "$img_uncompressed"
             
             # Check final size - PiShrink with -Z creates .img.xz directly
@@ -495,11 +541,13 @@ jobs:
               mv "${img_uncompressed}.xz" "$img"
               size=$(stat -c%s "$img")
               echo "PiShrink with xz compression: $size bytes ($(($size / 1024 / 1024)) MB)"
+              echo "Space saved: $(($compressed_size - $size)) bytes"
             else
-              # Fallback to regular compression if PiShrink didn't compress
+              # Fallback: PiShrink didn't create compressed output, compress with level 9
+              echo "PiShrink didn't create compressed output, compressing with xz level 9..."
               xz -9 "$img_uncompressed"
               size=$(stat -c%s "$img")
-              echo "PiShrink + manual xz: $size bytes ($(($size / 1024 / 1024)) MB)"
+              echo "Manual xz level 9 compression: $size bytes ($(($size / 1024 / 1024)) MB)"
             fi
           fi
         done
@@ -592,7 +640,7 @@ jobs:
         # Ensure script has correct line endings and is executable
         dos2unix prebuild-frontend.sh 2>/dev/null || true
         chmod +x prebuild-frontend.sh
-        bash ./prebuild-frontend.sh --hostname cupcake-pi5.local --output-dir ./frontend-dist
+        bash ./prebuild-frontend.sh --hostname cupcake-pi.local --output-dir ./frontend-dist
         
     - name: Build Pi 5 image using native pi-gen
       run: |
@@ -613,10 +661,11 @@ jobs:
         IMG_NAME=cupcake-pi5-desktop-${{ env.IMAGE_VERSION }}
         RELEASE=bookworm
         DEPLOY_COMPRESSION=xz
+        COMPRESSION_LEVEL=9
         LOCALE_DEFAULT=en_US.UTF-8
-        TARGET_HOSTNAME=cupcake-pi5
-        KEYBOARD_KEYMAP=us
-        KEYBOARD_LAYOUT="English (US)"
+        TARGET_HOSTNAME=cupcake-pi
+        KEYBOARD_KEYMAP=gb
+        KEYBOARD_LAYOUT="English (UK)"
         TIMEZONE_DEFAULT=UTC
         
         # User configuration
@@ -709,15 +758,36 @@ jobs:
         wget https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh
         chmod +x pishrink.sh
         
+        # Check available disk space before processing
+        echo "Available disk space before PiShrink:"
+        df -h .
+        
         for img in *.img.xz; do
           if [ -f "$img" ]; then
             echo "Processing $img with PiShrink..."
             
+            # Get current compressed size
+            compressed_size=$(stat -c%s "$img")
+            echo "Current compressed size: $compressed_size bytes ($(($compressed_size / 1024 / 1024)) MB)"
+            
+            # Check if we have enough space (need ~3x the compressed size for safe processing)
+            available_space=$(df --block-size=1 . | awk 'NR==2 {print $4}')
+            required_space=$((compressed_size * 3))
+            
+            if [ $available_space -lt $required_space ]; then
+              echo "WARNING: Insufficient disk space for PiShrink processing"
+              echo "Available: $(($available_space / 1024 / 1024)) MB, Required: $(($required_space / 1024 / 1024)) MB"
+              echo "Skipping PiShrink - using original pi-gen compressed image"
+              continue
+            fi
+            
             # Decompress for PiShrink processing
+            echo "Decompressing $img..."
             xz -d "$img"
             img_uncompressed="${img%.xz}"
             
             # Run PiShrink with xz compression (-Z option)
+            echo "Running PiShrink on $img_uncompressed..."
             sudo ./pishrink.sh -Z "$img_uncompressed"
             
             # Check final size - PiShrink with -Z creates .img.xz directly
@@ -725,11 +795,13 @@ jobs:
               mv "${img_uncompressed}.xz" "$img"
               size=$(stat -c%s "$img")
               echo "PiShrink with xz compression: $size bytes ($(($size / 1024 / 1024)) MB)"
+              echo "Space saved: $(($compressed_size - $size)) bytes"
             else
-              # Fallback to regular compression if PiShrink didn't compress
+              # Fallback: PiShrink didn't create compressed output, compress with level 9
+              echo "PiShrink didn't create compressed output, compressing with xz level 9..."
               xz -9 "$img_uncompressed"
               size=$(stat -c%s "$img")
-              echo "PiShrink + manual xz: $size bytes ($(($size / 1024 / 1024)) MB)"
+              echo "Manual xz level 9 compression: $size bytes ($(($size / 1024 / 1024)) MB)"
             fi
           fi
         done
@@ -823,7 +895,7 @@ jobs:
         # Ensure script has correct line endings and is executable
         dos2unix prebuild-frontend.sh 2>/dev/null || true
         chmod +x prebuild-frontend.sh
-        bash ./prebuild-frontend.sh --hostname cupcake-pi5.local --output-dir ./frontend-dist
+        bash ./prebuild-frontend.sh --hostname cupcake-pi.local --output-dir ./frontend-dist
         
     - name: Build Pi 5 Lite image using native pi-gen
       run: |
@@ -847,10 +919,11 @@ jobs:
         IMG_NAME=cupcake-pi5-lite-${{ env.IMAGE_VERSION }}
         RELEASE=bookworm
         DEPLOY_COMPRESSION=xz
+        COMPRESSION_LEVEL=9
         LOCALE_DEFAULT=en_US.UTF-8
-        TARGET_HOSTNAME=cupcake-pi5
-        KEYBOARD_KEYMAP=us
-        KEYBOARD_LAYOUT="English (US)"
+        TARGET_HOSTNAME=cupcake-pi
+        KEYBOARD_KEYMAP=gb
+        KEYBOARD_LAYOUT="English (UK)"
         TIMEZONE_DEFAULT=UTC
         
         # User configuration
@@ -943,15 +1016,36 @@ jobs:
         wget https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh
         chmod +x pishrink.sh
         
+        # Check available disk space before processing
+        echo "Available disk space before PiShrink:"
+        df -h .
+        
         for img in *.img.xz; do
           if [ -f "$img" ]; then
             echo "Processing $img with PiShrink..."
             
+            # Get current compressed size
+            compressed_size=$(stat -c%s "$img")
+            echo "Current compressed size: $compressed_size bytes ($(($compressed_size / 1024 / 1024)) MB)"
+            
+            # Check if we have enough space (need ~3x the compressed size for safe processing)
+            available_space=$(df --block-size=1 . | awk 'NR==2 {print $4}')
+            required_space=$((compressed_size * 3))
+            
+            if [ $available_space -lt $required_space ]; then
+              echo "WARNING: Insufficient disk space for PiShrink processing"
+              echo "Available: $(($available_space / 1024 / 1024)) MB, Required: $(($required_space / 1024 / 1024)) MB"
+              echo "Skipping PiShrink - using original pi-gen compressed image"
+              continue
+            fi
+            
             # Decompress for PiShrink processing
+            echo "Decompressing $img..."
             xz -d "$img"
             img_uncompressed="${img%.xz}"
             
             # Run PiShrink with xz compression (-Z option)
+            echo "Running PiShrink on $img_uncompressed..."
             sudo ./pishrink.sh -Z "$img_uncompressed"
             
             # Check final size - PiShrink with -Z creates .img.xz directly
@@ -959,11 +1053,13 @@ jobs:
               mv "${img_uncompressed}.xz" "$img"
               size=$(stat -c%s "$img")
               echo "PiShrink with xz compression: $size bytes ($(($size / 1024 / 1024)) MB)"
+              echo "Space saved: $(($compressed_size - $size)) bytes"
             else
-              # Fallback to regular compression if PiShrink didn't compress
+              # Fallback: PiShrink didn't create compressed output, compress with level 9
+              echo "PiShrink didn't create compressed output, compressing with xz level 9..."
               xz -9 "$img_uncompressed"
               size=$(stat -c%s "$img")
-              echo "PiShrink + manual xz: $size bytes ($(($size / 1024 / 1024)) MB)"
+              echo "Manual xz level 9 compression: $size bytes ($(($size / 1024 / 1024)) MB)"
             fi
           fi
         done

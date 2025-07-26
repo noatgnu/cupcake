@@ -50,222 +50,15 @@ on:
     types: [published]
 
 jobs:
-  # TEMPORARILY DISABLED - Desktop builds disabled to focus on lite builds
+  # TEMPORARILY DISABLED - Desktop builds disabled to focus on lite builds  
   # build-pi4-desktop:
   #   if: ${{ github.event_name == 'schedule' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && (inputs.pi_model == 'pi4' || inputs.pi_model == 'both') && (inputs.build_type == 'desktop' || inputs.build_type == 'both')) }}
   #   runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    
-    env:
-      # Set defaults for scheduled/release builds
-      PI_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.pi_model || 'both' }}
-      IMAGE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.image_version || (github.event_name == 'release' && github.ref_name || 'latest') }}
-      ENABLE_SSH: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_ssh || 'true' }}
-      WIFI_SSID: ${{ github.event_name == 'workflow_dispatch' && inputs.wifi_ssid || '' }}
-      WIFI_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && inputs.wifi_password || '' }}
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Free up disk space
-      run: |
-        # Remove large unused packages
-        sudo rm -rf /usr/share/dotnet
-        sudo rm -rf /usr/local/lib/android
-        sudo rm -rf /opt/ghc
-        sudo rm -rf /opt/hostedtoolcache/CodeQL
-        sudo rm -rf /usr/local/share/boost
-        sudo rm -rf /usr/local/lib/python*
-        sudo rm -rf /opt/az
-        
-        # Clean docker and system caches
-        sudo docker image prune --all --force
-        sudo apt-get clean
-        sudo apt-get autoremove -y
-        
-        # Show available space
-        df -h
-
-    - name: Setup native pi-gen build environment
-      run: |
-        # Install required packages for native pi-gen build
-        sudo apt-get update
-        sudo apt-get install -y \
-          binfmt-support qemu-user-static dos2unix \
-          coreutils quilt parted qemu-user-static debootstrap zerofree zip \
-          dosfstools libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc \
-          gpg pigz xxd arch-test debian-archive-keyring \
-          wget parted gzip pigz xz-utils udev e2fsprogs
-        
-        # Setup binfmt for ARM emulation (required for native pi-gen)
-        sudo modprobe binfmt_misc
-        
-        # Enable binfmt-support service
-        sudo systemctl enable binfmt-support
-        sudo systemctl start binfmt-support
-        
-        # Use update-binfmts to properly register ARM emulation
-        sudo update-binfmts --enable qemu-arm || true
-        sudo update-binfmts --enable qemu-aarch64 || true
-        
-        # Manual fallback registration if update-binfmts fails
-        echo ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-arm-static:F' | sudo tee /proc/sys/fs/binfmt_misc/register || true
-        echo ':aarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-aarch64-static:F' | sudo tee /proc/sys/fs/binfmt_misc/register || true
-        
-        # Verify emulation is working
-        echo "Checking ARM emulation:"
-        ls -la /proc/sys/fs/binfmt_misc/
-        
-        # Test emulation functionality
-        sudo dpkg --add-architecture armhf
-        sudo dpkg --add-architecture arm64
-
-    - name: Pre-build Frontend (x86 fast build)
-      run: |
-        cd raspberry-pi
-        # Ensure script has correct line endings and is executable
-        dos2unix prebuild-frontend.sh 2>/dev/null || true
-        chmod +x prebuild-frontend.sh
-        bash ./prebuild-frontend.sh --hostname cupcake-pi.local --output-dir ./frontend-dist
-        
-    - name: Build Pi 4 image using native pi-gen
-      run: |
-        # Enable strict error handling - ANY error must fail the build
-        set -euo pipefail
-        
-        # Clone official pi-gen repository
-        git clone https://github.com/RPi-Distro/pi-gen.git
-        cd pi-gen
-        
-        # Copy our custom stage as stage5 (after desktop installation)
-        sudo cp -r ../stage2z-cupcake ./stage5
-        
-        # Remove any EXPORT_IMAGE files from intermediate stages to prevent multiple image creation
-        sudo rm -f ./stage2/EXPORT_IMAGE || true
-        sudo rm -f ./stage3/EXPORT_IMAGE || true
-        sudo rm -f ./stage4/EXPORT_IMAGE || true
-        
-        # Create pi-gen config file
-        cat > config <<EOF
-        IMG_NAME=cupcake-pi4-desktop-${{ env.IMAGE_VERSION }}
-        RELEASE=bookworm
-        DEPLOY_COMPRESSION=xz
-        COMPRESSION_LEVEL=9
-        LOCALE_DEFAULT=en_US.UTF-8
-        TARGET_HOSTNAME=cupcake-pi
-        KEYBOARD_KEYMAP=gb
-        KEYBOARD_LAYOUT="English (UK)"
-        TIMEZONE_DEFAULT=UTC
-        
-        # User configuration
-        FIRST_USER_NAME=cupcake
-        FIRST_USER_PASS=cupcake123
-        ENABLE_SSH=${{ env.ENABLE_SSH == 'true' && '1' || '0' }}
-        
-        # Build configuration
-        WORK_DIR=\$(pwd)/work
-        DEPLOY_DIR=\$(pwd)/deploy
-        
-        # Image size configuration (large size for full desktop + CUPCAKE)
-        IMG_SIZE=16G
-        BOOT_SIZE=512M
-        
-        # Stage configuration - run all stages including desktop with CUPCAKE
-        # This creates a full Raspberry Pi OS Desktop with CUPCAKE pre-installed
-        
-        # Debootstrap configuration for better cross-architecture support
-        BOOTSTRAP_KEYRING=debian-archive-keyring
-        TARGET_ARCH=arm64
-        
-        # Export configuration - only export final image from stage5
-        EXPORT_ROOTFS_DIR=stage5
-        EOF
-        
-        # WiFi configuration (if provided)
-        if [ -n "${{ env.WIFI_SSID }}" ]; then
-          cat >> config <<EOF
-        
-        # WiFi configuration
-        WPA_ESSID="${{ env.WIFI_SSID }}"
-        WPA_PASSWORD="${{ env.WIFI_PASSWORD }}"
-        WPA_COUNTRY=US
-        EOF
-        fi
-        
-        # Debug: Check what build scripts are available
-        echo "Available build scripts:"
-        ls -la build*.sh || true
-        
-        # Verify ARM emulation is working before build
-        echo "Testing ARM emulation:"
-        /usr/bin/qemu-arm-static --version || echo "ARM emulation not working"
-        /usr/bin/qemu-aarch64-static --version || echo "AArch64 emulation not working"
-        
-        # Set up debootstrap to use QEMU emulation
-        export DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static
-        echo "DEBOOTSTRAP_QEMU_USER_STATIC set to: $DEBOOTSTRAP_QEMU_USER_STATIC"
-        
-        # Create any missing symlinks for debootstrap
-        sudo mkdir -p /usr/lib/arch-test
-        sudo ln -sf /usr/bin/qemu-aarch64-static /usr/lib/arch-test/ || true
-        
-        # Run native pi-gen build with monitoring
-        echo "Starting native pi-gen build..."
-        echo "Available disk space before build:"
-        df -h
-        
-        # Run native pi-gen build (force native, not Docker) with timeout
-        timeout 14400 sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh || {
-          echo "=== BUILD FAILED OR TIMED OUT ==="
-          echo "Showing pi-gen logs..."
-          find work/ -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; || true
-          echo "=== Checking for CUPCAKE-specific errors ==="
-          find work/ -name "*.log" -exec grep -l "CUPCAKE\|cupcake\|stage3" {} \; | head -5 | xargs cat || true
-          echo "=== Checking stage3 directory ==="
-          find work/ -name "stage3" -type d | head -1 | xargs ls -la || true
-          exit 1
-        }
-        
-        # Check build results
-        echo "Build completed, checking results:"
-        echo "Checking if deploy directory exists:"
-        if [ -d "deploy" ]; then
-          ls -la deploy/
-        else
-          echo "ERROR: Deploy directory not found!"
-          echo "Checking work directory structure:"
-          find work/ -name "*.img*" -o -name "EXPORT*" 2>/dev/null || true
-          echo "Checking all stage directories:"
-          ls -la stage*/EXPORT* 2>/dev/null || true
-          exit 1
-        fi
-        echo "Final disk space usage:"
-        df -h
-        
-        # Skip PiShrink due to GitHub Actions disk space constraints
-        echo "Using pi-gen compression level 9 (skipping PiShrink due to disk space limits)"
-        cd deploy
-        
-        echo "Final build files:"
-        ls -lah
-        
-        # Show final image sizes
-        for img in *.img.xz; do
-          if [ -f "$img" ]; then
-            size=$(stat -c%s "$img")
-            echo "Final image: $img - $size bytes ($(($size / 1024 / 1024)) MB)"
-          fi
-        done
-
-    - name: Upload Pi 4 artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: cupcake-pi4-desktop-${{ env.IMAGE_VERSION }}
-        path: pi-gen/deploy/*.img.xz
-        retention-days: 30
+  #   permissions:
+  #     contents: read
+  #     packages: write
+  #   ...
+  # [Desktop build steps commented out - see git history to restore]
 
   build-pi4-lite:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && (inputs.pi_model == 'pi4' || inputs.pi_model == 'both') && (inputs.build_type == 'lite' || inputs.build_type == 'both')) }}
@@ -498,221 +291,12 @@ jobs:
         path: pi-gen/deploy/*.img.xz
         retention-days: 30
 
-  build-pi5-desktop:
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && (inputs.pi_model == 'pi5' || inputs.pi_model == 'both') && (inputs.build_type == 'desktop' || inputs.build_type == 'both')) }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    
-    env:
-      # Set defaults for scheduled/release builds
-      PI_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.pi_model || 'both' }}
-      IMAGE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.image_version || (github.event_name == 'release' && github.ref_name || 'latest') }}
-      ENABLE_SSH: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_ssh || 'true' }}
-      WIFI_SSID: ${{ github.event_name == 'workflow_dispatch' && inputs.wifi_ssid || '' }}
-      WIFI_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && inputs.wifi_password || '' }}
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-
-    - name: Free up disk space
-      run: |
-        # Remove large unused packages
-        sudo rm -rf /usr/share/dotnet
-        sudo rm -rf /usr/local/lib/android
-        sudo rm -rf /opt/ghc
-        sudo rm -rf /opt/hostedtoolcache/CodeQL
-        sudo rm -rf /usr/local/share/boost
-        sudo rm -rf /usr/local/lib/python*
-        sudo rm -rf /opt/az
-        
-        # Clean docker and system caches
-        sudo docker image prune --all --force
-        sudo apt-get clean
-        sudo apt-get autoremove -y
-        
-        # Show available space
-        df -h
-
-    - name: Setup native pi-gen build environment
-      run: |
-        # Install required packages for native pi-gen build
-        sudo apt-get update
-        sudo apt-get install -y \
-          binfmt-support qemu-user-static dos2unix \
-          coreutils quilt parted qemu-user-static debootstrap zerofree zip \
-          dosfstools libarchive-tools libcap2-bin grep rsync xz-utils file git curl bc \
-          gpg pigz xxd arch-test debian-archive-keyring \
-          wget parted gzip pigz xz-utils udev e2fsprogs
-        
-        # Setup binfmt for ARM emulation (required for native pi-gen)
-        sudo modprobe binfmt_misc
-        
-        # Enable binfmt-support service
-        sudo systemctl enable binfmt-support
-        sudo systemctl start binfmt-support
-        
-        # Use update-binfmts to properly register ARM emulation
-        sudo update-binfmts --enable qemu-arm || true
-        sudo update-binfmts --enable qemu-aarch64 || true
-        
-        # Manual fallback registration if update-binfmts fails
-        echo ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-arm-static:F' | sudo tee /proc/sys/fs/binfmt_misc/register || true
-        echo ':aarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-aarch64-static:F' | sudo tee /proc/sys/fs/binfmt_misc/register || true
-        
-        # Verify emulation is working
-        echo "Checking ARM emulation:"
-        ls -la /proc/sys/fs/binfmt_misc/
-        
-        # Test emulation functionality
-        sudo dpkg --add-architecture armhf
-        sudo dpkg --add-architecture arm64
-
-    - name: Pre-build Frontend (x86 fast build)
-      run: |
-        cd raspberry-pi
-        # Ensure script has correct line endings and is executable
-        dos2unix prebuild-frontend.sh 2>/dev/null || true
-        chmod +x prebuild-frontend.sh
-        bash ./prebuild-frontend.sh --hostname cupcake-pi.local --output-dir ./frontend-dist
-        
-    - name: Build Pi 5 image using native pi-gen
-      run: |
-        # Enable strict error handling - ANY error must fail the build
-        set -euo pipefail
-        
-        # Clone official pi-gen repository
-        git clone https://github.com/RPi-Distro/pi-gen.git
-        cd pi-gen
-        
-        # Copy our custom stage as stage5 (after desktop installation)
-        sudo cp -r ../stage2z-cupcake ./stage5
-        
-        # Remove any EXPORT_IMAGE files from intermediate stages to prevent multiple image creation
-        sudo rm -f ./stage2/EXPORT_IMAGE || true
-        sudo rm -f ./stage3/EXPORT_IMAGE || true
-        sudo rm -f ./stage4/EXPORT_IMAGE || true
-        
-        # Create pi-gen config file
-        cat > config <<EOF
-        IMG_NAME=cupcake-pi5-desktop-${{ env.IMAGE_VERSION }}
-        RELEASE=bookworm
-        DEPLOY_COMPRESSION=xz
-        COMPRESSION_LEVEL=9
-        LOCALE_DEFAULT=en_US.UTF-8
-        TARGET_HOSTNAME=cupcake-pi
-        KEYBOARD_KEYMAP=gb
-        KEYBOARD_LAYOUT="English (UK)"
-        TIMEZONE_DEFAULT=UTC
-        
-        # User configuration
-        FIRST_USER_NAME=cupcake
-        FIRST_USER_PASS=cupcake123
-        ENABLE_SSH=${{ env.ENABLE_SSH == 'true' && '1' || '0' }}
-        
-        # Build configuration
-        WORK_DIR=\$(pwd)/work
-        DEPLOY_DIR=\$(pwd)/deploy
-        
-        # Image size configuration (large size for full desktop + CUPCAKE)
-        IMG_SIZE=16G
-        BOOT_SIZE=512M
-        
-        # Stage configuration - run all stages including desktop with CUPCAKE
-        # This creates a full Raspberry Pi OS Desktop with CUPCAKE pre-installed
-        
-        # Debootstrap configuration for better cross-architecture support
-        BOOTSTRAP_KEYRING=debian-archive-keyring
-        TARGET_ARCH=arm64
-        
-        # Export configuration - only export final image from stage5
-        EXPORT_ROOTFS_DIR=stage5
-        EOF
-        
-        # WiFi configuration (if provided)
-        if [ -n "${{ env.WIFI_SSID }}" ]; then
-          cat >> config <<EOF
-        
-        # WiFi configuration
-        WPA_ESSID="${{ env.WIFI_SSID }}"
-        WPA_PASSWORD="${{ env.WIFI_PASSWORD }}"
-        WPA_COUNTRY=US
-        EOF
-        fi
-        
-        # Debug: Check what build scripts are available
-        echo "Available build scripts:"
-        ls -la build*.sh || true
-        
-        # Verify ARM emulation is working before build
-        echo "Testing ARM emulation:"
-        /usr/bin/qemu-arm-static --version || echo "ARM emulation not working"
-        /usr/bin/qemu-aarch64-static --version || echo "AArch64 emulation not working"
-        
-        # Set up debootstrap to use QEMU emulation
-        export DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static
-        echo "DEBOOTSTRAP_QEMU_USER_STATIC set to: $DEBOOTSTRAP_QEMU_USER_STATIC"
-        
-        # Create any missing symlinks for debootstrap
-        sudo mkdir -p /usr/lib/arch-test
-        sudo ln -sf /usr/bin/qemu-aarch64-static /usr/lib/arch-test/ || true
-        
-        # Run native pi-gen build with monitoring
-        echo "Starting native pi-gen build..."
-        echo "Available disk space before build:"
-        df -h
-        
-        # Run native pi-gen build (force native, not Docker) with timeout
-        timeout 14400 sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh || {
-          echo "=== BUILD FAILED OR TIMED OUT ==="
-          echo "Showing pi-gen logs..."
-          find work/ -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; || true
-          echo "=== Checking for CUPCAKE-specific errors ==="
-          find work/ -name "*.log" -exec grep -l "CUPCAKE\|cupcake\|stage3" {} \; | head -5 | xargs cat || true
-          echo "=== Checking stage3 directory ==="
-          find work/ -name "stage3" -type d | head -1 | xargs ls -la || true
-          exit 1
-        }
-        
-        # Check build results
-        echo "Build completed, checking results:"
-        echo "Checking if deploy directory exists:"
-        if [ -d "deploy" ]; then
-          ls -la deploy/
-        else
-          echo "ERROR: Deploy directory not found!"
-          echo "Checking work directory structure:"
-          find work/ -name "*.img*" -o -name "EXPORT*" 2>/dev/null || true
-          echo "Checking all stage directories:"
-          ls -la stage*/EXPORT* 2>/dev/null || true
-          exit 1
-        fi
-        echo "Final disk space usage:"
-        df -h
-        
-        # Skip PiShrink due to GitHub Actions disk space constraints
-        echo "Using pi-gen compression level 9 (skipping PiShrink due to disk space limits)"
-        cd deploy
-        
-        echo "Final build files:"
-        ls -lah
-        
-        # Show final image sizes
-        for img in *.img.xz; do
-          if [ -f "$img" ]; then
-            size=$(stat -c%s "$img")
-            echo "Final image: $img - $size bytes ($(($size / 1024 / 1024)) MB)"
-          fi
-        done
-
-    - name: Upload Pi 5 artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: cupcake-pi5-desktop-${{ env.IMAGE_VERSION }}
-        path: pi-gen/deploy/*.img.xz
-        retention-days: 30
+  # TEMPORARILY DISABLED - Desktop builds disabled to focus on lite builds
+  # build-pi5-desktop:
+  #   if: ${{ github.event_name == 'schedule' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && (inputs.pi_model == 'pi5' || inputs.pi_model == 'both') && (inputs.build_type == 'desktop' || inputs.build_type == 'both')) }}
+  #   runs-on: ubuntu-latest
+  #   ...
+  # [Desktop build steps commented out - see git history to restore]
 
   build-pi5-lite:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && (inputs.pi_model == 'pi5' || inputs.pi_model == 'both') && (inputs.build_type == 'lite' || inputs.build_type == 'both')) }}
@@ -947,7 +531,7 @@ jobs:
 
   create-release:
     if: ${{ github.event_name == 'release' }}
-    needs: [build-pi4-desktop, build-pi4-lite, build-pi5-desktop, build-pi5-lite]
+    needs: [build-pi4-lite, build-pi5-lite]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -955,18 +539,6 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-
-    - name: Download Pi 4 Desktop artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: cupcake-pi4-desktop-${{ github.ref_name }}
-        path: ./release-artifacts/
-
-    - name: Download Pi 5 Desktop artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: cupcake-pi5-desktop-${{ github.ref_name }}
-        path: ./release-artifacts/
 
     - name: Download Pi 4 Lite artifacts
       uses: actions/download-artifact@v4
@@ -979,7 +551,6 @@ jobs:
       with:
         name: cupcake-pi5-lite-${{ github.ref_name }}
         path: ./release-artifacts/
-
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v1
@@ -995,7 +566,7 @@ jobs:
 
   cleanup:
     if: always()
-    needs: [build-pi4-desktop, build-pi4-lite, build-pi5-desktop, build-pi5-lite, create-release]
+    needs: [build-pi4-lite, build-pi5-lite, create-release]
     runs-on: ubuntu-latest
     
     steps:

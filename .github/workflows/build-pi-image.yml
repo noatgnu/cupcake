@@ -237,65 +237,20 @@ jobs:
         echo "Final disk space usage:"
         df -h
         
-        # Use PiShrink to reduce image size
-        echo "Using PiShrink to reduce image size..."
+        # Skip PiShrink due to GitHub Actions disk space constraints
+        echo "Using pi-gen compression level 9 (skipping PiShrink due to disk space limits)"
         cd deploy
         
-        # Fix permissions and download PiShrink
-        sudo chown -R $USER:$USER .
-        wget https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh
-        chmod +x pishrink.sh
+        echo "Final build files:"
+        ls -lah
         
-        # Check available disk space before processing
-        echo "Available disk space before PiShrink:"
-        df -h .
-        
+        # Show final image sizes
         for img in *.img.xz; do
           if [ -f "$img" ]; then
-            echo "Processing $img with PiShrink..."
-            
-            # Get current compressed size
-            compressed_size=$(stat -c%s "$img")
-            echo "Current compressed size: $compressed_size bytes ($(($compressed_size / 1024 / 1024)) MB)"
-            
-            # Check if we have enough space (need ~3x the compressed size for safe processing)
-            available_space=$(df --block-size=1 . | awk 'NR==2 {print $4}')
-            required_space=$((compressed_size * 3))
-            
-            if [ $available_space -lt $required_space ]; then
-              echo "WARNING: Insufficient disk space for PiShrink processing"
-              echo "Available: $(($available_space / 1024 / 1024)) MB, Required: $(($required_space / 1024 / 1024)) MB"
-              echo "Skipping PiShrink - using original pi-gen compressed image"
-              continue
-            fi
-            
-            # Decompress for PiShrink processing
-            echo "Decompressing $img..."
-            xz -d "$img"
-            img_uncompressed="${img%.xz}"
-            
-            # Run PiShrink with xz compression (-Z option)
-            echo "Running PiShrink on $img_uncompressed..."
-            sudo ./pishrink.sh -Z "$img_uncompressed"
-            
-            # Check final size - PiShrink with -Z creates .img.xz directly
-            if [ -f "${img_uncompressed}.xz" ]; then
-              mv "${img_uncompressed}.xz" "$img"
-              size=$(stat -c%s "$img")
-              echo "PiShrink with xz compression: $size bytes ($(($size / 1024 / 1024)) MB)"
-              echo "Space saved: $(($compressed_size - $size)) bytes"
-            else
-              # Fallback: PiShrink didn't create compressed output, compress with level 9
-              echo "PiShrink didn't create compressed output, compressing with xz level 9..."
-              xz -9 "$img_uncompressed"
-              size=$(stat -c%s "$img")
-              echo "Manual xz level 9 compression: $size bytes ($(($size / 1024 / 1024)) MB)"
-            fi
+            size=$(stat -c%s "$img")
+            echo "Final image: $img - $size bytes ($(($size / 1024 / 1024)) MB)"
           fi
         done
-        
-        echo "Final processed files:"
-        ls -lah
 
     - name: Upload Pi 4 artifacts
       uses: actions/upload-artifact@v4
@@ -495,65 +450,20 @@ jobs:
         echo "Final disk space usage:"
         df -h
         
-        # Use PiShrink to reduce image size
-        echo "Using PiShrink to reduce image size..."
+        # Lite builds: Skip PiShrink, use pi-gen compression level 9 (should be sufficient)
+        echo "Lite build: Using pi-gen compression level 9 (skipping PiShrink)"
         cd deploy
         
-        # Fix permissions and download PiShrink
-        sudo chown -R $USER:$USER .
-        wget https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh
-        chmod +x pishrink.sh
+        echo "Final lite build files:"
+        ls -lah
         
-        # Check available disk space before processing
-        echo "Available disk space before PiShrink:"
-        df -h .
-        
+        # Show final image sizes
         for img in *.img.xz; do
           if [ -f "$img" ]; then
-            echo "Processing $img with PiShrink..."
-            
-            # Get current compressed size
-            compressed_size=$(stat -c%s "$img")
-            echo "Current compressed size: $compressed_size bytes ($(($compressed_size / 1024 / 1024)) MB)"
-            
-            # Check if we have enough space (need ~3x the compressed size for safe processing)
-            available_space=$(df --block-size=1 . | awk 'NR==2 {print $4}')
-            required_space=$((compressed_size * 3))
-            
-            if [ $available_space -lt $required_space ]; then
-              echo "WARNING: Insufficient disk space for PiShrink processing"
-              echo "Available: $(($available_space / 1024 / 1024)) MB, Required: $(($required_space / 1024 / 1024)) MB"
-              echo "Skipping PiShrink - using original pi-gen compressed image"
-              continue
-            fi
-            
-            # Decompress for PiShrink processing
-            echo "Decompressing $img..."
-            xz -d "$img"
-            img_uncompressed="${img%.xz}"
-            
-            # Run PiShrink with xz compression (-Z option)
-            echo "Running PiShrink on $img_uncompressed..."
-            sudo ./pishrink.sh -Z "$img_uncompressed"
-            
-            # Check final size - PiShrink with -Z creates .img.xz directly
-            if [ -f "${img_uncompressed}.xz" ]; then
-              mv "${img_uncompressed}.xz" "$img"
-              size=$(stat -c%s "$img")
-              echo "PiShrink with xz compression: $size bytes ($(($size / 1024 / 1024)) MB)"
-              echo "Space saved: $(($compressed_size - $size)) bytes"
-            else
-              # Fallback: PiShrink didn't create compressed output, compress with level 9
-              echo "PiShrink didn't create compressed output, compressing with xz level 9..."
-              xz -9 "$img_uncompressed"
-              size=$(stat -c%s "$img")
-              echo "Manual xz level 9 compression: $size bytes ($(($size / 1024 / 1024)) MB)"
-            fi
+            size=$(stat -c%s "$img")
+            echo "Final lite image: $img - $size bytes ($(($size / 1024 / 1024)) MB)"
           fi
         done
-        
-        echo "Final processed files:"
-        ls -lah
 
     - name: Upload Pi 4 Lite artifacts
       uses: actions/upload-artifact@v4
@@ -749,65 +659,20 @@ jobs:
         echo "Final disk space usage:"
         df -h
         
-        # Use PiShrink to reduce image size
-        echo "Using PiShrink to reduce image size..."
+        # Skip PiShrink due to GitHub Actions disk space constraints
+        echo "Using pi-gen compression level 9 (skipping PiShrink due to disk space limits)"
         cd deploy
         
-        # Fix permissions and download PiShrink
-        sudo chown -R $USER:$USER .
-        wget https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh
-        chmod +x pishrink.sh
+        echo "Final build files:"
+        ls -lah
         
-        # Check available disk space before processing
-        echo "Available disk space before PiShrink:"
-        df -h .
-        
+        # Show final image sizes
         for img in *.img.xz; do
           if [ -f "$img" ]; then
-            echo "Processing $img with PiShrink..."
-            
-            # Get current compressed size
-            compressed_size=$(stat -c%s "$img")
-            echo "Current compressed size: $compressed_size bytes ($(($compressed_size / 1024 / 1024)) MB)"
-            
-            # Check if we have enough space (need ~3x the compressed size for safe processing)
-            available_space=$(df --block-size=1 . | awk 'NR==2 {print $4}')
-            required_space=$((compressed_size * 3))
-            
-            if [ $available_space -lt $required_space ]; then
-              echo "WARNING: Insufficient disk space for PiShrink processing"
-              echo "Available: $(($available_space / 1024 / 1024)) MB, Required: $(($required_space / 1024 / 1024)) MB"
-              echo "Skipping PiShrink - using original pi-gen compressed image"
-              continue
-            fi
-            
-            # Decompress for PiShrink processing
-            echo "Decompressing $img..."
-            xz -d "$img"
-            img_uncompressed="${img%.xz}"
-            
-            # Run PiShrink with xz compression (-Z option)
-            echo "Running PiShrink on $img_uncompressed..."
-            sudo ./pishrink.sh -Z "$img_uncompressed"
-            
-            # Check final size - PiShrink with -Z creates .img.xz directly
-            if [ -f "${img_uncompressed}.xz" ]; then
-              mv "${img_uncompressed}.xz" "$img"
-              size=$(stat -c%s "$img")
-              echo "PiShrink with xz compression: $size bytes ($(($size / 1024 / 1024)) MB)"
-              echo "Space saved: $(($compressed_size - $size)) bytes"
-            else
-              # Fallback: PiShrink didn't create compressed output, compress with level 9
-              echo "PiShrink didn't create compressed output, compressing with xz level 9..."
-              xz -9 "$img_uncompressed"
-              size=$(stat -c%s "$img")
-              echo "Manual xz level 9 compression: $size bytes ($(($size / 1024 / 1024)) MB)"
-            fi
+            size=$(stat -c%s "$img")
+            echo "Final image: $img - $size bytes ($(($size / 1024 / 1024)) MB)"
           fi
         done
-        
-        echo "Final processed files:"
-        ls -lah
 
     - name: Upload Pi 5 artifacts
       uses: actions/upload-artifact@v4
@@ -1007,65 +872,20 @@ jobs:
         echo "Final disk space usage:"
         df -h
         
-        # Use PiShrink to reduce image size
-        echo "Using PiShrink to reduce image size..."
+        # Lite builds: Skip PiShrink, use pi-gen compression level 9 (should be sufficient)
+        echo "Lite build: Using pi-gen compression level 9 (skipping PiShrink)"
         cd deploy
         
-        # Fix permissions and download PiShrink
-        sudo chown -R $USER:$USER .
-        wget https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh
-        chmod +x pishrink.sh
+        echo "Final lite build files:"
+        ls -lah
         
-        # Check available disk space before processing
-        echo "Available disk space before PiShrink:"
-        df -h .
-        
+        # Show final image sizes
         for img in *.img.xz; do
           if [ -f "$img" ]; then
-            echo "Processing $img with PiShrink..."
-            
-            # Get current compressed size
-            compressed_size=$(stat -c%s "$img")
-            echo "Current compressed size: $compressed_size bytes ($(($compressed_size / 1024 / 1024)) MB)"
-            
-            # Check if we have enough space (need ~3x the compressed size for safe processing)
-            available_space=$(df --block-size=1 . | awk 'NR==2 {print $4}')
-            required_space=$((compressed_size * 3))
-            
-            if [ $available_space -lt $required_space ]; then
-              echo "WARNING: Insufficient disk space for PiShrink processing"
-              echo "Available: $(($available_space / 1024 / 1024)) MB, Required: $(($required_space / 1024 / 1024)) MB"
-              echo "Skipping PiShrink - using original pi-gen compressed image"
-              continue
-            fi
-            
-            # Decompress for PiShrink processing
-            echo "Decompressing $img..."
-            xz -d "$img"
-            img_uncompressed="${img%.xz}"
-            
-            # Run PiShrink with xz compression (-Z option)
-            echo "Running PiShrink on $img_uncompressed..."
-            sudo ./pishrink.sh -Z "$img_uncompressed"
-            
-            # Check final size - PiShrink with -Z creates .img.xz directly
-            if [ -f "${img_uncompressed}.xz" ]; then
-              mv "${img_uncompressed}.xz" "$img"
-              size=$(stat -c%s "$img")
-              echo "PiShrink with xz compression: $size bytes ($(($size / 1024 / 1024)) MB)"
-              echo "Space saved: $(($compressed_size - $size)) bytes"
-            else
-              # Fallback: PiShrink didn't create compressed output, compress with level 9
-              echo "PiShrink didn't create compressed output, compressing with xz level 9..."
-              xz -9 "$img_uncompressed"
-              size=$(stat -c%s "$img")
-              echo "Manual xz level 9 compression: $size bytes ($(($size / 1024 / 1024)) MB)"
-            fi
+            size=$(stat -c%s "$img")
+            echo "Final lite image: $img - $size bytes ($(($size / 1024 / 1024)) MB)"
           fi
         done
-        
-        echo "Final processed files:"
-        ls -lah
 
     - name: Upload Pi 5 Lite artifacts
       uses: actions/upload-artifact@v4

@@ -3,17 +3,40 @@
 # CUPCAKE Pi Installation Script
 # This script runs inside the pi-gen chroot environment
 
+# Strict error handling
+set -euo pipefail
+
+# Function to handle errors
+cupcake_error_handler() {
+    local line_no=$1
+    local error_code=$2
+    log_cupcake "ERROR: CUPCAKE installation FAILED at line $line_no with exit code $error_code"
+    log_cupcake "This is a CRITICAL ERROR - the build MUST stop here"
+    log_cupcake "Pi image build should NOT continue without CUPCAKE"
+    exit $error_code
+}
+
+# Trap errors and call handler
+trap 'cupcake_error_handler $LINENO $?' ERR
+
 # Self-contained logging functions for pi-gen environment
 log_cupcake() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] [CUPCAKE] $1"
 }
 
 log_cupcake "Starting CUPCAKE installation..."
+log_cupcake "CRITICAL: This installation MUST succeed or build MUST fail"
 
 # Update system
 log_cupcake "Updating system packages..."
-apt-get update
-apt-get upgrade -y
+apt-get update || {
+    log_cupcake "FATAL: Failed to update package lists"
+    exit 1
+}
+apt-get upgrade -y || {
+    log_cupcake "FATAL: Failed to upgrade system packages"
+    exit 1
+}
 
 # Add PostgreSQL 14 repository (required for correct version)
 log_cupcake "Adding PostgreSQL 14 repository..."
@@ -66,8 +89,21 @@ cd /opt/cupcake
 # Clone CUPCAKE repository
 if [ ! -d "/opt/cupcake/app" ] || [ ! "$(ls -A /opt/cupcake/app)" ]; then
     log_cupcake "Cloning CUPCAKE repository..."
-    git clone https://github.com/noatgnu/cupcake.git app
+    git clone https://github.com/noatgnu/cupcake.git app || {
+        log_cupcake "FATAL: Failed to clone CUPCAKE repository"
+        log_cupcake "Check network connectivity and GitHub access"
+        exit 1
+    }
+else
+    log_cupcake "CUPCAKE repository already exists"
 fi
+
+# Verify the clone was successful
+if [ ! -f "/opt/cupcake/app/manage.py" ]; then
+    log_cupcake "FATAL: CUPCAKE repository clone incomplete - manage.py not found"
+    exit 1
+fi
+log_cupcake "✓ CUPCAKE repository verified successfully"
 
 cd app
 
@@ -81,7 +117,17 @@ apt-get install -y cmake tesseract-ocr tesseract-ocr-eng
 
 # Create Python virtual environment (matching native script approach)
 log_cupcake "Setting up Python virtual environment..."
-su - cupcake -c "python3 -m venv /opt/cupcake/venv"
+su - cupcake -c "python3 -m venv /opt/cupcake/venv" || {
+    log_cupcake "FATAL: Failed to create Python virtual environment"
+    exit 1
+}
+
+# Verify virtual environment was created
+if [ ! -f "/opt/cupcake/venv/bin/activate" ]; then
+    log_cupcake "FATAL: Python virtual environment creation failed - activate script not found"
+    exit 1
+fi
+log_cupcake "✓ Python virtual environment created successfully"
 
 # Install Python dependencies using pip (matching native script lines 520-562)
 log_cupcake "Installing Python dependencies with pip..."
@@ -182,8 +228,20 @@ chown cupcake:cupcake /opt/cupcake/app/.env
 # Run Django setup using virtual environment (matching native script)
 log_cupcake "Running Django migrations and setup..."
 cd /opt/cupcake/app
-su - cupcake -c "cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py migrate"
-su - cupcake -c "cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py collectstatic --noinput"
+
+# Run migrations with error checking
+su - cupcake -c "cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py migrate" || {
+    log_cupcake "FATAL: Django database migrations failed"
+    exit 1
+}
+log_cupcake "✓ Django migrations completed successfully"
+
+# Collect static files with error checking
+su - cupcake -c "cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py collectstatic --noinput" || {
+    log_cupcake "FATAL: Django static file collection failed"
+    exit 1
+}
+log_cupcake "✓ Django static files collected successfully"
 
 # Create Django superuser
 log_cupcake "Creating Django superuser..."
@@ -274,5 +332,43 @@ rm -rf /opt/cupcake/whisper.cpp/build/CMakeCache.txt
 rm -rf /opt/cupcake/whisper.cpp/build/CMakeFiles
 rm -rf /var/cache/apt/archives/*.deb
 
-log_cupcake "CUPCAKE installation completed successfully!"
-log_cupcake "Services will start automatically on first boot"
+# Final verification that CUPCAKE is properly installed
+log_cupcake "Performing final CUPCAKE installation verification..."
+
+# Check critical files exist
+critical_files=(
+    "/opt/cupcake/app/manage.py"
+    "/opt/cupcake/venv/bin/activate"
+    "/opt/cupcake/app/.env"
+    "/etc/systemd/system/cupcake-web.service"
+    "/etc/systemd/system/cupcake-worker.service"
+)
+
+for file in "${critical_files[@]}"; do
+    if [ ! -f "$file" ]; then
+        log_cupcake "FATAL: Critical file missing: $file"
+        log_cupcake "CUPCAKE installation is INCOMPLETE"
+        exit 1
+    fi
+done
+
+# Test Django installation
+log_cupcake "Testing Django installation..."
+su - cupcake -c "cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py check --deploy" || {
+    log_cupcake "FATAL: Django installation verification failed"
+    exit 1
+}
+
+# Test database connection
+log_cupcake "Testing database connection..."
+su - postgres -c "psql -d cupcake -c 'SELECT 1;'" > /dev/null || {
+    log_cupcake "FATAL: Database connection test failed"
+    exit 1
+}
+
+log_cupcake "🎉 CUPCAKE installation completed successfully!"
+log_cupcake "✓ All critical components verified"
+log_cupcake "✓ Django application functional"
+log_cupcake "✓ Database connection working"
+log_cupcake "✓ Services configured for first boot"
+log_cupcake "CUPCAKE Pi image is ready for deployment"

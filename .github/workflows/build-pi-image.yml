@@ -132,6 +132,9 @@ jobs:
         
     - name: Build Pi 4 image using native pi-gen
       run: |
+        # Enable strict error handling - ANY error must fail the build
+        set -euo pipefail
+        
         # Clone official pi-gen repository
         git clone https://github.com/RPi-Distro/pi-gen.git
         cd pi-gen
@@ -215,9 +218,13 @@ jobs:
         
         # Run native pi-gen build (force native, not Docker) with timeout
         timeout 14400 sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh || {
-          echo "Build timed out or failed"
-          # Show any available logs
+          echo "=== BUILD FAILED OR TIMED OUT ==="
+          echo "Showing pi-gen logs..."
           find work/ -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; || true
+          echo "=== Checking for CUPCAKE-specific errors ==="
+          find work/ -name "*.log" -exec grep -l "CUPCAKE\|cupcake\|stage3" {} \; | head -5 | xargs cat || true
+          echo "=== Checking stage3 directory ==="
+          find work/ -name "stage3" -type d | head -1 | xargs ls -la || true
           exit 1
         }
         
@@ -342,6 +349,9 @@ jobs:
         
     - name: Build Pi 4 Lite image using native pi-gen
       run: |
+        # Enable strict error handling - ANY error must fail the build
+        set -euo pipefail
+        
         # Clone official pi-gen repository
         git clone https://github.com/RPi-Distro/pi-gen.git
         cd pi-gen
@@ -349,8 +359,19 @@ jobs:
         # Copy our custom stage as stage3 (after stage2 lite)
         sudo cp -r ../stage2z-cupcake ./stage3
         
+        # Verify the CUPCAKE stage was copied correctly
+        echo "=== DEBUGGING: Checking CUPCAKE stage contents ==="
+        ls -la ./stage3/
+        ls -la ./stage3/00-install-cupcake/
+        echo "=== CUPCAKE install script preview ==="
+        head -20 ./stage3/00-install-cupcake/01-run.sh
+        
         # Ensure the EXPORT_IMAGE file is properly set for lite builds
         echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage3/EXPORT_IMAGE
+        
+        # Verify EXPORT_IMAGE was created
+        echo "=== DEBUGGING: Checking EXPORT_IMAGE ==="
+        cat ./stage3/EXPORT_IMAGE
         
         # Remove any EXPORT_IMAGE files from intermediate stages to prevent multiple image creation
         sudo rm -f ./stage2/EXPORT_IMAGE || true
@@ -428,9 +449,13 @@ jobs:
         
         # Run native pi-gen build (force native, not Docker) with timeout
         timeout 14400 sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh || {
-          echo "Build timed out or failed"
-          # Show any available logs
+          echo "=== BUILD FAILED OR TIMED OUT ==="
+          echo "Showing pi-gen logs..."
           find work/ -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; || true
+          echo "=== Checking for CUPCAKE-specific errors ==="
+          find work/ -name "*.log" -exec grep -l "CUPCAKE\|cupcake\|stage3" {} \; | head -5 | xargs cat || true
+          echo "=== Checking stage3 directory ==="
+          find work/ -name "stage3" -type d | head -1 | xargs ls -la || true
           exit 1
         }
         
@@ -554,6 +579,9 @@ jobs:
         
     - name: Build Pi 5 image using native pi-gen
       run: |
+        # Enable strict error handling - ANY error must fail the build
+        set -euo pipefail
+        
         # Clone official pi-gen repository
         git clone https://github.com/RPi-Distro/pi-gen.git
         cd pi-gen
@@ -637,9 +665,13 @@ jobs:
         
         # Run native pi-gen build (force native, not Docker) with timeout
         timeout 14400 sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh || {
-          echo "Build timed out or failed"
-          # Show any available logs
+          echo "=== BUILD FAILED OR TIMED OUT ==="
+          echo "Showing pi-gen logs..."
           find work/ -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; || true
+          echo "=== Checking for CUPCAKE-specific errors ==="
+          find work/ -name "*.log" -exec grep -l "CUPCAKE\|cupcake\|stage3" {} \; | head -5 | xargs cat || true
+          echo "=== Checking stage3 directory ==="
+          find work/ -name "stage3" -type d | head -1 | xargs ls -la || true
           exit 1
         }
         
@@ -764,6 +796,9 @@ jobs:
         
     - name: Build Pi 5 Lite image using native pi-gen
       run: |
+        # Enable strict error handling - ANY error must fail the build
+        set -euo pipefail
+        
         # Clone official pi-gen repository
         git clone https://github.com/RPi-Distro/pi-gen.git
         cd pi-gen
@@ -771,8 +806,19 @@ jobs:
         # Copy our custom stage as stage3 (after stage2 lite)
         sudo cp -r ../stage2z-cupcake ./stage3
         
+        # Verify the CUPCAKE stage was copied correctly
+        echo "=== DEBUGGING: Checking CUPCAKE stage contents ==="
+        ls -la ./stage3/
+        ls -la ./stage3/00-install-cupcake/
+        echo "=== CUPCAKE install script preview ==="
+        head -20 ./stage3/00-install-cupcake/01-run.sh
+        
         # Ensure the EXPORT_IMAGE file is properly set for lite builds
         echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage3/EXPORT_IMAGE
+        
+        # Verify EXPORT_IMAGE was created
+        echo "=== DEBUGGING: Checking EXPORT_IMAGE ==="
+        cat ./stage3/EXPORT_IMAGE
         
         # Remove any EXPORT_IMAGE files from intermediate stages to prevent multiple image creation
         sudo rm -f ./stage2/EXPORT_IMAGE || true
@@ -850,9 +896,13 @@ jobs:
         
         # Run native pi-gen build (force native, not Docker) with timeout
         timeout 14400 sudo -E USE_DOCKER=0 DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static ./build.sh || {
-          echo "Build timed out or failed"
-          # Show any available logs
+          echo "=== BUILD FAILED OR TIMED OUT ==="
+          echo "Showing pi-gen logs..."
           find work/ -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; || true
+          echo "=== Checking for CUPCAKE-specific errors ==="
+          find work/ -name "*.log" -exec grep -l "CUPCAKE\|cupcake\|stage3" {} \; | head -5 | xargs cat || true
+          echo "=== Checking stage3 directory ==="
+          find work/ -name "stage3" -type d | head -1 | xargs ls -la || true
           exit 1
         }
         
@@ -929,117 +979,12 @@ jobs:
         name: cupcake-pi5-lite-${{ github.ref_name }}
         path: ./release-artifacts/
 
-    - name: Create release notes
-      run: |
-        cat > release-notes.md << 'EOF'
-        # CUPCAKE Raspberry Pi Images - ${{ github.ref_name }}
-        
-        Full Raspberry Pi OS Desktop images with CUPCAKE Laboratory Information Management System pre-installed using traditional pi-gen build process.
-        
-        ## 🎯 Features
-        
-        - **Full Desktop Environment** - Complete Raspberry Pi OS Desktop with GUI
-        - **Native CUPCAKE LIMS** - Direct Python deployment (no Docker)
-        - **PostgreSQL & Redis** - Native database and caching services
-        - **Nginx** - High-performance web server
-        - **Desktop Integration** - CUPCAKE accessible via desktop browser
-        - **Security hardened** - SSH configured, fail2ban ready
-        - **NVMe optimized** - High-performance storage support
-        - **Auto-setup service** - Completes installation on first boot
-        - **Performance tuned** - Optimized for each Pi model
-        
-        ## 📋 What's Included
-        
-        ### Pi 4 Edition
-        - ARM64 Raspberry Pi OS Desktop (Full GUI)
-        - 2.0GHz overclock with cooling optimization  
-        - 128MB GPU memory allocation for desktop
-        - NVMe support with PCIe optimizations
-        - Python 3, PostgreSQL 14, Redis, Nginx
-        - Desktop browser with CUPCAKE pre-configured
-        - Traditional system service deployment
-        - Built using official pi-gen Docker process
-        
-        ### Pi 5 Edition  
-        - ARM64 Raspberry Pi OS Desktop (Full GUI)
-        - 2.4GHz overclock with advanced cooling
-        - 256MB GPU memory allocation for desktop
-        - PCIe Gen 3 NVMe support
-        - Python 3, PostgreSQL, Redis, Nginx
-        - Desktop browser with CUPCAKE pre-configured
-        - Traditional system service deployment
-        
-        ## 🚀 Quick Start
-        
-        1. **Flash image** to SD card or NVMe drive using Raspberry Pi Imager
-        2. **Boot your Pi** - First boot will take 5-10 minutes for setup
-        3. **SSH in**: `ssh cupcake@cupcake-pi4.local` (or cupcake-pi5.local)
-        4. **Check status**: `sudo systemctl status cupcake-setup`
-        5. **Access CUPCAKE**: http://your-pi-ip (port configured during setup)
-        
-        ## 🔐 Default Credentials
-        
-        - **Username**: `cupcake`
-        - **Password**: `cupcake123` (change immediately after first login)
-        - **SSH**: Enabled by default
-        
-        ## 📊 System Requirements
-        
-        ### Minimum (Pi 4 Desktop)
-        - Raspberry Pi 4B 8GB RAM (required for desktop + CUPCAKE)
-        - 256GB+ storage (NVMe SSD strongly recommended)
-        - Reliable power supply (official adapter recommended)
-        - Monitor, keyboard, mouse for desktop use
-        - Ethernet or WiFi connection
-        
-        ### Recommended (Pi 5 Desktop)
-        - Raspberry Pi 5 8GB RAM
-        - 500GB+ NVMe SSD 
-        - Official Pi 5 power supply
-        - Active cooling solution
-        - 4K monitor support
-        - Ethernet connection for best performance
-        
-        ## 🔧 Post-Installation
-        
-        After first boot, run these commands:
-        
-        ```bash
-        # Check setup status
-        sudo systemctl status cupcake-setup.service
-        
-        # View setup logs
-        sudo journalctl -u cupcake-setup.service -f
-        
-        # Check CUPCAKE services
-        sudo systemctl status postgresql redis-server nginx
-        
-        # Monitor system resources
-        htop
-        ```
-        
-        ## 📖 Documentation
-        
-        - [CUPCAKE Documentation](https://github.com/noatgnu/cupcake)
-        - [Raspberry Pi Deployment Guide](https://github.com/noatgnu/cupcake/tree/master/raspberry-pi)
-        - [Traditional Pi Deployment](https://github.com/noatgnu/cupcake/blob/master/raspberry-pi/README.md)
-        
-        ## 🆘 Support
-        
-        - [GitHub Issues](https://github.com/noatgnu/cupcake/issues)
-        - [Community Discord](https://discord.gg/cupcake-lims)
-        
-        ---
-        
-        **⚠️ Important**: This uses traditional pi-gen build process with native system services (no Docker). Change default passwords immediately after installation!
-        EOF
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref_name }}
         name: CUPCAKE Pi Images ${{ github.ref_name }}
-        body_path: release-notes.md
         files: |
           release-artifacts/*
         draft: false

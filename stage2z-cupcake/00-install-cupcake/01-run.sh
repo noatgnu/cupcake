@@ -132,50 +132,8 @@ su - cupcake -c "
     source /opt/cupcake/venv/bin/activate
     pip install --upgrade pip setuptools wheel
     
-    # Install CUPCAKE Python dependencies (matching native script exact packages)
-    pip install \
-        'Django>=4.2,<5.0' \
-        djangorestframework \
-        django-cors-headers \
-        psycopg2-binary \
-        redis \
-        'django-rq>=2.0' \
-        rq \
-        gunicorn \
-        uvicorn \
-        channels \
-        channels-redis \
-        requests \
-        psutil \
-        numpy \
-        pandas \
-        Pillow \
-        openpyxl \
-        python-multipart \
-        pydantic \
-        fastapi \
-        websockets \
-        aiofiles \
-        python-jose \
-        passlib \
-        bcrypt \
-        python-dotenv \
-        python-magic \
-        pathvalidate \
-        chardet \
-        lxml \
-        beautifulsoup4 \
-        markdown \
-        bleach \
-        django-extensions \
-        django-debug-toolbar \
-        django-filter \
-        djangorestframework-simplejwt \
-        django-oauth-toolkit \
-        social-auth-app-django \
-        whitenoise \
-        dj-database-url \
-        python-decouple
+    # Install CUPCAKE Python dependencies from requirements.txt
+    pip install -r /opt/cupcake/app/requirements.txt
 "
 
 # Setup Whisper.cpp for transcription worker

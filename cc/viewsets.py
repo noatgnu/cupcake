@@ -260,6 +260,43 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
         instance.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+    @action(detail=True, methods=['post'])
+    def unvault(self, request, pk=None):
+        """
+        Unvault a protocol, making it accessible in normal queries.
+        
+        Only the protocol owner or staff can unvault protocols.
+        
+        Returns:
+            Response: Success message with updated protocol data
+        """
+        instance = self.get_object()
+        
+        # Check if protocol is actually vaulted
+        if not hasattr(instance, 'is_vaulted') or not instance.is_vaulted:
+            return Response(
+                {'error': 'This protocol is not vaulted.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Check permissions - only owner or staff can unvault
+        user = request.user
+        if not user.is_staff and instance.user != user:
+            return Response(
+                {'error': 'Only the protocol owner or staff can unvault protocols.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Unvault the protocol
+        instance.is_vaulted = False
+        instance.save()
+        
+        data = self.get_serializer(instance).data
+        return Response({
+            'message': 'Protocol unvaulted successfully.',
+            'protocol': data
+        }, status=status.HTTP_200_OK)
+
     @action(detail=False, methods=['get'], pagination_class=LimitOffsetPagination)
     def get_user_protocols(self, request):
         """
@@ -272,6 +309,7 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
             search (str): Search term for protocol title/description
             limit (int): Number of protocols per page (default: 5)
             include_vaulted (bool): Include vaulted protocols in results (default: false)
+            vaulted_only (bool): Show only vaulted protocols (default: false)
             include_shared (bool): Include protocols shared with user (default: false)
             
         Returns:
@@ -284,7 +322,14 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
         
         # Apply vaulting logic: exclude vaulted items by default unless include_vaulted=true
         include_vaulted = request.query_params.get('include_vaulted', 'false').lower() == 'true'
-        vault_filter = Q() if include_vaulted else Q(is_vaulted=False)
+        vaulted_only = request.query_params.get('vaulted_only', 'false').lower() == 'true'
+        
+        if vaulted_only:
+            vault_filter = Q(is_vaulted=True)
+        elif include_vaulted:
+            vault_filter = Q()  # Include both vaulted and non-vaulted
+        else:
+            vault_filter = Q(is_vaulted=False)  # Exclude vaulted items
         
         # Include shared protocols if requested
         include_shared = request.query_params.get('include_shared', 'false').lower() == 'true'
@@ -1933,6 +1978,67 @@ class SessionViewSet(ModelViewSet, FilterMixin):
         instance.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+    @action(detail=True, methods=['post'])
+    def unvault_protocols(self, request, pk=None):
+        """
+        Unvault all protocols associated with this session.
+        
+        Only the session owner or staff can unvault session protocols.
+        Each protocol will only be unvaulted if the user has permission.
+        
+        Returns:
+            Response: Summary of unvaulted protocols and any errors
+        """
+        instance = self.get_object()
+        
+        # Check permissions - only owner or staff can unvault session protocols
+        user = request.user
+        if not user.is_staff and instance.user != user:
+            return Response(
+                {'error': 'Only the session owner or staff can unvault session protocols.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Get all vaulted protocols associated with this session
+        vaulted_protocols = instance.protocols.filter(is_vaulted=True)
+        
+        if not vaulted_protocols.exists():
+            return Response(
+                {'message': 'No vaulted protocols found for this session.'},
+                status=status.HTTP_200_OK
+            )
+        
+        unvaulted_protocols = []
+        permission_errors = []
+        
+        for protocol in vaulted_protocols:
+            # Check if user can unvault this specific protocol
+            if user.is_staff or protocol.user == user:
+                protocol.is_vaulted = False
+                protocol.save()
+                unvaulted_protocols.append({
+                    'id': protocol.id,
+                    'title': protocol.protocol_title
+                })
+            else:
+                permission_errors.append({
+                    'id': protocol.id,
+                    'title': protocol.protocol_title,
+                    'error': 'Permission denied - only protocol owner or staff can unvault'
+                })
+        
+        response_data = {
+            'message': f'Unvaulted {len(unvaulted_protocols)} protocol(s) for session {instance.unique_id}.',
+            'unvaulted_protocols': unvaulted_protocols,
+            'total_unvaulted': len(unvaulted_protocols)
+        }
+        
+        if permission_errors:
+            response_data['permission_errors'] = permission_errors
+            response_data['total_permission_errors'] = len(permission_errors)
+        
+        return Response(response_data, status=status.HTTP_200_OK)
+
     def get_queryset(self):
         # Check if session is enabled, and if the user is the owner of the session
         user = self.request.user
@@ -1965,6 +2071,7 @@ class SessionViewSet(ModelViewSet, FilterMixin):
             search (str): Search term for session name/unique_id
             limit (int): Number of sessions per page (default: 5)
             include_vaulted (bool): Include sessions with vaulted protocols (default: false)
+            vaulted_only (bool): Show only sessions with vaulted protocols (default: false)
             include_shared (bool): Include sessions shared with user (default: false)
             
         Returns:
@@ -1976,6 +2083,7 @@ class SessionViewSet(ModelViewSet, FilterMixin):
         
         # Vaulting logic: exclude sessions associated with vaulted protocols by default unless include_vaulted=true
         include_vaulted = request.query_params.get('include_vaulted', 'false').lower() == 'true'
+        vaulted_only = request.query_params.get('vaulted_only', 'false').lower() == 'true'
         
         # Include shared sessions if requested
         include_shared = request.query_params.get('include_shared', 'false').lower() == 'true'
@@ -1990,8 +2098,10 @@ class SessionViewSet(ModelViewSet, FilterMixin):
         
         sessions = Session.objects.filter(sessions_filter).distinct()
         
-        # Filter out sessions associated with vaulted protocols unless explicitly requested
-        if not include_vaulted:
+        # Apply vault filtering logic
+        if vaulted_only:
+            sessions = sessions.filter(protocols__is_vaulted=True)
+        elif not include_vaulted:
             sessions = sessions.exclude(protocols__is_vaulted=True)
         
         search = request.query_params.get('search', None)
@@ -3845,6 +3955,43 @@ class ProjectViewSet(ModelViewSet, FilterMixin):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=['post'])
+    def unvault(self, request, pk=None):
+        """
+        Unvault a project, making it accessible in normal queries.
+        
+        Only the project owner or staff can unvault projects.
+        
+        Returns:
+            Response: Success message with updated project data
+        """
+        instance = self.get_object()
+        
+        # Check if project is actually vaulted
+        if not hasattr(instance, 'is_vaulted') or not instance.is_vaulted:
+            return Response(
+                {'error': 'This project is not vaulted.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Check permissions - only owner or staff can unvault
+        user = request.user
+        if not user.is_staff and instance.owner != user:
+            return Response(
+                {'error': 'Only the project owner or staff can unvault projects.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Unvault the project
+        instance.is_vaulted = False
+        instance.save()
+        
+        data = self.get_serializer(instance).data
+        return Response({
+            'message': 'Project unvaulted successfully.',
+            'project': data
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
     def remove_session(self, request, pk=None):
         project = self.get_object()
         user = self.request.user
@@ -5107,6 +5254,43 @@ class StorageObjectViewSet(ModelViewSet, FilterMixin):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=['post'])
+    def unvault(self, request, pk=None):
+        """
+        Unvault a storage object, making it accessible in normal queries.
+        
+        Only the storage object owner or staff can unvault storage objects.
+        
+        Returns:
+            Response: Success message with updated storage object data
+        """
+        instance = self.get_object()
+        
+        # Check if storage object is actually vaulted
+        if not hasattr(instance, 'is_vaulted') or not instance.is_vaulted:
+            return Response(
+                {'error': 'This storage object is not vaulted.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Check permissions - only owner or staff can unvault
+        user = request.user
+        if not user.is_staff and instance.user != user:
+            return Response(
+                {'error': 'Only the storage object owner or staff can unvault storage objects.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Unvault the storage object
+        instance.is_vaulted = False
+        instance.save()
+        
+        data = self.get_serializer(instance).data
+        return Response({
+            'message': 'Storage object unvaulted successfully.',
+            'storage_object': data
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
     def add_access_group(self, request, pk=None):
         instance = self.get_object()
         if not self.request.user.is_staff and instance.user == self.request.user:
@@ -5412,6 +5596,43 @@ class StoredReagentViewSet(ModelViewSet, FilterMixin):
             return Response(status=status.HTTP_401_UNAUTHORIZED)
         instance.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['post'])
+    def unvault(self, request, pk=None):
+        """
+        Unvault a stored reagent, making it accessible in normal queries.
+        
+        Only the stored reagent owner or staff can unvault stored reagents.
+        
+        Returns:
+            Response: Success message with updated stored reagent data
+        """
+        instance = self.get_object()
+        
+        # Check if stored reagent is actually vaulted
+        if not hasattr(instance, 'is_vaulted') or not instance.is_vaulted:
+            return Response(
+                {'error': 'This stored reagent is not vaulted.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Check permissions - only owner or staff can unvault
+        user = request.user
+        if not user.is_staff and instance.user != user:
+            return Response(
+                {'error': 'Only the stored reagent owner or staff can unvault stored reagents.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Unvault the stored reagent
+        instance.is_vaulted = False
+        instance.save()
+        
+        data = self.get_serializer(instance).data
+        return Response({
+            'message': 'Stored reagent unvaulted successfully.',
+            'stored_reagent': data
+        }, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['get'])
     def get_reagent_actions(self, request, pk=None):

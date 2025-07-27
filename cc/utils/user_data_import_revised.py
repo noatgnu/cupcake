@@ -1147,12 +1147,37 @@ class UserDataImporter:
     def _get_instrument_usage_details(self, annotation_id):
         """Get instrument usage details for an annotation"""
         cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT iu.*, i.name as instrument_name, i.description as instrument_description
-            FROM export_instrument_usage iu
-            LEFT JOIN export_instruments i ON iu.instrument_id = i.id
-            WHERE iu.annotation_id = ?
-        """, (annotation_id,))
+        
+        # First, check what columns exist in export_instruments
+        try:
+            cursor.execute("PRAGMA table_info(export_instruments)")
+            instrument_columns = {row[1] for row in cursor.fetchall()}
+            
+            # Try different possible name columns
+            name_column = None
+            if 'name' in instrument_columns:
+                name_column = 'i.name'
+            elif 'instrument_name' in instrument_columns:
+                name_column = 'i.instrument_name'
+            elif 'title' in instrument_columns:
+                name_column = 'i.title'
+            else:
+                name_column = "'Unknown'"  # Fallback
+            
+            cursor.execute(f"""
+                SELECT iu.*, {name_column} as instrument_name, i.description as instrument_description
+                FROM export_instrument_usage iu
+                LEFT JOIN export_instruments i ON iu.instrument_id = i.id
+                WHERE iu.annotation_id = ?
+            """, (annotation_id,))
+        except Exception as e:
+            # Fallback: query without instrument details
+            print(f"Warning: Could not query instrument details: {e}")
+            cursor.execute("""
+                SELECT iu.*, 'Unknown' as instrument_name, '' as instrument_description
+                FROM export_instrument_usage iu
+                WHERE iu.annotation_id = ?
+            """, (annotation_id,))
         
         usage_row = cursor.fetchone()
         if not usage_row:
@@ -1184,16 +1209,21 @@ class UserDataImporter:
     def _get_annotation_referenced_instrument(self, annotation_id):
         """Get the instrument referenced by an annotation"""
         cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT i.*
-            FROM export_instrument_usage iu
-            JOIN export_instruments i ON iu.instrument_id = i.id
-            WHERE iu.annotation_id = ?
-        """, (annotation_id,))
-        
-        instrument_row = cursor.fetchone()
-        if instrument_row:
-            return dict(instrument_row)
+        try:
+            cursor.execute("""
+                SELECT i.*
+                FROM export_instrument_usage iu
+                JOIN export_instruments i ON iu.instrument_id = i.id
+                WHERE iu.annotation_id = ?
+            """, (annotation_id,))
+            
+            instrument_row = cursor.fetchone()
+            if instrument_row:
+                return dict(instrument_row)
+        except Exception as e:
+            print(f"Warning: Could not query referenced instrument: {e}")
+            # Return a minimal instrument representation
+            return {'name': 'Unknown', 'description': ''}
         return None
     
     def _instrument_exists_or_importable(self, instrument_data):
@@ -1220,12 +1250,21 @@ class UserDataImporter:
             cursor.execute("SELECT * FROM export_instruments")
             
             for row in cursor.fetchall():
+                # Handle different possible name columns
+                instrument_name = None
+                for name_col in ['name', 'instrument_name', 'title']:
+                    if name_col in row.keys():
+                        instrument_name = row[name_col]
+                        break
+                
+                if not instrument_name:
+                    instrument_name = "Imported Instrument"
+                
                 if self.bulk_transfer_mode:
                     # In bulk transfer mode, import instruments as-is
-                    instrument_name = row['name'] or "Imported Instrument"
+                    pass  # instrument_name already set above
                 else:
                     # User-centric mode: add import marking
-                    instrument_name = row['name']
                     if instrument_name and not instrument_name.startswith('[IMPORTED]'):
                         instrument_name = f"[IMPORTED] {instrument_name}"
                     elif not instrument_name:

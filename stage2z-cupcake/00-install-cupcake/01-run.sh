@@ -38,34 +38,89 @@ apt-get upgrade -y || {
     exit 1
 }
 
-# Add PostgreSQL 14 repository (required for correct version)
-log_cupcake "Adding PostgreSQL 14 repository..."
+# Compile PostgreSQL 14 from source for ARM64 compatibility
+log_cupcake "Compiling PostgreSQL 14 from source..."
 export DEBIAN_FRONTEND=noninteractive
 export APT_LISTCHANGES_FRONTEND=none
 
-# Install prerequisites first
-apt-get install -y ca-certificates gnupg curl wget
+# Install build dependencies for PostgreSQL compilation
+log_cupcake "Installing PostgreSQL build dependencies..."
+apt-get install -y \
+    build-essential zlib1g-dev libreadline-dev libssl-dev libxml2-dev libxslt1-dev \
+    libicu-dev pkg-config libedit-dev libpam0g-dev libldap2-dev libkrb5-dev \
+    gettext uuid-dev liblz4-dev libzstd-dev
 
-# Add PostgreSQL signing key and repository
-curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg
+# Create postgres user
+log_cupcake "Creating postgres user..."
+useradd -r -s /bin/bash -d /var/lib/postgresql postgres || true
 
-# Add repository for Bookworm
-echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list
+# Download and compile PostgreSQL 14
+log_cupcake "Downloading PostgreSQL 14.18 source..."
+cd /tmp
+wget https://ftp.postgresql.org/pub/source/v14.18/postgresql-14.18.tar.gz
+tar xzf postgresql-14.18.tar.gz
+cd postgresql-14.18
 
-# Update package lists
-apt-get update
+# Configure build
+log_cupcake "Configuring PostgreSQL build..."
+./configure \
+    --prefix=/usr/local/pgsql \
+    --with-openssl \
+    --with-libxml \
+    --with-libxslt \
+    --with-icu \
+    --with-ldap \
+    --with-pam \
+    --with-uuid=e2fs \
+    --with-lz4 \
+    --with-zstd \
+    --enable-thread-safety
 
-# Upgrade system libraries to resolve PostgreSQL 14 dependencies
-log_cupcake "Upgrading system libraries for PostgreSQL 14 compatibility..."
-apt-get install -y libc6 libssl3 zlib1g libgcc-s1 libstdc++6 libsystemd0 \
-    libgssapi-krb5-2 libldap-2.5-0 libicu72 libllvm19 liblz4-1 \
-    libpam0g libselinux1 libuuid1 libxml2 libxslt1.1 libpq5 libreadline8
+# Compile (use all available cores)
+log_cupcake "Compiling PostgreSQL (this may take 10-15 minutes)..."
+make -j$(nproc)
 
-# Install PostgreSQL 14 and other dependencies
-log_cupcake "Installing CUPCAKE dependencies with PostgreSQL 14..."
+# Install
+log_cupcake "Installing PostgreSQL..."
+make install
+
+# Set up environment
+echo 'export PATH=/usr/local/pgsql/bin:$PATH' >> /etc/profile
+echo 'export LD_LIBRARY_PATH=/usr/local/pgsql/lib:$LD_LIBRARY_PATH' >> /etc/profile
+export PATH="/usr/local/pgsql/bin:$PATH"
+export LD_LIBRARY_PATH="/usr/local/pgsql/lib:$LD_LIBRARY_PATH"
+
+# Initialize database
+log_cupcake "Initializing PostgreSQL database..."
+mkdir -p /var/lib/postgresql/data
+chown postgres:postgres /var/lib/postgresql/data
+su - postgres -c '/usr/local/pgsql/bin/initdb -D /var/lib/postgresql/data'
+
+# Create systemd service
+log_cupcake "Creating PostgreSQL systemd service..."
+cat > /etc/systemd/system/postgresql.service << 'EOF'
+[Unit]
+Description=PostgreSQL database server
+Documentation=man:postgres(1)
+After=network.target
+
+[Service]
+Type=notify
+User=postgres
+ExecStart=/usr/local/pgsql/bin/postgres -D /var/lib/postgresql/data
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutSec=0
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Install other dependencies
+log_cupcake "Installing other CUPCAKE dependencies..."
 apt-get install -y \
     python3 python3-pip python3-venv python3-dev python3-setuptools python3-wheel \
-    postgresql-14 postgresql-client-14 \
     redis-server \
     nginx \
     git unzip \
@@ -118,7 +173,7 @@ log_cupcake "Installing additional dependencies for workers..."
 # Python packaging tools and cryptography libraries
 apt-get install -y python3-setuptools python3-wheel
 apt-get install -y libssl-dev libffi-dev libjpeg-dev libpng-dev libfreetype6-dev
-# Worker-specific tools (postgresql-client-14 already installed above)
+# Worker-specific tools (PostgreSQL 14 compiled from source above)
 apt-get install -y cmake tesseract-ocr tesseract-ocr-eng
 
 # Create Python virtual environment (matching native script approach)
@@ -211,10 +266,16 @@ chown -R cupcake:cupcake /opt/cupcake/venv
 
 log_cupcake "Python virtual environment setup completed"
 
+# Start PostgreSQL service
+log_cupcake "Starting PostgreSQL service..."
+systemctl daemon-reload
+systemctl start postgresql
+systemctl enable postgresql
+
 # Configure PostgreSQL
 log_cupcake "Configuring PostgreSQL database..."
-su - postgres -c "createuser -D -A -P cupcake" || true
-su - postgres -c "createdb -O cupcake cupcake" || true
+su - postgres -c "/usr/local/pgsql/bin/createuser -D -A -P cupcake" || true
+su - postgres -c "/usr/local/pgsql/bin/createdb -O cupcake cupcake" || true
 
 # Configure environment
 log_cupcake "Setting up environment configuration..."
@@ -319,7 +380,7 @@ WORKEREOF
 
 # Enable services
 systemctl enable cupcake-web cupcake-worker
-systemctl enable nginx postgresql-14 redis-server
+systemctl enable nginx postgresql redis-server
 
 # Clean up to reduce image size
 log_cupcake "Cleaning up installation artifacts..."
@@ -367,7 +428,7 @@ su - cupcake -c "cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate &&
 
 # Test database connection
 log_cupcake "Testing database connection..."
-su - postgres -c "psql -d cupcake -c 'SELECT 1;'" > /dev/null || {
+su - postgres -c "/usr/local/pgsql/bin/psql -d cupcake -c 'SELECT 1;'" > /dev/null || {
     log_cupcake "FATAL: Database connection test failed"
     exit 1
 }

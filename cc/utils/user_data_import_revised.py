@@ -174,10 +174,20 @@ class UserDataImporter:
             object_data = model_to_dict(obj)
             
             # Handle non-serializable fields
-            for field_name, field_value in object_data.items():
+            for field_name, field_value in list(object_data.items()):
                 if hasattr(field_value, 'isoformat'):
                     object_data[field_name] = field_value.isoformat()
                 elif isinstance(field_value, uuid.UUID):
+                    object_data[field_name] = str(field_value)
+                elif hasattr(field_value, 'url'):  # Django FieldFile/ImageFieldFile
+                    # Store file path or URL instead of the FieldFile object
+                    try:
+                        object_data[field_name] = field_value.url if field_value else None
+                    except ValueError:
+                        # File doesn't exist, store the name
+                        object_data[field_name] = str(field_value) if field_value else None
+                elif not isinstance(field_value, (str, int, float, bool, type(None), list, dict)):
+                    # Convert any other non-serializable objects to string
                     object_data[field_name] = str(field_value)
             
             ImportedObject.objects.create(

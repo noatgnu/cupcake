@@ -55,6 +55,12 @@ echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] http://apt.post
 # Update package lists
 apt-get update
 
+# Upgrade system libraries to resolve PostgreSQL 14 dependencies
+log_cupcake "Upgrading system libraries for PostgreSQL 14 compatibility..."
+apt-get install -y libc6 libssl3 zlib1g libgcc-s1 libstdc++6 libsystemd0 \
+    libgssapi-krb5-2 libldap-2.5-0 libicu72 libllvm19 liblz4-1 \
+    libpam0g libselinux1 libuuid1 libxml2 libxslt1.1 libpq5 libreadline8
+
 # Install PostgreSQL 14 and other dependencies
 log_cupcake "Installing CUPCAKE dependencies with PostgreSQL 14..."
 apt-get install -y \

@@ -200,6 +200,7 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
         
         Allows protocol owners and editors to update protocol details.
         Staff users can update any protocol.
+        Vaulted protocols cannot be updated.
         
         Request Data:
             protocol_title (str): New protocol title
@@ -210,6 +211,17 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
             Response: Updated protocol data
         """
         instance = self.get_object()
+        
+        # Check if protocol is vaulted - vaulted protocols cannot be updated (unless allowed by settings)
+        if hasattr(instance, 'is_vaulted') and instance.is_vaulted:
+            from .models import SiteSettings
+            site_settings = SiteSettings.get_or_create_default()
+            if not site_settings.can_modify_vaulted_object(request.user, 'update'):
+                return Response(
+                    {'error': 'Vaulted protocols cannot be updated. Please unvault first or contact an administrator.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
         if not request.user.is_staff:
             if not instance.user == request.user and not instance.viewers.filter(id=request.user.id).exists():
                 return Response(status=status.HTTP_401_UNAUTHORIZED)
@@ -221,10 +233,37 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
         data = self.get_serializer(instance).data
         return Response(data, status=status.HTTP_200_OK)
 
+    def destroy(self, request, *args, **kwargs):
+        """
+        Delete protocol with vaulting checks.
+        
+        Vaulted protocols cannot be deleted.
+        """
+        instance = self.get_object()
+        
+        # Check if protocol is vaulted - vaulted protocols cannot be deleted (unless allowed by settings)
+        if hasattr(instance, 'is_vaulted') and instance.is_vaulted:
+            from .models import SiteSettings
+            site_settings = SiteSettings.get_or_create_default()
+            if not site_settings.can_modify_vaulted_object(request.user, 'delete'):
+                return Response(
+                    {'error': 'Vaulted protocols cannot be deleted. Please unvault first or contact an administrator.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
+        # Check permissions (reuse existing logic from get_object)
+        user = request.user
+        if not user.is_staff:
+            if instance.user != user and not instance.editors.filter(id=user.id).exists():
+                return Response(status=status.HTTP_401_UNAUTHORIZED)
+        
+        instance.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
     @action(detail=False, methods=['get'], pagination_class=LimitOffsetPagination)
     def get_user_protocols(self, request):
         """
-        Get protocols owned by the authenticated user.
+        Get protocols owned by the authenticated user and optionally shared protocols.
         
         Supports search filtering by title and description.
         Returns paginated results with customizable limit.
@@ -232,6 +271,8 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
         Query Parameters:
             search (str): Search term for protocol title/description
             limit (int): Number of protocols per page (default: 5)
+            include_vaulted (bool): Include vaulted protocols in results (default: false)
+            include_shared (bool): Include protocols shared with user (default: false)
             
         Returns:
             Response: Paginated list of user's protocols
@@ -240,7 +281,24 @@ class ProtocolViewSet(ModelViewSet, FilterMixin):
             return Response(status=status.HTTP_401_UNAUTHORIZED)
         user = request.user
         search = request.query_params.get('search', None)
-        protocols = ProtocolModel.objects.filter(user=user)
+        
+        # Apply vaulting logic: exclude vaulted items by default unless include_vaulted=true
+        include_vaulted = request.query_params.get('include_vaulted', 'false').lower() == 'true'
+        vault_filter = Q() if include_vaulted else Q(is_vaulted=False)
+        
+        # Include shared protocols if requested
+        include_shared = request.query_params.get('include_shared', 'false').lower() == 'true'
+        
+        # Base query: user's own protocols
+        protocols_filter = Q(user=user) & vault_filter
+        
+        # Add shared protocols if requested
+        if include_shared:
+            shared_filter = (Q(viewers=user) | Q(editors=user)) & vault_filter
+            protocols_filter = protocols_filter | shared_filter
+        
+        protocols = ProtocolModel.objects.filter(protocols_filter).distinct()
+        
         if search:
             protocols = protocols.filter(Q(protocol_title__icontains=search)|Q(protocol_description__icontains=search))
         limitdata = request.query_params.get('limit', None)
@@ -1810,9 +1868,34 @@ class SessionViewSet(ModelViewSet, FilterMixin):
         return Response(data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
+        """
+        Update session with permission and vaulting checks.
+        
+        Sessions connected to vaulted protocols cannot be updated.
+        """
         instance = self.get_object()
         if instance.user != request.user:
             raise PermissionDenied
+        
+        # Check if session is connected to any vaulted protocols
+        vaulted_protocols = instance.protocols.filter(is_vaulted=True)
+        if vaulted_protocols.exists():
+            from .models import SiteSettings
+            site_settings = SiteSettings.get_or_create_default()
+            if not site_settings.can_modify_vaulted_session(request.user, 'update'):
+                vaulted_names = [p.protocol_title for p in vaulted_protocols[:3]]  # Show up to 3 names
+                protocol_list = ', '.join(vaulted_names)
+                if vaulted_protocols.count() > 3:
+                    protocol_list += f' and {vaulted_protocols.count() - 3} more'
+                
+                return Response(
+                    {
+                        'error': f'Sessions connected to vaulted protocols cannot be updated. '
+                                f'Vaulted protocols: {protocol_list}. Please unvault the protocols first or contact an administrator.'
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
         for i in request.data:
             if i in ['enabled', 'created_at', 'updated_at', 'protocols', 'name', 'started_at', 'ended_at']:
                 setattr(instance, i, request.data[i])
@@ -1821,7 +1904,32 @@ class SessionViewSet(ModelViewSet, FilterMixin):
         return Response(data, status=status.HTTP_200_OK)
 
     def destroy(self, request, *args, **kwargs):
+        """
+        Delete session with vaulting checks.
+        
+        Sessions connected to vaulted protocols cannot be deleted.
+        """
         instance = self.get_object()
+        
+        # Check if session is connected to any vaulted protocols
+        vaulted_protocols = instance.protocols.filter(is_vaulted=True)
+        if vaulted_protocols.exists():
+            from .models import SiteSettings
+            site_settings = SiteSettings.get_or_create_default()
+            if not site_settings.can_modify_vaulted_session(request.user, 'delete'):
+                vaulted_names = [p.protocol_title for p in vaulted_protocols[:3]]  # Show up to 3 names
+                protocol_list = ', '.join(vaulted_names)
+                if vaulted_protocols.count() > 3:
+                    protocol_list += f' and {vaulted_protocols.count() - 3} more'
+                
+                return Response(
+                    {
+                        'error': f'Sessions connected to vaulted protocols cannot be deleted. '
+                                f'Vaulted protocols: {protocol_list}. Please unvault the protocols first or contact an administrator.'
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
         instance.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -1850,10 +1958,42 @@ class SessionViewSet(ModelViewSet, FilterMixin):
 
     @action(detail=False, methods=['get'], pagination_class=LimitOffsetPagination)
     def get_user_sessions(self, request):
+        """
+        Get sessions owned by the authenticated user and optionally shared sessions.
+        
+        Query Parameters:
+            search (str): Search term for session name/unique_id
+            limit (int): Number of sessions per page (default: 5)
+            include_vaulted (bool): Include sessions with vaulted protocols (default: false)
+            include_shared (bool): Include sessions shared with user (default: false)
+            
+        Returns:
+            Response: Paginated list of user's sessions
+        """
         if not request.user.is_authenticated:
             return Response(status=status.HTTP_401_UNAUTHORIZED)
         user = request.user
-        sessions = Session.objects.filter(user=user)
+        
+        # Vaulting logic: exclude sessions associated with vaulted protocols by default unless include_vaulted=true
+        include_vaulted = request.query_params.get('include_vaulted', 'false').lower() == 'true'
+        
+        # Include shared sessions if requested
+        include_shared = request.query_params.get('include_shared', 'false').lower() == 'true'
+        
+        # Base query: user's own sessions
+        sessions_filter = Q(user=user)
+        
+        # Add shared sessions if requested
+        if include_shared:
+            shared_filter = Q(viewers=user) | Q(editors=user)
+            sessions_filter = sessions_filter | shared_filter
+        
+        sessions = Session.objects.filter(sessions_filter).distinct()
+        
+        # Filter out sessions associated with vaulted protocols unless explicitly requested
+        if not include_vaulted:
+            sessions = sessions.exclude(protocols__is_vaulted=True)
+        
         search = request.query_params.get('search', None)
         if search:
             sessions = sessions.filter(Q(name__icontains=search)|Q(unique_id__icontains=search))
@@ -2520,9 +2660,13 @@ class UserViewSet(ModelViewSet, FilterMixin):
         """
         user = self.request.user
         
+        # Vaulting logic: exclude vaulted items by default unless include_vaulted=true
+        include_vaulted = request.query_params.get('include_vaulted', 'false').lower() == 'true'
+        vault_filter = Q() if include_vaulted else Q(is_vaulted=False)
+        
         # Get storage objects the user owns or has access to via lab groups
         accessible_storage = StorageObject.objects.filter(
-            Q(user=user) | Q(access_lab_groups__users=user)
+            (Q(user=user) | Q(access_lab_groups__users=user)) & vault_filter
         ).distinct().values(
             'id', 'object_name', 'object_type', 'object_description'
         )
@@ -4884,7 +5028,23 @@ class StorageObjectViewSet(ModelViewSet, FilterMixin):
         serializer.save(user=self.request.user)
 
     def update(self, request, *args, **kwargs):
+        """
+        Update storage object with vaulting checks.
+        
+        Vaulted storage objects cannot be updated.
+        """
         instance = self.get_object()
+        
+        # Check if storage object is vaulted - vaulted objects cannot be updated (unless allowed by settings)
+        if hasattr(instance, 'is_vaulted') and instance.is_vaulted:
+            from .models import SiteSettings
+            site_settings = SiteSettings.get_or_create_default()
+            if not site_settings.can_modify_vaulted_object(request.user, 'update'):
+                return Response(
+                    {'error': 'Vaulted storage objects cannot be updated. Please unvault first or contact an administrator.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
         if instance.user != self.request.user and not self.request.user.is_staff:
             return Response(status=status.HTTP_401_UNAUTHORIZED)
 
@@ -4919,7 +5079,23 @@ class StorageObjectViewSet(ModelViewSet, FilterMixin):
         serializer.save()
 
     def destroy(self, request, *args, **kwargs):
+        """
+        Delete storage object with vaulting checks.
+        
+        Vaulted storage objects cannot be deleted.
+        """
         instance = self.get_object()
+        
+        # Check if storage object is vaulted - vaulted objects cannot be deleted (unless allowed by settings)
+        if hasattr(instance, 'is_vaulted') and instance.is_vaulted:
+            from .models import SiteSettings
+            site_settings = SiteSettings.get_or_create_default()
+            if not site_settings.can_modify_vaulted_object(request.user, 'delete'):
+                return Response(
+                    {'error': 'Vaulted storage objects cannot be deleted. Please unvault first or contact an administrator.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
         if not self.request.user.is_staff and not instance.can_delete:
             return Response(status=status.HTTP_401_UNAUTHORIZED)
         all_children = instance.get_all_children()
@@ -5179,7 +5355,22 @@ class StoredReagentViewSet(ModelViewSet, FilterMixin):
         serializer.save(user=self.request.user)
 
     def update(self, request, *args, **kwargs):
+        """
+        Update stored reagent with vaulting checks.
+        
+        Vaulted stored reagents cannot be updated.
+        """
         instance = self.get_object()
+
+        # Check if stored reagent is vaulted - vaulted reagents cannot be updated (unless allowed by settings)
+        if hasattr(instance, 'is_vaulted') and instance.is_vaulted:
+            from .models import SiteSettings
+            site_settings = SiteSettings.get_or_create_default()
+            if not site_settings.can_modify_vaulted_object(request.user, 'update'):
+                return Response(
+                    {'error': 'Vaulted stored reagents cannot be updated. Please unvault first or contact an administrator.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
 
         data = request.data.copy()
 
@@ -5199,7 +5390,23 @@ class StoredReagentViewSet(ModelViewSet, FilterMixin):
         serializer.save()
 
     def destroy(self, request, *args, **kwargs):
+        """
+        Delete stored reagent with vaulting checks.
+        
+        Vaulted stored reagents cannot be deleted.
+        """
         instance = self.get_object()
+        
+        # Check if stored reagent is vaulted - vaulted reagents cannot be deleted (unless allowed by settings)
+        if hasattr(instance, 'is_vaulted') and instance.is_vaulted:
+            from .models import SiteSettings
+            site_settings = SiteSettings.get_or_create_default()
+            if not site_settings.can_modify_vaulted_object(request.user, 'delete'):
+                return Response(
+                    {'error': 'Vaulted stored reagents cannot be deleted. Please unvault first or contact an administrator.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
         permission = self._get_user_permission(instance, self.request.user)
         if not permission["delete"]:
             return Response(status=status.HTTP_401_UNAUTHORIZED)

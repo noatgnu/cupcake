@@ -2317,6 +2317,13 @@ class SiteSettings(models.Model):
     # Backup module settings
     enable_backup_module = models.BooleanField(default=True, help_text="Enable backup management module")
     backup_frequency_days = models.PositiveIntegerField(default=7, help_text="Frequency of automatic backups in days")
+    
+    # Vault protection settings
+    allow_vaulted_object_updates = models.BooleanField(default=False, help_text="Allow direct updates to vaulted objects without unvaulting")
+    allow_vaulted_object_deletion = models.BooleanField(default=False, help_text="Allow direct deletion of vaulted objects without unvaulting")
+    allow_vaulted_session_updates = models.BooleanField(default=False, help_text="Allow updates to sessions connected to vaulted protocols")
+    allow_vaulted_session_deletion = models.BooleanField(default=False, help_text="Allow deletion of sessions connected to vaulted protocols")
+    staff_override_vault_protection = models.BooleanField(default=True, help_text="Allow staff users to bypass vault protection")
 
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
@@ -2417,6 +2424,52 @@ class SiteSettings(models.Model):
                 filtered_options[key] = False
         
         return filtered_options
+    
+    def can_modify_vaulted_object(self, user=None, operation='update'):
+        """
+        Check if vaulted objects can be modified based on site settings and user permissions
+        
+        Args:
+            user: Optional User instance to check for staff override permissions
+            operation: Type of operation ('update' or 'delete')
+            
+        Returns:
+            bool: True if operation is allowed on vaulted objects
+        """
+        # Check staff override first
+        if user and user.is_staff and self.staff_override_vault_protection:
+            return True
+        
+        # Check operation-specific settings
+        if operation == 'update':
+            return self.allow_vaulted_object_updates
+        elif operation == 'delete':
+            return self.allow_vaulted_object_deletion
+        else:
+            return False
+    
+    def can_modify_vaulted_session(self, user=None, operation='update'):
+        """
+        Check if sessions connected to vaulted protocols can be modified
+        
+        Args:
+            user: Optional User instance to check for staff override permissions
+            operation: Type of operation ('update' or 'delete')
+            
+        Returns:
+            bool: True if operation is allowed on sessions with vaulted protocols
+        """
+        # Check staff override first
+        if user and user.is_staff and self.staff_override_vault_protection:
+            return True
+        
+        # Check operation-specific settings
+        if operation == 'update':
+            return self.allow_vaulted_session_updates
+        elif operation == 'delete':
+            return self.allow_vaulted_session_deletion
+        else:
+            return False
 
 
 class DocumentPermission(models.Model):

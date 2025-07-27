@@ -43,9 +43,17 @@ class Command(BaseCommand):
         sqlite_db_path = os.path.join(extract_dir, 'exported_data.sqlite3')
         media_dir = os.path.join(extract_dir, 'media')
 
-        with transaction.atomic():
-            self.import_sqlite_data(sqlite_db_path)
-            self.import_media_files(media_dir)
+        try:
+            with transaction.atomic():
+                self.stdout.write(self.style.SUCCESS('Starting data import in atomic transaction...'))
+                self.import_sqlite_data(sqlite_db_path)
+                self.stdout.write(self.style.SUCCESS('SQLite data import completed'))
+                self.import_media_files(media_dir)
+                self.stdout.write(self.style.SUCCESS('Media files import completed'))
+        except Exception as e:
+            self.stdout.write(self.style.ERROR(f'Import failed: {str(e)}'))
+            self.stdout.write(self.style.ERROR('Transaction has been rolled back'))
+            raise
 
     def import_sqlite_data(self, sqlite_db_path):
         sqlite_conn = sqlite3.connect(sqlite_db_path)
@@ -77,28 +85,86 @@ class Command(BaseCommand):
             'project': {},
             'tag': {}
         }
-        many_to_many_session_protocols = []
+        
+        # Define import order based on dependencies
+        # Order: independent models first, then dependent models
+        import_order = [
+            # Independent models (no ForeignKey dependencies to other exportable models)
+            Reagent._meta.db_table,
+            Tag._meta.db_table,
+            Project._meta.db_table,
+            StorageObject._meta.db_table,
+            Instrument._meta.db_table,
+            
+            # Protocol hierarchy (ProtocolModel -> ProtocolSection/ProtocolStep -> dependent models)
+            ProtocolModel._meta.db_table,
+            ProtocolSection._meta.db_table,
+            ProtocolStep._meta.db_table,
+            
+            # Session and related models
+            Session._meta.db_table,
+            
+            # Models that depend on the above
+            StoredReagent._meta.db_table,  # depends on Reagent, StorageObject
+            AnnotationFolder._meta.db_table,  # depends on Session, StorageObject, Instrument
+            Annotation._meta.db_table,  # depends on Session, ProtocolStep, StoredReagent, AnnotationFolder
+            
+            # Models that depend on Step/Protocol
+            StepVariation._meta.db_table,  # depends on ProtocolStep
+            ProtocolReagent._meta.db_table,  # depends on ProtocolModel, Reagent
+            StepReagent._meta.db_table,  # depends on ProtocolStep, Reagent
+            
+            # Models that depend on other entities
+            TimeKeeper._meta.db_table,  # depends on Session, ProtocolStep
+            InstrumentUsage._meta.db_table,  # depends on Instrument, Annotation
+            MetadataColumn._meta.db_table,  # depends on Annotation, Instrument
+            ProtocolRating._meta.db_table,  # depends on ProtocolModel
+            ReagentAction._meta.db_table,  # depends on StoredReagent, StepReagent, Session
+        ]
+        
+        # Store tables data for ordered processing
+        tables_data = {}
         for table_name in tables:
             table_name = table_name[0]
             sqlite_cursor.execute(f"SELECT * FROM {table_name}")
             rows = sqlite_cursor.fetchall()
-
-            # Get column names
             column_names = [description[0] for description in sqlite_cursor.description]
-            if table_name == "cc_session_protocols":
-                many_to_many_session_protocols = rows
+            tables_data[table_name] = {'rows': rows, 'columns': column_names}
 
-            else:
-                # Insert data into the Django database
-                for row in rows:
-                    data = dict(zip(column_names, row))
-                    self.insert_data(table_name, data)
-        for session_protocol in many_to_many_session_protocols:
-            session_id = self.id_map['session'].get(session_protocol[1], None)
-            protocol_id = self.id_map['protocol'].get(session_protocol[2], None)
-            if session_id and protocol_id:
-                session = Session.objects.get(id=session_id)
-                session.protocols.add(protocol_id)
+        # Store many-to-many data for later processing
+        many_to_many_relations = {}
+        for table_name, data in tables_data.items():
+            if table_name == "cc_session_protocols":
+                many_to_many_relations['session_protocols'] = data['rows']
+            # Add other many-to-many tables as needed
+            
+        # Process tables in dependency order
+        for table_name in import_order:
+            if table_name in tables_data:
+                data = tables_data[table_name]
+                self.stdout.write(f'Importing {len(data["rows"])} records from {table_name}...')
+                for row in data['rows']:
+                    row_data = dict(zip(data['columns'], row))
+                    self.insert_data(table_name, row_data)
+        
+        # Process any remaining tables not in import_order
+        processed_tables = set(import_order + ["cc_session_protocols"])
+        for table_name, data in tables_data.items():
+            if table_name not in processed_tables:
+                self.stdout.write(f'Importing {len(data["rows"])} records from remaining table {table_name}...')
+                for row in data['rows']:
+                    row_data = dict(zip(data['columns'], row))
+                    self.insert_data(table_name, row_data)
+        
+        # Process many-to-many relationships after all objects are created
+        if 'session_protocols' in many_to_many_relations:
+            for session_protocol in many_to_many_relations['session_protocols']:
+                session_id = self.id_map['session'].get(session_protocol[1], None)
+                protocol_id = self.id_map['protocol'].get(session_protocol[2], None)
+                if session_id and protocol_id:
+                    session = Session.objects.get(id=session_id)
+                    session.protocols.add(protocol_id)
+        
         sqlite_conn.close()
 
     def insert_data(self, table_name, data):
@@ -109,10 +175,17 @@ class Command(BaseCommand):
                 del data["remote_id"]
         if "remote_host_id" in data:
             del data["remote_host_id"]
+        
+        # Map user fields to the importing user
         if "user_id" in data:
-            del data["user_id"]
+            if data["user_id"] is not None:
+                data["user_id"] = self.importing_user.id
+            # Don't delete user_id as some models require it
+                
         if "owner_id" in data:
-            del data["owner_id"]
+            if data["owner_id"] is not None:
+                data["owner_id"] = self.importing_user.id
+            # Don't delete owner_id as some models require it
         if table_name == Annotation._meta.db_table:
             self.insert_annotation(data)
         elif table_name == Session._meta.db_table:
@@ -157,9 +230,30 @@ class Command(BaseCommand):
 
     def insert_annotation(self, data):
         old_id = data.pop('id')
-        data['session_id'] = None
-        annotation = Annotation.objects.create(**data)
-        self.id_map['annotation'][old_id] = annotation.id
+        
+        # Map foreign key relationships
+        if 'session_id' in data and data['session_id'] is not None:
+            data['session_id'] = self.id_map['session'].get(data['session_id'], None)
+        else:
+            data['session_id'] = None
+            
+        if 'step_id' in data and data['step_id'] is not None:
+            data['step_id'] = self.id_map['protocol_step'].get(data['step_id'], None)
+            
+        if 'stored_reagent_id' in data and data['stored_reagent_id'] is not None:
+            data['stored_reagent_id'] = self.id_map['stored_reagent'].get(data['stored_reagent_id'], None)
+            
+        if 'folder_id' in data and data['folder_id'] is not None:
+            data['folder_id'] = self.id_map['annotation_folder'].get(data['folder_id'], None)
+        
+        try:
+            annotation = Annotation.objects.create(**data)
+            self.id_map['annotation'][old_id] = annotation.id
+        except Exception as e:
+            self.stdout.write(self.style.ERROR(f'Failed to create annotation {old_id}: {str(e)}'))
+            # Log the data that failed for debugging
+            self.stdout.write(self.style.WARNING(f'Failed annotation data: {data}'))
+            raise
 
     def insert_session(self, data):
         old_id = data.pop('id')
@@ -209,9 +303,27 @@ class Command(BaseCommand):
 
     def insert_protocol_step(self, data):
         old_id = data.pop('id')
-        data['protocol_id'] = self.id_map['protocol'].get(data['protocol_id'], None)
-        protocol_step = ProtocolStep.objects.create(**data)
-        self.id_map['protocol_step'][old_id] = protocol_step.id
+        
+        # Map foreign key relationships
+        if 'protocol_id' in data and data['protocol_id'] is not None:
+            data['protocol_id'] = self.id_map['protocol'].get(data['protocol_id'], None)
+            
+        if 'step_section_id' in data and data['step_section_id'] is not None:
+            data['step_section_id'] = self.id_map['protocol_section'].get(data['step_section_id'], None)
+            
+        if 'previous_step_id' in data and data['previous_step_id'] is not None:
+            data['previous_step_id'] = self.id_map['protocol_step'].get(data['previous_step_id'], None)
+            
+        if 'branch_from_id' in data and data['branch_from_id'] is not None:
+            data['branch_from_id'] = self.id_map['protocol_step'].get(data['branch_from_id'], None)
+        
+        try:
+            protocol_step = ProtocolStep.objects.create(**data)
+            self.id_map['protocol_step'][old_id] = protocol_step.id
+        except Exception as e:
+            self.stdout.write(self.style.ERROR(f'Failed to create protocol step {old_id}: {str(e)}'))
+            self.stdout.write(self.style.WARNING(f'Failed protocol step data: {data}'))
+            raise
 
     def insert_protocol_section(self, data):
         old_id = data.pop('id')
@@ -221,9 +333,27 @@ class Command(BaseCommand):
 
     def insert_annotation_folder(self, data):
         old_id = data.pop('id')
-        data['session_id'] = self.id_map['session'].get(data['session_id'], None)
-        annotation_folder = AnnotationFolder.objects.create(**data)
-        self.id_map['annotation_folder'][old_id] = annotation_folder.id
+        
+        # Map foreign key relationships
+        if 'session_id' in data and data['session_id'] is not None:
+            data['session_id'] = self.id_map['session'].get(data['session_id'], None)
+            
+        if 'instrument_id' in data and data['instrument_id'] is not None:
+            data['instrument_id'] = self.id_map['instrument'].get(data['instrument_id'], None)
+            
+        if 'stored_reagent_id' in data and data['stored_reagent_id'] is not None:
+            data['stored_reagent_id'] = self.id_map['stored_reagent'].get(data['stored_reagent_id'], None)
+            
+        if 'parent_folder_id' in data and data['parent_folder_id'] is not None:
+            data['parent_folder_id'] = self.id_map['annotation_folder'].get(data['parent_folder_id'], None)
+        
+        try:
+            annotation_folder = AnnotationFolder.objects.create(**data)
+            self.id_map['annotation_folder'][old_id] = annotation_folder.id
+        except Exception as e:
+            self.stdout.write(self.style.ERROR(f'Failed to create annotation folder {old_id}: {str(e)}'))
+            self.stdout.write(self.style.WARNING(f'Failed annotation folder data: {data}'))
+            raise
 
     def insert_time_keeper(self, data):
         old_id = data.pop('id')

@@ -189,11 +189,14 @@ log_cupcake "Downloading Whisper models (optimized for Pi)..."
 su - cupcake -c "cd /opt/cupcake/whisper.cpp && ./models/download-ggml-model.sh base.en"
 su - cupcake -c "cd /opt/cupcake/whisper.cpp && ./models/download-ggml-model.sh small.en"
 
-# Build Whisper.cpp with compatible ARM flags for Cortex-A57
-log_cupcake "Building Whisper.cpp..."
+# Build Whisper.cpp with ARM64 optimizations
+log_cupcake "Building Whisper.cpp for ARM64..."
+# Use ARM64-optimized flags (Cortex-A72 is common in Pi 4/5)
 export CMAKE_CXX_FLAGS="-mcpu=cortex-a72 -mtune=cortex-a72"
 export CMAKE_C_FLAGS="-mcpu=cortex-a72 -mtune=cortex-a72"
-su - cupcake -c "cd /opt/cupcake/whisper.cpp && CMAKE_CXX_FLAGS='-mcpu=cortex-a72 -mtune=cortex-a72' CMAKE_C_FLAGS='-mcpu=cortex-a72 -mtune=cortex-a72' cmake -B build -DGGML_NATIVE=OFF"
+# Add atomic library for cross-compilation safety (needed in some ARM environments)
+export CMAKE_EXE_LINKER_FLAGS="-latomic"
+su - cupcake -c "cd /opt/cupcake/whisper.cpp && CMAKE_CXX_FLAGS='-mcpu=cortex-a72 -mtune=cortex-a72' CMAKE_C_FLAGS='-mcpu=cortex-a72 -mtune=cortex-a72' CMAKE_EXE_LINKER_FLAGS='-latomic' cmake -B build -DGGML_NATIVE=OFF -DWHISPER_BUILD_TESTS=OFF"
 su - cupcake -c "cd /opt/cupcake/whisper.cpp && cmake --build build --config Release -j 2"
 
 # Return to app directory

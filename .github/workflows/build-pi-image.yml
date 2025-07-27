@@ -254,6 +254,7 @@ jobs:
         # Debootstrap configuration for better cross-architecture support
         BOOTSTRAP_KEYRING=debian-archive-keyring
         TARGET_ARCH=arm64
+        TARGET_ARCHITECTURE=arm64
         
         # Export configuration - only export final image from stage2a
         EXPORT_ROOTFS_DIR=stage2a
@@ -610,6 +611,7 @@ jobs:
         # Debootstrap configuration for better cross-architecture support
         BOOTSTRAP_KEYRING=debian-archive-keyring
         TARGET_ARCH=arm64
+        TARGET_ARCHITECTURE=arm64
         
         # Export configuration - only export final image from stage2a
         EXPORT_ROOTFS_DIR=stage2a

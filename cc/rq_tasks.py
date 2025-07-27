@@ -1413,7 +1413,7 @@ def export_user_data(user_id: int, filename: str = None, protocol_ids: list[int]
     return filename
 
 @job('import-data', timeout='3h')
-def import_data(user_id: int, archive_file: str, instance_id: str = None, import_options: dict = None, storage_object_mappings: dict = None, bulk_transfer_mode: bool = False):
+def import_data(user_id: int, archive_file: str, instance_id: str = None, import_options: dict = None, storage_object_mappings: dict = None, bulk_transfer_mode: bool = False, vault_items: bool = True):
     """
     Import user data with progress tracking and selective import options
     
@@ -1423,6 +1423,7 @@ def import_data(user_id: int, archive_file: str, instance_id: str = None, import
     :param import_options: Optional dict specifying what to import (protocols, sessions, etc.)
     :param storage_object_mappings: Optional dict mapping original storage IDs to nominated storage IDs
     :param bulk_transfer_mode: If True, import everything as-is without user-centric modifications
+    :param vault_items: If True, import items as vaulted (private to user). Default: True for security
     """
     user = User.objects.get(id=user_id)
     channel_layer = get_channel_layer()
@@ -1493,7 +1494,8 @@ def import_data(user_id: int, archive_file: str, instance_id: str = None, import
             import_options=import_options,
             progress_callback=progress_callback,
             storage_object_mappings=storage_object_mappings,
-            bulk_transfer_mode=bulk_transfer_mode
+            bulk_transfer_mode=bulk_transfer_mode,
+            vault_items=vault_items
         )
         
         if result['success']:

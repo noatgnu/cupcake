@@ -71,7 +71,7 @@ class UserDataImporter:
     COMPLETELY REVISED comprehensive user data importer with exact field mapping
     """
     
-    def __init__(self, target_user: User, import_path: str, import_options: dict = None, progress_callback=None, storage_object_mappings: dict = None, bulk_transfer_mode: bool = False):
+    def __init__(self, target_user: User, import_path: str, import_options: dict = None, progress_callback=None, storage_object_mappings: dict = None, bulk_transfer_mode: bool = False, vault_items: bool = True):
         self.target_user = target_user
         self.import_path = import_path
         self.temp_dir = tempfile.mkdtemp(prefix=f'cupcake_import_{target_user.username}_')
@@ -79,6 +79,7 @@ class UserDataImporter:
         self.media_dir = None
         self.progress_callback = progress_callback
         self.bulk_transfer_mode = bulk_transfer_mode
+        self.vault_items = vault_items
         
         # Storage object mappings for stored reagents: {original_storage_id: nominated_storage_id}
         self.storage_object_mappings = storage_object_mappings or {}
@@ -129,6 +130,18 @@ class UserDataImporter:
         # Initialize import tracking
         self.import_tracker = None
         self.import_id = uuid.uuid4()
+    
+    def _safe_get_row_value(self, row, column_name, default=None):
+        """Safely get a value from a sqlite3.Row object
+        
+        sqlite3.Row provides dictionary-like access (row['column']) but lacks
+        the .get() method, so we need this helper for safe access.
+        """
+        try:
+            value = row[column_name]
+            return value if value is not None else default
+        except (KeyError, IndexError):
+            return default
     
     def _send_progress(self, progress: int, message: str, status: str = "processing"):
         """Send progress update via callback if available"""
@@ -306,61 +319,81 @@ class UserDataImporter:
             self._send_progress(15, "Connecting to import database...")
             self._connect_to_import_database()
             
-            with transaction.atomic():
-                # Import data in dependency order with selective import
-                if self.import_options.get('lab_groups', True):
-                    self._send_progress(20, "Importing lab groups...")
-                    self._import_remote_hosts()
-                    self._import_lab_groups()
-                
-                if self.import_options.get('reagents', True):
-                    self._send_progress(25, "Importing storage and reagents...")
-                    self._import_storage_objects()
-                    self._import_reagents()
-                    self._import_stored_reagents()
-                    self._import_reagent_actions()
-                
-                if self.import_options.get('projects', True):
-                    self._send_progress(35, "Importing projects...")
-                    self._import_projects()
-                
-                if self.import_options.get('protocols', True):
-                    self._send_progress(45, "Importing protocols...")
-                    self._import_protocols_accurate()
-                
-                if self.import_options.get('sessions', True):
-                    self._send_progress(60, "Importing sessions...")
-                    self._import_sessions_accurate()
-                
-                if self.import_options.get('annotations', True):
-                    self._send_progress(70, "Importing annotations...")
-                    self._import_annotations_accurate()
-                
-                if self.import_options.get('instruments', True):
-                    self._send_progress(80, "Importing instruments...")
-                    self._import_instruments_accurate()
-                
-                # Import instrument usage after both annotations and instruments are imported
-                self._send_progress(82, "Importing instrument usage...")
-                self._import_instrument_usage_and_jobs()
-                
-                self._send_progress(85, "Importing tags and relationships...")
-                self._import_tags_and_relationships()
-                
-                if self.import_options.get('support_models', True):
-                    self._send_progress(88, "Importing metadata and support models...")
-                    self._import_metadata_and_support()
-                
-                # Import media files only if annotations were imported
-                if self.import_options.get('annotations', True):
-                    self._send_progress(92, "Importing media files...")
-                    self._import_media_files()
-                else:
-                    print("Skipping media files import (annotations not imported)")
-                
-                # Import remaining relationships
-                self._send_progress(95, "Finalizing relationships...")
-                self._import_remaining_relationships()
+            try:
+                with transaction.atomic():
+                    # Import data in correct dependency order to avoid foreign key constraint violations
+                    
+                    # PHASE 1: Independent base objects (no FK dependencies to other imported models)
+                    if self.import_options.get('lab_groups', True):
+                        self._send_progress(15, "Importing lab groups and remote hosts...")
+                        self._import_remote_hosts()
+                        self._import_lab_groups()
+                    
+                    if self.import_options.get('reagents', True):
+                        self._send_progress(20, "Importing storage objects and reagents...")
+                        self._import_storage_objects()  # Independent
+                        self._import_reagents()  # Independent
+                    
+                    if self.import_options.get('projects', True):
+                        self._send_progress(25, "Importing projects...")
+                        self._import_projects()  # Independent
+                    
+                    if self.import_options.get('instruments', True):
+                        self._send_progress(30, "Importing instruments...")
+                        self._import_instruments_accurate()  # Independent
+                    
+                    # PHASE 2: Protocol hierarchy (ProtocolModel -> ProtocolSection -> ProtocolStep)
+                    if self.import_options.get('protocols', True):
+                        self._send_progress(40, "Importing protocols and structure...")
+                        self._import_protocols_accurate()  # Creates protocols, sections, and steps
+                    
+                    # PHASE 3: Sessions (depends on protocols via many-to-many, but can be created independently)
+                    if self.import_options.get('sessions', True):
+                        self._send_progress(55, "Importing sessions...")
+                        self._import_sessions_accurate()  # Can reference protocols
+                    
+                    # PHASE 4: Dependent storage objects (depends on storage objects and reagents)
+                    if self.import_options.get('reagents', True):
+                        self._send_progress(60, "Importing stored reagents...")
+                        self._import_stored_reagents()  # Depends on StorageObject and Reagent
+                    
+                    # PHASE 5: Annotations and related objects (depend on sessions, steps, stored reagents, instruments)
+                    if self.import_options.get('annotations', True):
+                        self._send_progress(70, "Importing annotations...")
+                        self._import_annotations_accurate()  # Depends on Session, ProtocolStep, StoredReagent, AnnotationFolder
+                    
+                    # PHASE 6: Usage and action objects (depend on annotations and other objects)
+                    self._send_progress(80, "Importing usage and actions...")
+                    if self.import_options.get('instruments', True) and self.import_options.get('annotations', True):
+                        self._import_instrument_usage_and_jobs()  # Depends on Instrument and Annotation
+                    
+                    if self.import_options.get('reagents', True):
+                        self._import_reagent_actions()  # Depends on StoredReagent, Session, StepReagent
+                    
+                    # PHASE 7: Tags and relationships (depend on protocols and steps)
+                    self._send_progress(85, "Importing tags and relationships...")
+                    self._import_tags_and_relationships()  # Depends on ProtocolModel, ProtocolStep
+                    
+                    # PHASE 8: Support models and metadata (depend on annotations and instruments)
+                    if self.import_options.get('support_models', True):
+                        self._send_progress(88, "Importing metadata and support models...")
+                        self._import_metadata_and_support()  # Depends on Annotation, Instrument
+                    
+                    # PHASE 9: Media files (depend on annotations being created)
+                    if self.import_options.get('annotations', True):
+                        self._send_progress(92, "Importing media files...")
+                        self._import_media_files()
+                    else:
+                        print("Skipping media files import (annotations not imported)")
+                    
+                    # PHASE 10: Final relationships and many-to-many
+                    self._send_progress(95, "Finalizing relationships...")
+                    self._import_remaining_relationships()
+            except Exception as e:
+                print(f"Database transaction error during import: {str(e)}")
+                print("Rolling back transaction...")
+                # Re-raise with better context
+                raise Exception(f"Import failed due to database error: {str(e)}. All changes have been rolled back.")
             
             print(f"REVISED COMPREHENSIVE import completed successfully")
             print(f"Import stats: {self.stats}")
@@ -484,14 +517,21 @@ class UserDataImporter:
         cursor.execute("SELECT * FROM export_storage_objects")
         
         for row in cursor.fetchall():
-            storage_object = StorageObject.objects.create(
-                object_type=row['object_type'],
-                object_name=row['object_name'],
-                object_description=row['object_description'],
-                png_base64=row['png_base64'],
-                user=self.target_user,
+            # Create storage object with vaulting
+            storage_object_data = {
+                'object_type': row['object_type'],
+                'object_name': row['object_name'],
+                'object_description': row['object_description'],
+                'png_base64': row['png_base64'],
+                'user': self.target_user,
                 # stored_at_id will be handled later for self-references
-            )
+            }
+            
+            # Apply vaulting if enabled and not in bulk transfer mode
+            if self.vault_items and not self.bulk_transfer_mode:
+                storage_object_data['is_vaulted'] = True
+            
+            storage_object = StorageObject.objects.create(**storage_object_data)
             
             self.id_mappings['storage_objects'][row['id']] = storage_object.id
         
@@ -625,18 +665,26 @@ class UserDataImporter:
                 target_storage_id = nominated_storage_id
                 notes = f"[IMPORTED] {row['notes']}" if row['notes'] else "[IMPORTED] Stored Reagent"
             
-            # Create the stored reagent
-            stored_reagent = StoredReagent.objects.create(
-                reagent_id=self.id_mappings['reagents'][reagent_id],
-                storage_object_id=target_storage_id,
-                quantity=row['quantity'],
-                notes=notes,
-                barcode=row['barcode'],
-                png_base64=row['png_base64'],
-                shareable=bool(row['shareable']) if row['shareable'] is not None else True,
-                user=self.target_user,
+            # Create the stored reagent with vaulting
+            stored_reagent_data = {
+                'reagent_id': self.id_mappings['reagents'][reagent_id],
+                'storage_object_id': target_storage_id,
+                'quantity': row['quantity'],
+                'notes': notes,
+                'barcode': row['barcode'],
+                'png_base64': row['png_base64'],
+                'shareable': bool(row['shareable']) if row['shareable'] is not None else True,
+                'user': self.target_user,
                 # Add other fields as needed from the export schema
-            )
+            }
+            
+            # Apply vaulting if enabled and not in bulk transfer mode
+            if self.vault_items and not self.bulk_transfer_mode:
+                stored_reagent_data['is_vaulted'] = True
+                stored_reagent_data['shareable'] = False  # Vault items are not shareable by default
+                stored_reagent_data['access_all'] = False
+            
+            stored_reagent = StoredReagent.objects.create(**stored_reagent_data)
             
             # Track created stored reagent
             self._track_created_object(stored_reagent, row['id'])
@@ -702,11 +750,18 @@ class UserDataImporter:
         cursor.execute("SELECT * FROM export_projects")
         
         for row in cursor.fetchall():
-            project = Project.objects.create(
-                project_name=row['project_name'],
-                project_description=row['project_description'],
-                owner=self.target_user,
-            )
+            # Create project with vaulting
+            project_data = {
+                'project_name': row['project_name'],
+                'project_description': row['project_description'],
+                'owner': self.target_user,
+            }
+            
+            # Apply vaulting if enabled and not in bulk transfer mode
+            if self.vault_items and not self.bulk_transfer_mode:
+                project_data['is_vaulted'] = True
+            
+            project = Project.objects.create(**project_data)
             
             self.id_mappings['projects'][row['id']] = project.id
         
@@ -728,20 +783,26 @@ class UserDataImporter:
             elif not protocol_title:
                 protocol_title = "[IMPORTED] Protocol"
             
-            # Create protocol with exact field mapping
-            protocol = ProtocolModel.objects.create(
-                protocol_id=row['protocol_id'],
-                protocol_title=protocol_title,  # Exact field name
-                protocol_description=row['protocol_description'],
-                protocol_url=row['protocol_url'],
-                protocol_version_uri=row['protocol_version_uri'],
-                protocol_created_on=datetime.fromisoformat(row['protocol_created_on']) if row['protocol_created_on'] else timezone.now(),
-                protocol_doi=row['protocol_doi'],
-                enabled=bool(row['enabled']),
-                model_hash=row['model_hash'],
-                user=self.target_user,
+            # Create protocol with exact field mapping and vaulting
+            protocol_data = {
+                'protocol_id': row['protocol_id'],
+                'protocol_title': protocol_title,  # Exact field name
+                'protocol_description': row['protocol_description'],
+                'protocol_url': row['protocol_url'],
+                'protocol_version_uri': row['protocol_version_uri'],
+                'protocol_created_on': datetime.fromisoformat(row['protocol_created_on']) if row['protocol_created_on'] else timezone.now(),
+                'protocol_doi': row['protocol_doi'],
+                'enabled': bool(row['enabled']),
+                'model_hash': row['model_hash'],
+                'user': self.target_user,
                 # remote_host will be set later if needed
-            )
+            }
+            
+            # Apply vaulting if enabled and not in bulk transfer mode
+            if self.vault_items and not self.bulk_transfer_mode:
+                protocol_data['is_vaulted'] = True
+            
+            protocol = ProtocolModel.objects.create(**protocol_data)
             
             # Track created object
             self._track_created_object(protocol, row['id'])
@@ -758,21 +819,27 @@ class UserDataImporter:
                     protocol_id=self.id_mappings['protocols'][row['protocol_id']],
                 )
                 self._track_created_object(section, row['id'])
+                # Track section ID mapping for step references
+                self.id_mappings.setdefault('sections', {})[row['id']] = section.id
         
         # Import protocol steps
         cursor.execute("SELECT * FROM export_protocol_steps")
         step_mapping = {}
         
-        # First pass: create steps without foreign key references
+        # First pass: create steps without previous_step/branch_from references
         for row in cursor.fetchall():
             if row['protocol_id'] in self.id_mappings['protocols']:
+                # Map section reference if available (safely handle missing columns)
+                section_id = self.id_mappings.get('sections', {}).get(self._safe_get_row_value(row, 'step_section_id'))
+                
                 step = ProtocolStep.objects.create(
                     step_id=row['step_id'],
                     step_description=row['step_description'],
                     step_duration=row['step_duration'],
                     original=bool(row['original']),
                     protocol_id=self.id_mappings['protocols'][row['protocol_id']],
-                    # Will set step_section_id, previous_step_id, branch_from_id later
+                    step_section_id=section_id,
+                    # Will set previous_step_id, branch_from_id in second pass
                 )
                 step_mapping[row['id']] = step.id
                 self.id_mappings['steps'][row['id']] = step.id
@@ -902,24 +969,43 @@ class UserDataImporter:
         
         # First pass: create folders without parent references
         for row in cursor.fetchall():
-            folder = AnnotationFolder.objects.create(
-                folder_name=row['folder_name'],
-                session_id=self.id_mappings['sessions'].get(row['session_id']),
-                is_shared_document_folder=bool(row['is_shared_document_folder']),
-                owner=self.target_user,
-                # parent_folder_id will be set in second pass
-            )
-            folder_mapping[row['id']] = folder.id
-            self.id_mappings['folders'][row['id']] = folder.id
+            try:
+                # Map all foreign key relationships (safely handle missing columns)
+                session_id = self.id_mappings['sessions'].get(self._safe_get_row_value(row, 'session_id'))
+                instrument_id = self.id_mappings['instruments'].get(self._safe_get_row_value(row, 'instrument_id'))
+                stored_reagent_id = self.id_mappings['stored_reagents'].get(self._safe_get_row_value(row, 'stored_reagent_id'))
+                
+                folder = AnnotationFolder.objects.create(
+                    folder_name=row['folder_name'],
+                    session_id=session_id,
+                    instrument_id=instrument_id,
+                    stored_reagent_id=stored_reagent_id,
+                    is_shared_document_folder=bool(row['is_shared_document_folder']),
+                    owner=self.target_user,
+                    # parent_folder_id will be set in second pass
+                )
+                folder_mapping[row['id']] = folder.id
+                self.id_mappings['folders'][row['id']] = folder.id
+            except Exception as e:
+                folder_id = row['id'] if 'id' in row.keys() else 'unknown'
+                print(f"Failed to create annotation folder {folder_id}: {str(e)}")
+                print(f"Folder data: folder_name={row['folder_name']}, "
+                      f"session_id={session_id}, instrument_id={instrument_id}, stored_reagent_id={stored_reagent_id}")
+                raise Exception(f"Annotation folder creation failed for folder {folder_id}: {str(e)}")
         
         # Second pass: update parent folder references
         cursor.execute("SELECT * FROM export_annotation_folders")
         for row in cursor.fetchall():
             if row['id'] in folder_mapping and row['parent_folder_id']:
                 if row['parent_folder_id'] in folder_mapping:
-                    folder = AnnotationFolder.objects.get(id=folder_mapping[row['id']])
-                    folder.parent_folder_id = folder_mapping[row['parent_folder_id']]
-                    folder.save()
+                    try:
+                        folder = AnnotationFolder.objects.get(id=folder_mapping[row['id']])
+                        folder.parent_folder_id = folder_mapping[row['parent_folder_id']]
+                        folder.save()
+                    except Exception as e:
+                        folder_id = row['id'] if 'id' in row.keys() else 'unknown'
+                        print(f"Failed to update parent folder for folder {folder_id}: {str(e)}")
+                        raise Exception(f"Parent folder assignment failed for folder {folder_id}: {str(e)}")
         
         print("Importing annotations...")
         
@@ -977,23 +1063,62 @@ class UserDataImporter:
                 elif not converted_from_instrument and not annotation_name:
                     annotation_name = "[IMPORTED] Annotation"
             
-            annotation = Annotation.objects.create(
-                annotation=annotation_text,
-                annotation_type=annotation_type,
-                annotation_name=annotation_name,
-                transcribed=bool(row['transcribed']),
-                transcription=row['transcription'],
-                language=row['language'],
-                translation=row['translation'],
-                scratched=bool(row['scratched']),
-                summary=row['summary'],
-                fixed=bool(row['fixed']),
-                session_id=self.id_mappings['sessions'].get(row['session_id']),
-                step_id=self.id_mappings['steps'].get(row['step_id']),
-                folder_id=self.id_mappings['folders'].get(row['folder_id']),
-                user=self.target_user,
-                # file will be handled during media import
-            )
+            try:
+                # Map all foreign key relationships (safely handle missing columns)
+                session_id = self.id_mappings['sessions'].get(self._safe_get_row_value(row, 'session_id'))
+                step_id = self.id_mappings['steps'].get(self._safe_get_row_value(row, 'step_id'))
+                stored_reagent_id = self.id_mappings['stored_reagents'].get(self._safe_get_row_value(row, 'stored_reagent_id'))
+                folder_id = self.id_mappings['folders'].get(self._safe_get_row_value(row, 'folder_id'))
+                
+                # Validate foreign key references before creation
+                if session_id is not None:
+                    if not Session.objects.filter(id=session_id).exists():
+                        print(f"ERROR: Session with id={session_id} does not exist")
+                        session_id = None  # Set to None to avoid FK constraint
+                
+                if step_id is not None:
+                    if not ProtocolStep.objects.filter(id=step_id).exists():
+                        print(f"ERROR: ProtocolStep with id={step_id} does not exist")
+                        step_id = None  # Set to None to avoid FK constraint
+                
+                if stored_reagent_id is not None:
+                    if not StoredReagent.objects.filter(id=stored_reagent_id).exists():
+                        print(f"ERROR: StoredReagent with id={stored_reagent_id} does not exist")
+                        stored_reagent_id = None  # Set to None to avoid FK constraint
+                
+                if folder_id is not None:
+                    if not AnnotationFolder.objects.filter(id=folder_id).exists():
+                        print(f"ERROR: AnnotationFolder with id={folder_id} does not exist")
+                        folder_id = None  # Set to None to avoid FK constraint
+                
+                annotation = Annotation.objects.create(
+                    annotation=annotation_text,
+                    annotation_type=annotation_type,
+                    annotation_name=annotation_name,
+                    transcribed=bool(row['transcribed']),
+                    transcription=row['transcription'],
+                    language=row['language'],
+                    translation=row['translation'],
+                    scratched=bool(row['scratched']),
+                    summary=row['summary'],
+                    fixed=bool(row['fixed']),
+                    session_id=session_id,
+                    step_id=step_id,
+                    stored_reagent_id=stored_reagent_id,
+                    folder_id=folder_id,
+                    user=self.target_user,
+                    # file will be handled during media import
+                )
+            except Exception as e:
+                annotation_id = row['id'] if 'id' in row.keys() else 'unknown'
+                print(f"Failed to create annotation {annotation_id}: {str(e)}")
+                print(f"Annotation data: session_id={session_id}, step_id={step_id}, "
+                      f"stored_reagent_id={stored_reagent_id}, folder_id={folder_id}")
+                # Print the actual exception type for better debugging
+                print(f"Exception type: {type(e).__name__}")
+                import traceback
+                print(f"Traceback: {traceback.format_exc()}")
+                raise Exception(f"Annotation creation failed for annotation {annotation_id}: {str(e)}")
             
             # Track the created annotation
             self._track_created_object(annotation, row['id'])
@@ -1096,12 +1221,20 @@ class UserDataImporter:
                     elif not instrument_name:
                         instrument_name = "[IMPORTED] Instrument"
                 
-                instrument = Instrument.objects.create(
-                    name=instrument_name,
-                    description=row['description'],
-                    accepts_bookings=True,  # Default value since not exported in current schema
+                # Create instrument with vaulting
+                instrument_data = {
+                    'name': instrument_name,
+                    'description': row['description'],
+                    'accepts_bookings': True,  # Default value since not exported in current schema
+                    'user': self.target_user,
                     # Add other instrument fields as needed
-                )
+                }
+                
+                # Apply vaulting if enabled and not in bulk transfer mode
+                if self.vault_items and not self.bulk_transfer_mode:
+                    instrument_data['is_vaulted'] = True
+                
+                instrument = Instrument.objects.create(**instrument_data)
                 self._track_created_object(instrument, row['id'])
                 self.id_mappings['instruments'][row['id']] = instrument.id
             
@@ -1161,10 +1294,26 @@ class UserDataImporter:
         # Import tags
         cursor.execute("SELECT * FROM export_tags")
         for row in cursor.fetchall():
-            tag, created = Tag.objects.get_or_create(
-                tag=row['tag'],
-                defaults={}
-            )
+            # For tags, apply vaulting if enabled and not in bulk transfer mode
+            defaults = {}
+            if self.vault_items and not self.bulk_transfer_mode:
+                defaults = {
+                    'is_vaulted': True,
+                    'user': self.target_user
+                }
+                # In vaulted mode, create new tags to avoid conflicts
+                tag = Tag.objects.create(
+                    tag=row['tag'],
+                    **defaults
+                )
+                created = True
+            else:
+                # In non-vaulted mode, use get_or_create to share tags
+                tag, created = Tag.objects.get_or_create(
+                    tag=row['tag'],
+                    defaults=defaults
+                )
+            
             self.id_mappings['tags'][row['id']] = tag.id
         
         # Import protocol tags
@@ -2035,7 +2184,7 @@ def list_user_imports(user: User, include_reverted: bool = False) -> List[Dict[s
     return imports
 
 
-def import_user_data_revised(target_user: User, import_path: str, import_options: dict = None, progress_callback=None, storage_object_mappings: dict = None, bulk_transfer_mode: bool = False) -> Dict[str, Any]:
+def import_user_data_revised(target_user: User, import_path: str, import_options: dict = None, progress_callback=None, storage_object_mappings: dict = None, bulk_transfer_mode: bool = False, vault_items: bool = True) -> Dict[str, Any]:
     """
     REVISED comprehensive function to import user data with progress tracking and selective import.
     
@@ -2046,9 +2195,10 @@ def import_user_data_revised(target_user: User, import_path: str, import_options
         progress_callback: Optional callback function for progress updates
         storage_object_mappings: Optional dict mapping original storage IDs to nominated storage IDs
         bulk_transfer_mode: If True, import everything as-is without user-centric modifications
+        vault_items: If True, import items as vaulted (private to user). Default: True for security
     
     Returns:
         Dict: Import results and statistics
     """
-    importer = UserDataImporter(target_user, import_path, import_options, progress_callback, storage_object_mappings, bulk_transfer_mode)
+    importer = UserDataImporter(target_user, import_path, import_options, progress_callback, storage_object_mappings, bulk_transfer_mode, vault_items)
     return importer.import_user_data()

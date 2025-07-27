@@ -81,9 +81,10 @@ class BulkTransferAPIEndpointTest(APITestCase):
         mock_import_task.assert_called_once()
         args, kwargs = mock_import_task.call_args
         
-        # Check that bulk_transfer_mode was passed correctly
-        self.assertEqual(len(args), 6)  # user_id, file_path, custom_id, import_options, storage_mappings, bulk_transfer_mode
+        # Check that bulk_transfer_mode and vault_items were passed correctly
+        self.assertEqual(len(args), 7)  # user_id, file_path, custom_id, import_options, storage_mappings, bulk_transfer_mode, vault_items
         self.assertTrue(args[5])  # bulk_transfer_mode should be True
+        self.assertTrue(args[6])  # vault_items should be True (default)
     
     @patch('cc.rq_tasks.import_data.delay')
     def test_import_user_data_endpoint_normal_mode(self, mock_import_task):
@@ -107,8 +108,9 @@ class BulkTransferAPIEndpointTest(APITestCase):
         args, kwargs = mock_import_task.call_args
         
         # Check that bulk_transfer_mode defaults to False
-        self.assertEqual(len(args), 6)
+        self.assertEqual(len(args), 7)  # user_id, file_path, custom_id, import_options, storage_mappings, bulk_transfer_mode, vault_items
         self.assertFalse(args[5])  # bulk_transfer_mode should be False
+        self.assertTrue(args[6])  # vault_items should be True (default)
     
     @patch('cc.rq_tasks.dry_run_import_data.delay')
     def test_dry_run_import_endpoint_bulk_mode(self, mock_dry_run_task):
@@ -326,7 +328,9 @@ class BulkTransferModeParameterValidationTest(APITestCase):
                 self.assertEqual(response.status_code, status.HTTP_200_OK)
                 
                 args = mock_task.call_args[0]
+                self.assertEqual(len(args), 7)  # Ensure all parameters are passed
                 self.assertTrue(args[5])  # bulk_transfer_mode should be True
+                self.assertTrue(args[6])  # vault_items should be True (default)
             
             # Test with boolean False
             with patch('cc.rq_tasks.import_data.delay') as mock_task:
@@ -338,7 +342,9 @@ class BulkTransferModeParameterValidationTest(APITestCase):
                 self.assertEqual(response.status_code, status.HTTP_200_OK)
                 
                 args = mock_task.call_args[0]
+                self.assertEqual(len(args), 7)  # Ensure all parameters are passed
                 self.assertFalse(args[5])  # bulk_transfer_mode should be False
+                self.assertTrue(args[6])  # vault_items should be True (default)
             
             # Test without parameter (should default to False)
             with patch('cc.rq_tasks.import_data.delay') as mock_task:
@@ -349,7 +355,9 @@ class BulkTransferModeParameterValidationTest(APITestCase):
                 self.assertEqual(response.status_code, status.HTTP_200_OK)
                 
                 args = mock_task.call_args[0]
+                self.assertEqual(len(args), 7)  # Ensure all parameters are passed
                 self.assertFalse(args[5])  # bulk_transfer_mode should default to False
+                self.assertTrue(args[6])  # vault_items should be True (default)
         
         finally:
             if os.path.exists(chunked_upload.file.path):

@@ -2501,11 +2501,12 @@ class UserViewSet(ModelViewSet, FilterMixin):
         import_options = request.data.get('import_options', None)
         storage_object_mappings = request.data.get('storage_object_mappings', None)
         bulk_transfer_mode = request.data.get('bulk_transfer_mode', False)
+        vault_items = request.data.get('vault_items', True)  # Default to True for security
         custom_id = self.request.META.get('HTTP_X_CUPCAKE_INSTANCE_ID', None)
         chunked_upload = ChunkedUpload.objects.get(id=chunked_upload_id, user=user)
         if chunked_upload.completed_at:
             file_path = chunked_upload.file.path
-            import_data.delay(user.id, file_path, custom_id, import_options, storage_object_mappings, bulk_transfer_mode)
+            import_data.delay(user.id, file_path, custom_id, import_options, storage_object_mappings, bulk_transfer_mode, vault_items)
             return Response(status=status.HTTP_200_OK)
         return Response(status=status.HTTP_400_BAD_REQUEST)
 

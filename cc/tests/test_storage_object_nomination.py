@@ -357,7 +357,7 @@ class StorageObjectNominationAPITest(APITestCase):
         args, kwargs = mock_import_task.call_args
         
         # Check that storage_object_mappings was passed correctly
-        self.assertEqual(len(args), 6)  # user_id, file_path, custom_id, import_options, storage_mappings, bulk_transfer_mode
+        self.assertEqual(len(args), 7)  # user_id, file_path, custom_id, import_options, storage_mappings, bulk_transfer_mode, vault_items
         storage_mappings = args[4]
         self.assertIsNotNone(storage_mappings)
         self.assertEqual(storage_mappings['1'], self.storage1.id)

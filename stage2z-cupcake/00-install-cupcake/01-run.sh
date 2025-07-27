@@ -38,30 +38,20 @@ apt-get upgrade -y || {
     exit 1
 }
 
-# Install PostgreSQL 16 from official PostgreSQL repository
-log_cupcake "Installing PostgreSQL 16 from official repository..."
+# Install PostgreSQL from official Raspbian repositories
+log_cupcake "Installing PostgreSQL from Raspbian repositories..."
 export DEBIAN_FRONTEND=noninteractive
 export APT_LISTCHANGES_FRONTEND=none
 
-# Install prerequisites for repository setup
-apt-get install -y ca-certificates gnupg curl wget
-
-# Add PostgreSQL signing key and repository
-log_cupcake "Adding PostgreSQL APT repository..."
-curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg
-
-# Add repository for Bookworm
-echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list
-
-# Update package lists with new repository
+# Update package lists
 apt-get update
 
-# Install PostgreSQL 16 and related packages
-log_cupcake "Installing PostgreSQL 16 packages..."
-apt-get install -y postgresql-16 postgresql-client-16
+# Install PostgreSQL (default version from Raspbian)
+log_cupcake "Installing PostgreSQL packages..."
+apt-get install -y postgresql postgresql-client
 
 # PostgreSQL service is automatically configured by package installation
-log_cupcake "PostgreSQL 16 installation completed via package manager"
+log_cupcake "PostgreSQL installation completed via package manager"
 
 # Install other dependencies
 log_cupcake "Installing other CUPCAKE dependencies..."

@@ -189,9 +189,11 @@ log_cupcake "Downloading Whisper models (optimized for Pi)..."
 su - cupcake -c "cd /opt/cupcake/whisper.cpp && ./models/download-ggml-model.sh base.en"
 su - cupcake -c "cd /opt/cupcake/whisper.cpp && ./models/download-ggml-model.sh small.en"
 
-# Build Whisper.cpp
+# Build Whisper.cpp with compatible ARM flags for Cortex-A57
 log_cupcake "Building Whisper.cpp..."
-su - cupcake -c "cd /opt/cupcake/whisper.cpp && cmake -B build"
+export CMAKE_CXX_FLAGS="-mcpu=cortex-a72 -mtune=cortex-a72"
+export CMAKE_C_FLAGS="-mcpu=cortex-a72 -mtune=cortex-a72"
+su - cupcake -c "cd /opt/cupcake/whisper.cpp && CMAKE_CXX_FLAGS='-mcpu=cortex-a72 -mtune=cortex-a72' CMAKE_C_FLAGS='-mcpu=cortex-a72 -mtune=cortex-a72' cmake -B build -DGGML_NATIVE=OFF"
 su - cupcake -c "cd /opt/cupcake/whisper.cpp && cmake --build build --config Release -j 2"
 
 # Return to app directory

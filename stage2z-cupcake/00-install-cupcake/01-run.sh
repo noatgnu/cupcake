@@ -59,7 +59,7 @@ apt-get update
 log_cupcake "Installing CUPCAKE dependencies with PostgreSQL 14..."
 apt-get install -y \
     python3 python3-pip python3-venv python3-dev python3-setuptools python3-wheel \
-    postgresql-14 postgresql-client-14 postgresql-contrib-14 \
+    postgresql-14 postgresql-client-14 \
     redis-server \
     nginx \
     git unzip \

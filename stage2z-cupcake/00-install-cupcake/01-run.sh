@@ -196,7 +196,7 @@ export CMAKE_CXX_FLAGS="-mcpu=cortex-a72 -mtune=cortex-a72"
 export CMAKE_C_FLAGS="-mcpu=cortex-a72 -mtune=cortex-a72"
 # Add atomic library for cross-compilation safety (needed in some ARM environments)
 export CMAKE_EXE_LINKER_FLAGS="-latomic"
-su - cupcake -c "cd /opt/cupcake/whisper.cpp && CMAKE_CXX_FLAGS='-mcpu=cortex-a72 -mtune=cortex-a72' CMAKE_C_FLAGS='-mcpu=cortex-a72 -mtune=cortex-a72' CMAKE_EXE_LINKER_FLAGS='-latomic' cmake -B build -DGGML_NATIVE=OFF -DWHISPER_BUILD_TESTS=OFF"
+su - cupcake -c "cd /opt/cupcake/whisper.cpp && cmake -B build -DGGML_NATIVE=OFF -DWHISPER_BUILD_TESTS=OFF -DCMAKE_CXX_FLAGS='-mcpu=cortex-a72 -mtune=cortex-a72' -DCMAKE_C_FLAGS='-mcpu=cortex-a72 -mtune=cortex-a72' -DCMAKE_EXE_LINKER_FLAGS='-latomic'"
 su - cupcake -c "cd /opt/cupcake/whisper.cpp && cmake --build build --config Release -j 2"
 
 # Return to app directory

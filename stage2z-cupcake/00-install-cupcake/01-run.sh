@@ -46,7 +46,7 @@ export APT_LISTCHANGES_FRONTEND=none
 # Install build dependencies for PostgreSQL compilation
 log_cupcake "Installing PostgreSQL build dependencies..."
 apt-get install -y \
-    build-essential zlib1g-dev libreadline-dev libssl-dev libxml2-dev libxslt1-dev \
+    build-essential bison flex zlib1g-dev libreadline-dev libssl-dev libxml2-dev libxslt1-dev \
     libicu-dev pkg-config libedit-dev libpam0g-dev libldap2-dev libkrb5-dev \
     gettext uuid-dev liblz4-dev libzstd-dev
 

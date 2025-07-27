@@ -38,84 +38,20 @@ apt-get upgrade -y || {
     exit 1
 }
 
-# Compile PostgreSQL 14 from source for ARM64 compatibility
-log_cupcake "Compiling PostgreSQL 14 from source..."
+# Install PostgreSQL 16 from Raspbian repositories
+log_cupcake "Installing PostgreSQL 16 from Raspbian repositories..."
 export DEBIAN_FRONTEND=noninteractive
 export APT_LISTCHANGES_FRONTEND=none
 
-# Install build dependencies for PostgreSQL compilation
-log_cupcake "Installing PostgreSQL build dependencies..."
-apt-get install -y \
-    build-essential bison flex zlib1g-dev libreadline-dev libssl-dev libxml2-dev libxslt1-dev \
-    libicu-dev pkg-config libedit-dev libpam0g-dev libldap2-dev libkrb5-dev \
-    gettext uuid-dev liblz4-dev libzstd-dev
+# Update package lists first
+apt-get update
 
-# Create postgres user
-log_cupcake "Creating postgres user..."
-useradd -r -s /bin/bash -d /var/lib/postgresql postgres || true
+# Install PostgreSQL 16 and related packages
+log_cupcake "Installing PostgreSQL 16 packages..."
+apt-get install -y postgresql-16 postgresql-client-16
 
-# Download and compile PostgreSQL 14
-log_cupcake "Downloading PostgreSQL 14.18 source..."
-cd /tmp
-wget https://ftp.postgresql.org/pub/source/v14.18/postgresql-14.18.tar.gz
-tar xzf postgresql-14.18.tar.gz
-cd postgresql-14.18
-
-# Configure build
-log_cupcake "Configuring PostgreSQL build..."
-./configure \
-    --prefix=/usr/local/pgsql \
-    --with-openssl \
-    --with-libxml \
-    --with-libxslt \
-    --with-icu \
-    --with-ldap \
-    --with-pam \
-    --with-uuid=e2fs \
-    --with-lz4 \
-    --with-zstd \
-    --enable-thread-safety
-
-# Compile (use all available cores)
-log_cupcake "Compiling PostgreSQL (this may take 10-15 minutes)..."
-make -j$(nproc)
-
-# Install
-log_cupcake "Installing PostgreSQL..."
-make install
-
-# Set up environment
-echo 'export PATH=/usr/local/pgsql/bin:$PATH' >> /etc/profile
-echo 'export LD_LIBRARY_PATH=/usr/local/pgsql/lib:$LD_LIBRARY_PATH' >> /etc/profile
-export PATH="/usr/local/pgsql/bin:$PATH"
-export LD_LIBRARY_PATH="/usr/local/pgsql/lib:$LD_LIBRARY_PATH"
-
-# Initialize database
-log_cupcake "Initializing PostgreSQL database..."
-mkdir -p /var/lib/postgresql/data
-chown postgres:postgres /var/lib/postgresql/data
-su - postgres -c '/usr/local/pgsql/bin/initdb -D /var/lib/postgresql/data'
-
-# Create systemd service
-log_cupcake "Creating PostgreSQL systemd service..."
-cat > /etc/systemd/system/postgresql.service << 'EOF'
-[Unit]
-Description=PostgreSQL database server
-Documentation=man:postgres(1)
-After=network.target
-
-[Service]
-Type=notify
-User=postgres
-ExecStart=/usr/local/pgsql/bin/postgres -D /var/lib/postgresql/data
-ExecReload=/bin/kill -HUP $MAINPID
-KillMode=mixed
-KillSignal=SIGINT
-TimeoutSec=0
-
-[Install]
-WantedBy=multi-user.target
-EOF
+# PostgreSQL service is automatically configured by package installation
+log_cupcake "PostgreSQL 16 installation completed via package manager"
 
 # Install other dependencies
 log_cupcake "Installing other CUPCAKE dependencies..."
@@ -274,8 +210,8 @@ systemctl enable postgresql
 
 # Configure PostgreSQL
 log_cupcake "Configuring PostgreSQL database..."
-su - postgres -c "/usr/local/pgsql/bin/createuser -D -A -P cupcake" || true
-su - postgres -c "/usr/local/pgsql/bin/createdb -O cupcake cupcake" || true
+su - postgres -c "createuser -D -A -P cupcake" || true
+su - postgres -c "createdb -O cupcake cupcake" || true
 
 # Configure environment
 log_cupcake "Setting up environment configuration..."
@@ -428,7 +364,7 @@ su - cupcake -c "cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate &&
 
 # Test database connection
 log_cupcake "Testing database connection..."
-su - postgres -c "/usr/local/pgsql/bin/psql -d cupcake -c 'SELECT 1;'" > /dev/null || {
+su - postgres -c "psql -d cupcake -c 'SELECT 1;'" > /dev/null || {
     log_cupcake "FATAL: Database connection test failed"
     exit 1
 }

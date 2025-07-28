@@ -79,7 +79,6 @@ log_cupcake "Following official Apache Arrow documentation for minimal build"
 log_cupcake "Installing minimal Arrow build dependencies..."
 apt-get install -y \
     build-essential \
-    ninja-build \
     cmake \
     python3-dev
 
@@ -87,10 +86,10 @@ apt-get install -y \
 current_cmake_version=$(cmake --version 2>/dev/null | head -n1 | cut -d' ' -f3 || echo "0.0.0")
 log_cupcake "Current CMake version: $current_cmake_version"
 
-# For simplicity, use a stable Arrow version that works with system CMake
-log_cupcake "Using Apache Arrow 17.0.0 for better compatibility with system CMake..."
+# Use exact Arrow version matching PyArrow in requirements.txt (20.0.0)
+log_cupcake "Using Apache Arrow 20.0.0 to match PyArrow version in requirements.txt..."
 cd /tmp
-git clone --depth 1 --branch apache-arrow-17.0.0 https://github.com/apache/arrow.git arrow-build || {
+git clone --depth 1 --branch apache-arrow-20.0.0 https://github.com/apache/arrow.git arrow-build || {
     log_cupcake "FATAL: Failed to clone Apache Arrow repository"
     exit 1
 }
@@ -105,7 +104,7 @@ log_cupcake "Configuring minimal Arrow build for PyArrow support..."
 mkdir cpp/build
 cd cpp/build
 
-# Minimal configuration based on official docs for PyArrow support
+# Minimal configuration based on official docs (removed deprecated ARROW_PYTHON flag)
 cmake .. \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=$ARROW_HOME \
@@ -116,7 +115,6 @@ cmake .. \
     -DARROW_FILESYSTEM=ON \
     -DARROW_JSON=ON \
     -DARROW_PARQUET=ON \
-    -DARROW_PYTHON=ON \
     -DARROW_BUILD_TESTS=OFF \
     -DARROW_BUILD_BENCHMARKS=OFF \
     -DARROW_BUILD_EXAMPLES=OFF \
@@ -127,16 +125,16 @@ cmake .. \
     exit 1
 }
 
-# Build with single thread to avoid memory issues
+# Build with single thread to avoid memory issues using make instead of ninja
 log_cupcake "Building Arrow C++ libraries (this may take 30-60 minutes)..."
-ninja -j1 || {
+make -j1 || {
     log_cupcake "FATAL: Arrow C++ build failed"
     exit 1
 }
 
 # Install Arrow libraries
 log_cupcake "Installing Arrow C++ libraries..."
-ninja install || {
+make install || {
     log_cupcake "FATAL: Arrow C++ installation failed"
     exit 1
 }

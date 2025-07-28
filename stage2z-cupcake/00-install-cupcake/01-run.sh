@@ -128,12 +128,29 @@ log_cupcake "✓ Python virtual environment created successfully"
 
 # Install Python dependencies using pip (matching native script lines 520-562)
 log_cupcake "Installing Python dependencies with pip..."
+
+# Ensure proper ownership and permissions for pip cache and build directories
+mkdir -p /home/cupcake/.cache/pip
+mkdir -p /tmp/pip-build
+chown -R cupcake:cupcake /home/cupcake/.cache
+chown -R cupcake:cupcake /tmp/pip-build
+chmod -R 755 /home/cupcake/.cache
+chmod -R 755 /tmp/pip-build
+
+# Set proper build environment for ARM compilation
+export TMPDIR=/tmp/pip-build
+export PIP_CACHE_DIR=/home/cupcake/.cache/pip
+export PIP_BUILD_DIR=/tmp/pip-build
+
 su - cupcake -c "
+    export TMPDIR=/tmp/pip-build
+    export PIP_CACHE_DIR=/home/cupcake/.cache/pip
+    export PIP_BUILD_DIR=/tmp/pip-build
     source /opt/cupcake/venv/bin/activate
     pip install --upgrade pip setuptools wheel
     
-    # Install CUPCAKE Python dependencies from requirements.txt
-    pip install -r /opt/cupcake/app/requirements.txt
+    # Install CUPCAKE Python dependencies from requirements.txt with proper build settings
+    pip install --no-cache-dir --build /tmp/pip-build -r /opt/cupcake/app/requirements.txt
 "
 
 # Setup Whisper.cpp for transcription worker

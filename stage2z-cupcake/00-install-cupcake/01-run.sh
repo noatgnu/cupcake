@@ -125,9 +125,9 @@ cmake .. \
     exit 1
 }
 
-# Build with single thread to avoid memory issues using make instead of ninja
-log_cupcake "Building Arrow C++ libraries (this may take 30-60 minutes)..."
-make -j1 || {
+# Build with full parallelism on GitHub Actions runner
+log_cupcake "Building Arrow C++ libraries with full parallelism..."
+make -j$(nproc) || {
     log_cupcake "FATAL: Arrow C++ build failed"
     exit 1
 }

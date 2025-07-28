@@ -1,5 +1,6 @@
 .idea
 data2
+data3
 models
 *.tar.gz
 backups

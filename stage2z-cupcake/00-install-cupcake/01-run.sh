@@ -65,7 +65,13 @@ apt-get install -y \
     fail2ban \
     htop nano vim \
     libssl-dev libffi-dev libjpeg-dev libpng-dev libfreetype6-dev \
-    cmake tesseract-ocr tesseract-ocr-eng
+    cmake tesseract-ocr tesseract-ocr-eng \
+    libarrow-dev libarrow-glib-dev libparquet-dev \
+    pkg-config autotools-dev autoconf libtool \
+    libboost-dev libboost-filesystem-dev libboost-system-dev \
+    libbz2-dev liblz4-dev libzstd-dev libsnappy-dev \
+    libthrift-dev libre2-dev libutf8proc-dev \
+    libgflags-dev libglog-dev
 
 # Create CUPCAKE user
 log_cupcake "Creating CUPCAKE system user..."
@@ -146,11 +152,19 @@ su - cupcake -c "
     export TMPDIR=/tmp/pip-build
     export PIP_CACHE_DIR=/home/cupcake/.cache/pip
     export PIP_BUILD_DIR=/tmp/pip-build
+    
+    # Set compilation flags for ARM64 and Arrow/DuckDB dependencies
+    export CFLAGS='-mcpu=cortex-a72 -mtune=cortex-a72 -O2'
+    export CXXFLAGS='-mcpu=cortex-a72 -mtune=cortex-a72 -O2'
+    export LDFLAGS='-latomic'
+    export PYARROW_CMAKE_OPTIONS='-DARROW_PYTHON=ON -DARROW_COMPUTE=ON -DARROW_CSV=ON -DARROW_DATASET=ON -DARROW_FILESYSTEM=ON -DARROW_HDFS=OFF -DARROW_JSON=ON -DARROW_PARQUET=ON'
+    export PYARROW_PARALLEL=2
+    
     source /opt/cupcake/venv/bin/activate
     pip install --upgrade pip setuptools wheel
     
     # Install CUPCAKE Python dependencies from requirements.txt with proper build settings
-    pip install --no-cache-dir --build /tmp/pip-build -r /opt/cupcake/app/requirements.txt
+    pip install --no-cache-dir --build /tmp/pip-build --verbose -r /opt/cupcake/app/requirements.txt
 "
 
 # Setup Whisper.cpp for transcription worker

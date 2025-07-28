@@ -71,36 +71,102 @@ apt-get install -y \
     libicu-dev libxml2-dev libxslt1-dev \
     libffi-dev libssl-dev zlib1g-dev
 
-# Install Apache Arrow C++ libraries for PyArrow support
-log_cupcake "Installing Apache Arrow C++ libraries..."
-# PyArrow requires Arrow C++ libraries to build from source on ARM64
+# Build Apache Arrow C++ libraries from source for PyArrow support
+log_cupcake "Building Apache Arrow C++ libraries from source..."
 log_cupcake "CRITICAL: Apache Arrow C++ libraries are REQUIRED for PyArrow compilation"
 
-# Use the official Apache Arrow installation method from https://arrow.apache.org/install/
-log_cupcake "Installing Apache Arrow using official documentation method..."
+# Install Arrow build dependencies
+log_cupcake "Installing Arrow build dependencies..."
+apt-get install -y \
+    ninja-build \
+    libboost-all-dev \
+    libboost-filesystem-dev \
+    libboost-system-dev \
+    libncurses5-dev \
+    curl libcurl4-openssl-dev \
+    flex bison \
+    automake
 
-# Install prerequisites
-apt-get install -y -V ca-certificates lsb-release wget
+# Build Arrow C++ libraries from source (ARM64 optimized)
+log_cupcake "Cloning and building Apache Arrow 21.0.0 from source..."
+cd /tmp
+git clone --depth 1 --branch apache-arrow-21.0.0 https://github.com/apache/arrow.git arrow-build || {
+    log_cupcake "FATAL: Failed to clone Apache Arrow repository"
+    exit 1
+}
 
-# Download the Apache Arrow APT source package
-wget https://packages.apache.org/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+cd arrow-build
+export ARROW_HOME=/usr/local
+export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+export CMAKE_PREFIX_PATH=$ARROW_HOME:$CMAKE_PREFIX_PATH
 
-# Install the APT source package
-apt install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+# Configure and build Arrow C++ with minimal features for Pi
+log_cupcake "Configuring Arrow build for ARM64 Raspberry Pi..."
+mkdir cpp/build
+cd cpp/build
 
-# Update package list
-apt update
+# ARM64-optimized CMake configuration with minimal features
+cmake .. \
+    -GNinja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=$ARROW_HOME \
+    -DCMAKE_INSTALL_LIBDIR=lib \
+    -DARROW_PARQUET=ON \
+    -DARROW_PYTHON=ON \
+    -DARROW_CSV=ON \
+    -DARROW_DATASET=ON \
+    -DARROW_FILESYSTEM=ON \
+    -DARROW_JSON=ON \
+    -DARROW_COMPUTE=ON \
+    -DARROW_BUILD_TESTS=OFF \
+    -DARROW_BUILD_BENCHMARKS=OFF \
+    -DARROW_BUILD_EXAMPLES=OFF \
+    -DARROW_HDFS=OFF \
+    -DARROW_S3=OFF \
+    -DARROW_FLIGHT=OFF \
+    -DARROW_GANDIVA=OFF \
+    -DARROW_PLASMA=OFF \
+    -DARROW_TENSORFLOW=OFF \
+    -DARROW_CUDA=OFF \
+    -DARROW_GPU=OFF \
+    -DCMAKE_CXX_FLAGS="-mcpu=cortex-a72 -mtune=cortex-a72 -O2" \
+    -DCMAKE_C_FLAGS="-mcpu=cortex-a72 -mtune=cortex-a72 -O2" || {
+    log_cupcake "FATAL: Arrow CMake configuration failed"
+    exit 1
+}
 
-# Install Arrow C++ libraries (required for PyArrow source build)
-apt install -y -V libarrow-dev
-apt install -y -V libarrow-glib-dev
-apt install -y -V libparquet-dev
-apt install -y -V libparquet-glib-dev
+# Build with single thread to avoid memory issues
+log_cupcake "Building Arrow C++ libraries (this may take 30-60 minutes)..."
+ninja -j1 || {
+    log_cupcake "FATAL: Arrow C++ build failed"
+    exit 1
+}
 
-log_cupcake "✓ Apache Arrow C++ libraries installed successfully"
+# Install Arrow libraries
+log_cupcake "Installing Arrow C++ libraries..."
+ninja install || {
+    log_cupcake "FATAL: Arrow C++ installation failed"
+    exit 1
+}
 
-# Clean up any downloaded files
-rm -f apache-arrow-*.deb 2>/dev/null || true
+# Update library cache
+ldconfig
+
+# Verify installation
+log_cupcake "Verifying Arrow C++ installation..."
+if [ -f "/usr/local/lib/libarrow.so" ]; then
+    log_cupcake "✓ Apache Arrow C++ libraries built and installed successfully"
+else
+    log_cupcake "FATAL: Arrow libraries not found after installation"
+    exit 1
+fi
+
+# Clean up build directory to save space
+log_cupcake "Cleaning up Arrow build directory..."
+cd /
+rm -rf /tmp/arrow-build
+
+log_cupcake "✓ Apache Arrow C++ build completed successfully"
 
 # Create CUPCAKE user
 log_cupcake "Creating CUPCAKE system user..."

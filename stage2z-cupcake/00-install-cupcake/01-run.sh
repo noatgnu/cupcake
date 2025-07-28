@@ -97,8 +97,8 @@ git clone --depth 1 --branch apache-arrow-21.0.0 https://github.com/apache/arrow
 
 cd arrow-build
 export ARROW_HOME=/usr/local
-export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
-export CMAKE_PREFIX_PATH=$ARROW_HOME:$CMAKE_PREFIX_PATH
+export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}:/usr/local/lib
+export CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH:-}:$ARROW_HOME
 
 # Configure and build Arrow C++ with minimal features for Pi
 log_cupcake "Configuring Arrow build for ARM64 Raspberry Pi..."

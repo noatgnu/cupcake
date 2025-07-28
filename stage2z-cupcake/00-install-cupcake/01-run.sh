@@ -73,21 +73,34 @@ apt-get install -y \
 
 # Install Apache Arrow C++ libraries for PyArrow support
 log_cupcake "Installing Apache Arrow C++ libraries..."
-# Add Apache Arrow APT repository
-curl -fsSL https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb -o /tmp/apache-arrow-apt-source-latest.deb
-apt install -y /tmp/apache-arrow-apt-source-latest.deb
-apt-get update
+# PyArrow requires Arrow C++ libraries to build from source on ARM64
+log_cupcake "CRITICAL: Apache Arrow C++ libraries are REQUIRED for PyArrow compilation"
 
-# Install Arrow libraries
-apt-get install -y \
-    libarrow-dev \
-    libarrow-glib-dev \
-    libparquet-dev \
-    libgandiva-dev \
-    libplasma-dev
+# Use the official Apache Arrow installation method from https://arrow.apache.org/install/
+log_cupcake "Installing Apache Arrow using official documentation method..."
 
-# Clean up
-rm -f /tmp/apache-arrow-apt-source-latest.deb
+# Install prerequisites
+apt-get install -y -V ca-certificates lsb-release wget
+
+# Download the Apache Arrow APT source package
+wget https://packages.apache.org/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+
+# Install the APT source package
+apt install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+
+# Update package list
+apt update
+
+# Install Arrow C++ libraries (required for PyArrow source build)
+apt install -y -V libarrow-dev
+apt install -y -V libarrow-glib-dev
+apt install -y -V libparquet-dev
+apt install -y -V libparquet-glib-dev
+
+log_cupcake "✓ Apache Arrow C++ libraries installed successfully"
+
+# Clean up any downloaded files
+rm -f apache-arrow-*.deb 2>/dev/null || true
 
 # Create CUPCAKE user
 log_cupcake "Creating CUPCAKE system user..."

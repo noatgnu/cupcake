@@ -66,12 +66,28 @@ apt-get install -y \
     htop nano vim \
     libssl-dev libffi-dev libjpeg-dev libpng-dev libfreetype6-dev \
     cmake tesseract-ocr tesseract-ocr-eng \
-    libarrow-dev libarrow-glib-dev libparquet-dev \
     pkg-config autotools-dev autoconf libtool \
-    libboost-dev libboost-filesystem-dev libboost-system-dev \
     libbz2-dev liblz4-dev libzstd-dev libsnappy-dev \
-    libthrift-dev libre2-dev libutf8proc-dev \
-    libgflags-dev libglog-dev
+    libicu-dev libxml2-dev libxslt1-dev \
+    libffi-dev libssl-dev zlib1g-dev
+
+# Install Apache Arrow C++ libraries for PyArrow support
+log_cupcake "Installing Apache Arrow C++ libraries..."
+# Add Apache Arrow APT repository
+curl -fsSL https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb -o /tmp/apache-arrow-apt-source-latest.deb
+apt install -y /tmp/apache-arrow-apt-source-latest.deb
+apt-get update
+
+# Install Arrow libraries
+apt-get install -y \
+    libarrow-dev \
+    libarrow-glib-dev \
+    libparquet-dev \
+    libgandiva-dev \
+    libplasma-dev
+
+# Clean up
+rm -f /tmp/apache-arrow-apt-source-latest.deb
 
 # Create CUPCAKE user
 log_cupcake "Creating CUPCAKE system user..."
@@ -153,18 +169,26 @@ su - cupcake -c "
     export PIP_CACHE_DIR=/home/cupcake/.cache/pip
     export PIP_BUILD_DIR=/tmp/pip-build
     
-    # Set compilation flags for ARM64 and Arrow/DuckDB dependencies
-    export CFLAGS='-mcpu=cortex-a72 -mtune=cortex-a72 -O2'
-    export CXXFLAGS='-mcpu=cortex-a72 -mtune=cortex-a72 -O2'
-    export LDFLAGS='-latomic'
-    export PYARROW_CMAKE_OPTIONS='-DARROW_PYTHON=ON -DARROW_COMPUTE=ON -DARROW_CSV=ON -DARROW_DATASET=ON -DARROW_FILESYSTEM=ON -DARROW_HDFS=OFF -DARROW_JSON=ON -DARROW_PARQUET=ON'
-    export PYARROW_PARALLEL=2
-    
     source /opt/cupcake/venv/bin/activate
     pip install --upgrade pip setuptools wheel
     
-    # Install CUPCAKE Python dependencies from requirements.txt with proper build settings
-    pip install --no-cache-dir --build /tmp/pip-build --verbose -r /opt/cupcake/app/requirements.txt
+    # Use pip >= 19.0 for better ARM64 wheel detection
+    pip install --upgrade 'pip>=21.0'
+    
+    # Set memory-efficient compilation flags for ARM64 
+    export CFLAGS='-mcpu=cortex-a72 -mtune=cortex-a72 -O1'
+    export CXXFLAGS='-mcpu=cortex-a72 -mtune=cortex-a72 -O1'
+    export LDFLAGS='-latomic'
+    export MAKEFLAGS='-j1'  # Single-threaded compilation to avoid memory issues
+    
+    # Install CUPCAKE Python dependencies with optimized settings for ARM64
+    # Use --prefer-binary to prioritize pre-built wheels for duckdb and pyarrow
+    pip install --prefer-binary --only-binary=:all: --timeout=3600 \
+        -r /opt/cupcake/app/requirements.txt || {
+        log_cupcake 'Binary wheel installation failed, falling back to source compilation...'
+        # Fallback: Allow source compilation with extended timeout
+        pip install --timeout=7200 -r /opt/cupcake/app/requirements.txt
+    }
 "
 
 # Setup Whisper.cpp for transcription worker

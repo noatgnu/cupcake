@@ -73,24 +73,24 @@ apt-get install -y \
 
 # Build Apache Arrow C++ libraries from source for PyArrow support
 log_cupcake "Building Apache Arrow C++ libraries from source..."
-log_cupcake "CRITICAL: Apache Arrow C++ libraries are REQUIRED for PyArrow compilation"
+log_cupcake "Following official Apache Arrow documentation for minimal build"
 
-# Install Arrow build dependencies
-log_cupcake "Installing Arrow build dependencies..."
+# Install minimal Arrow build dependencies per official docs
+log_cupcake "Installing minimal Arrow build dependencies..."
 apt-get install -y \
+    build-essential \
     ninja-build \
-    libboost-all-dev \
-    libboost-filesystem-dev \
-    libboost-system-dev \
-    libncurses5-dev \
-    curl libcurl4-openssl-dev \
-    flex bison \
-    automake
+    cmake \
+    python3-dev
 
-# Build Arrow C++ libraries from source (ARM64 optimized)
-log_cupcake "Cloning and building Apache Arrow 21.0.0 from source..."
+# Check CMake version (Arrow requires 3.16+, but 21.0.0 may need newer)
+current_cmake_version=$(cmake --version 2>/dev/null | head -n1 | cut -d' ' -f3 || echo "0.0.0")
+log_cupcake "Current CMake version: $current_cmake_version"
+
+# For simplicity, use a stable Arrow version that works with system CMake
+log_cupcake "Using Apache Arrow 17.0.0 for better compatibility with system CMake..."
 cd /tmp
-git clone --depth 1 --branch apache-arrow-21.0.0 https://github.com/apache/arrow.git arrow-build || {
+git clone --depth 1 --branch apache-arrow-17.0.0 https://github.com/apache/arrow.git arrow-build || {
     log_cupcake "FATAL: Failed to clone Apache Arrow repository"
     exit 1
 }
@@ -100,37 +100,29 @@ export ARROW_HOME=/usr/local
 export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}:/usr/local/lib
 export CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH:-}:$ARROW_HOME
 
-# Configure and build Arrow C++ with minimal features for Pi
-log_cupcake "Configuring Arrow build for ARM64 Raspberry Pi..."
+# Configure Arrow C++ with minimal PyArrow-compatible features
+log_cupcake "Configuring minimal Arrow build for PyArrow support..."
 mkdir cpp/build
 cd cpp/build
 
-# ARM64-optimized CMake configuration with minimal features
+# Minimal configuration based on official docs for PyArrow support
 cmake .. \
-    -GNinja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=$ARROW_HOME \
     -DCMAKE_INSTALL_LIBDIR=lib \
-    -DARROW_PARQUET=ON \
-    -DARROW_PYTHON=ON \
+    -DARROW_COMPUTE=ON \
     -DARROW_CSV=ON \
     -DARROW_DATASET=ON \
     -DARROW_FILESYSTEM=ON \
     -DARROW_JSON=ON \
-    -DARROW_COMPUTE=ON \
+    -DARROW_PARQUET=ON \
+    -DARROW_PYTHON=ON \
     -DARROW_BUILD_TESTS=OFF \
     -DARROW_BUILD_BENCHMARKS=OFF \
     -DARROW_BUILD_EXAMPLES=OFF \
-    -DARROW_HDFS=OFF \
-    -DARROW_S3=OFF \
-    -DARROW_FLIGHT=OFF \
-    -DARROW_GANDIVA=OFF \
-    -DARROW_PLASMA=OFF \
-    -DARROW_TENSORFLOW=OFF \
-    -DARROW_CUDA=OFF \
-    -DARROW_GPU=OFF \
-    -DCMAKE_CXX_FLAGS="-mcpu=cortex-a72 -mtune=cortex-a72 -O2" \
-    -DCMAKE_C_FLAGS="-mcpu=cortex-a72 -mtune=cortex-a72 -O2" || {
+    -DARROW_DEPENDENCY_SOURCE=BUNDLED \
+    -DCMAKE_CXX_FLAGS="-mcpu=cortex-a72 -O2" \
+    -DCMAKE_C_FLAGS="-mcpu=cortex-a72 -O2" || {
     log_cupcake "FATAL: Arrow CMake configuration failed"
     exit 1
 }

@@ -6,6 +6,24 @@
 # Strict error handling
 set -euo pipefail
 
+# Self-contained logging functions for pi-gen environment
+log_cupcake() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] [CUPCAKE] $1"
+}
+
+# Function to handle errors
+cupcake_error_handler() {
+    local line_no=$1
+    local error_code=$2
+    log_cupcake "ERROR: CUPCAKE installation FAILED at line $line_no with exit code $error_code"
+    log_cupcake "This is a CRITICAL ERROR - the build MUST stop here"
+    log_cupcake "Pi image build should NOT continue without CUPCAKE"
+    exit $error_code
+}
+
+# Trap errors and call handler
+trap 'cupcake_error_handler $LINENO $?' ERR
+
 # Ensure we're running in ARM64 mode - critical for proper architecture detection
 log_cupcake "Verifying ARM64 build environment..."
 DETECTED_ARCH=$(uname -m)
@@ -22,24 +40,6 @@ if [ "$DETECTED_ARCH" != "aarch64" ]; then
 fi
 
 log_cupcake "✓ Confirmed ARM64 build environment"
-
-# Function to handle errors
-cupcake_error_handler() {
-    local line_no=$1
-    local error_code=$2
-    log_cupcake "ERROR: CUPCAKE installation FAILED at line $line_no with exit code $error_code"
-    log_cupcake "This is a CRITICAL ERROR - the build MUST stop here"
-    log_cupcake "Pi image build should NOT continue without CUPCAKE"
-    exit $error_code
-}
-
-# Trap errors and call handler
-trap 'cupcake_error_handler $LINENO $?' ERR
-
-# Self-contained logging functions for pi-gen environment
-log_cupcake() {
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] [CUPCAKE] $1"
-}
 
 log_cupcake "Starting CUPCAKE installation..."
 log_cupcake "CRITICAL: This installation MUST succeed or build MUST fail"

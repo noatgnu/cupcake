@@ -364,9 +364,17 @@ sleep 5
 cat > /opt/cupcake/app/.env <<ENVEOF
 DEBUG=False
 SECRET_KEY=$(openssl rand -hex 32)
-DATABASE_URL=postgresql://cupcake:cupcake@localhost:5432/cupcake
-REDIS_URL=redis://localhost:6379/0
-ALLOWED_HOSTS=localhost,127.0.0.1,*.local
+# PostgreSQL settings (native Pi installation uses standard port 5432)
+POSTGRES_DB=cupcake
+POSTGRES_USER=cupcake
+POSTGRES_PASSWORD=cupcake
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+# Redis settings (native Pi installation uses standard port 6379)  
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=
+ALLOWED_HOSTS=localhost,127.0.0.1,*.local,cupcake-pi,cupcake-pi.local
 MEDIA_ROOT=/opt/cupcake/media
 STATIC_ROOT=/opt/cupcake/static
 LOG_LEVEL=INFO

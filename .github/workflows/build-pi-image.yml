@@ -146,8 +146,8 @@ jobs:
         # Enable strict error handling - ANY error must fail the build
         set -euo pipefail
         
-        # Clone official pi-gen repository
-        git clone https://github.com/RPi-Distro/pi-gen.git
+        # Clone official pi-gen repository ARM64 branch for ARM64 builds
+        git clone --branch arm64 https://github.com/RPi-Distro/pi-gen.git
         cd pi-gen
         
         # Copy our custom stage as stage3 (pi-gen expects numbered stages)
@@ -503,8 +503,8 @@ jobs:
         # Enable strict error handling - ANY error must fail the build
         set -euo pipefail
         
-        # Clone official pi-gen repository
-        git clone https://github.com/RPi-Distro/pi-gen.git
+        # Clone official pi-gen repository ARM64 branch for ARM64 builds
+        git clone --branch arm64 https://github.com/RPi-Distro/pi-gen.git
         cd pi-gen
         
         # Copy our custom stage as stage3 (pi-gen expects numbered stages)

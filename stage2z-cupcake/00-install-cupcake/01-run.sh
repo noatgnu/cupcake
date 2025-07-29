@@ -223,20 +223,31 @@ log_cupcake "Installing Python dependencies with pip..."
 # Ensure proper ownership and permissions for pip cache and build directories
 mkdir -p /home/cupcake/.cache/pip
 mkdir -p /tmp/pip-build
+mkdir -p /home/cupcake/.local
+mkdir -p /home/cupcake/build-temp
 chown -R cupcake:cupcake /home/cupcake/.cache
 chown -R cupcake:cupcake /tmp/pip-build
+chown -R cupcake:cupcake /home/cupcake/.local
+chown -R cupcake:cupcake /home/cupcake/build-temp
 chmod -R 755 /home/cupcake/.cache
 chmod -R 755 /tmp/pip-build
+chmod -R 755 /home/cupcake/.local
+chmod -R 755 /home/cupcake/build-temp
 
-# Set proper build environment for ARM compilation
-export TMPDIR=/tmp/pip-build
+# Set proper build environment for ARM compilation with expanded permissions
+export TMPDIR=/home/cupcake/build-temp
 export PIP_CACHE_DIR=/home/cupcake/.cache/pip
-export PIP_BUILD_DIR=/tmp/pip-build
+export PIP_BUILD_DIR=/home/cupcake/build-temp
 
 su - cupcake -c "
-    export TMPDIR=/tmp/pip-build
+    export TMPDIR=/home/cupcake/build-temp
     export PIP_CACHE_DIR=/home/cupcake/.cache/pip
-    export PIP_BUILD_DIR=/tmp/pip-build
+    export PIP_BUILD_DIR=/home/cupcake/build-temp
+    
+    # Force ARM64 architecture detection for pip builds
+    export ARCHFLAGS='-arch arm64'
+    export _PYTHON_HOST_PLATFORM='linux-aarch64'
+    export SETUPTOOLS_EXT_SUFFIX='.cpython-311-aarch64-linux-gnu.so'
     
     source /opt/cupcake/venv/bin/activate
     pip install --upgrade pip setuptools wheel
@@ -244,19 +255,19 @@ su - cupcake -c "
     # Use pip >= 19.0 for better ARM64 wheel detection
     pip install --upgrade 'pip>=21.0'
     
-    # Set memory-efficient compilation flags for ARM64 
-    export CFLAGS='-mcpu=cortex-a72 -mtune=cortex-a72 -O1'
-    export CXXFLAGS='-mcpu=cortex-a72 -mtune=cortex-a72 -O1'
+    # Set compilation flags for ARM64 with full parallelism on GitHub Actions
+    export CFLAGS='-mcpu=cortex-a72 -mtune=cortex-a72 -O2'
+    export CXXFLAGS='-mcpu=cortex-a72 -mtune=cortex-a72 -O2'
     export LDFLAGS='-latomic'
-    export MAKEFLAGS='-j1'  # Single-threaded compilation to avoid memory issues
+    export MAKEFLAGS='-j\$(nproc)'  # Use all available cores on GitHub Actions
     
-    # Install CUPCAKE Python dependencies with optimized settings for ARM64
-    # Use --prefer-binary to prioritize pre-built wheels for duckdb and pyarrow
-    pip install --prefer-binary --only-binary=:all: --timeout=3600 \
-        -r /opt/cupcake/app/requirements.txt || {
-        log_cupcake 'Binary wheel installation failed, falling back to source compilation...'
-        # Fallback: Allow source compilation with extended timeout
-        pip install --timeout=7200 -r /opt/cupcake/app/requirements.txt
+    # Install CUPCAKE Python dependencies with proper build settings
+    pip install --prefer-binary --timeout=3600 -r /opt/cupcake/app/requirements.txt || {
+        log_cupcake 'Installation with binary preference failed, trying source compilation with forced ARM64 architecture...'
+        # Fallback: Source compilation with forced ARM64 architecture
+        pip install --user --build /home/cupcake/build-temp --timeout=7200 \
+            --force-reinstall --no-binary=duckdb \
+            -r /opt/cupcake/app/requirements.txt
     }
 "
 

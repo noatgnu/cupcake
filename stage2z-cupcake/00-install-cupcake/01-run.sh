@@ -344,11 +344,23 @@ systemctl enable postgresql
 
 # Configure PostgreSQL
 log_cupcake "Configuring PostgreSQL database..."
-su - postgres -c "createuser -D -A -P cupcake" || true
+# Start PostgreSQL first in chroot environment
+service postgresql start
+
+# Create user and database (fixed for PostgreSQL 15)
+su - postgres -c "createuser cupcake" || true
+su - postgres -c "psql -c \"ALTER USER cupcake WITH PASSWORD 'cupcake';\""
 su - postgres -c "createdb -O cupcake cupcake" || true
 
 # Configure environment
 log_cupcake "Setting up environment configuration..."
+# Ensure PostgreSQL is configured for port 5432
+echo "port = 5432" >> /etc/postgresql/15/main/postgresql.conf
+
+# Wait for PostgreSQL to be ready and restart with correct port
+service postgresql restart
+sleep 5
+
 cat > /opt/cupcake/app/.env <<ENVEOF
 DEBUG=False
 SECRET_KEY=$(openssl rand -hex 32)

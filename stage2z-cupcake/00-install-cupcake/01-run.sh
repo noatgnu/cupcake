@@ -361,26 +361,136 @@ echo "port = 5432" >> /etc/postgresql/15/main/postgresql.conf
 service postgresql restart
 sleep 5
 
-cat > /opt/cupcake/app/.env <<ENVEOF
-DEBUG=False
-SECRET_KEY=$(openssl rand -hex 32)
+# Set environment variables directly in OS instead of creating .env file
+log_cupcake "Setting up environment variables directly in OS..."
+
+# Core Django settings
+export DEBUG=False
+export SECRET_KEY=$(openssl rand -hex 32)
+export ENV=production
+export ALLOWED_HOSTS="localhost,127.0.0.1,*.local,cupcake-pi,cupcake-pi.local"
+
 # PostgreSQL settings (native Pi installation uses standard port 5432)
+export POSTGRES_DB=cupcake
+export POSTGRES_USER=cupcake
+export POSTGRES_PASSWORD=cupcake
+export POSTGRES_HOST=localhost
+export POSTGRES_PORT=5432
+
+# Redis settings (native Pi installation uses standard port 6379)
+export REDIS_HOST=localhost
+export REDIS_PORT=6379
+export REDIS_DB=0
+export REDIS_PASSWORD=""
+
+# Storage and media settings
+export MEDIA_ROOT=/opt/cupcake/media
+export STATIC_ROOT=/opt/cupcake/staticfiles
+export BACKUP_DIR=/opt/cupcake/backups
+
+# Whisper.cpp settings
+export WHISPERCPP_PATH=/opt/cupcake/whisper.cpp/build/bin/main
+export WHISPERCPP_DEFAULT_MODEL=/opt/cupcake/whisper.cpp/models/ggml-base.en.bin
+export WHISPERCPP_THREAD_COUNT=4
+
+# Feature flags
+export USE_WHISPER=True
+export USE_OCR=True
+export USE_LLM=False
+export USE_COTURN=False
+
+# CORS and frontend settings
+export CORS_ORIGIN_WHITELIST="http://localhost:4200,http://localhost:8000,http://cupcake-pi.local"
+export FRONTEND_URL="http://localhost:8000"
+
+# Email settings (disabled by default)
+export NOTIFICATION_EMAIL_FROM=""
+export AWS_SES_ACCESS_KEY_ID=""
+export AWS_SES_SECRET_ACCESS_KEY=""
+export AWS_SES_REGION_NAME="us-east-1"
+export AWS_SES_REGION_ENDPOINT="email.us-east-1.amazonaws.com"
+
+# Optional integrations (disabled by default)
+export PROTOCOLS_IO_ACCESS_TOKEN=""
+export SLACK_WEBHOOK_URL=""
+export COTURN_SERVER="localhost"
+export COTURN_PORT="3478"
+export COTURN_SECRET=""
+
+# Instrument booking settings
+export ALLOW_OVERLAP_BOOKINGS=True
+export DEFAULT_SERVICE_LAB_GROUP="MS Facility"
+
+# LLaMA settings (disabled by default since USE_LLM=False)
+export LLAMA_BIN_PATH=""
+export LLAMA_DEFAULT_MODEL=""
+
+# Create system-wide environment file for services to inherit
+mkdir -p /etc/environment.d
+cat > /etc/environment.d/cupcake.conf <<ENVEOF
+# Core Django settings
+DEBUG=False
+SECRET_KEY=$SECRET_KEY
+ENV=production
+ALLOWED_HOSTS=localhost,127.0.0.1,*.local,cupcake-pi,cupcake-pi.local
+
+# PostgreSQL settings
 POSTGRES_DB=cupcake
 POSTGRES_USER=cupcake
 POSTGRES_PASSWORD=cupcake
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5432
-# Redis settings (native Pi installation uses standard port 6379)  
+
+# Redis settings
 REDIS_HOST=localhost
 REDIS_PORT=6379
+REDIS_DB=0
 REDIS_PASSWORD=
-ALLOWED_HOSTS=localhost,127.0.0.1,*.local,cupcake-pi,cupcake-pi.local
+
+# Storage and media settings
 MEDIA_ROOT=/opt/cupcake/media
-STATIC_ROOT=/opt/cupcake/static
-LOG_LEVEL=INFO
+STATIC_ROOT=/opt/cupcake/staticfiles
+BACKUP_DIR=/opt/cupcake/backups
+
+# Whisper.cpp settings
+WHISPERCPP_PATH=/opt/cupcake/whisper.cpp/build/bin/main
+WHISPERCPP_DEFAULT_MODEL=/opt/cupcake/whisper.cpp/models/ggml-base.en.bin
+WHISPERCPP_THREAD_COUNT=4
+
+# Feature flags
+USE_WHISPER=True
+USE_OCR=True
+USE_LLM=False
+USE_COTURN=False
+
+# CORS and frontend settings
+CORS_ORIGIN_WHITELIST=http://localhost:4200,http://localhost:8000,http://cupcake-pi.local
+FRONTEND_URL=http://localhost:8000
+
+# Email settings (disabled by default)
+NOTIFICATION_EMAIL_FROM=
+AWS_SES_ACCESS_KEY_ID=
+AWS_SES_SECRET_ACCESS_KEY=
+AWS_SES_REGION_NAME=us-east-1
+AWS_SES_REGION_ENDPOINT=email.us-east-1.amazonaws.com
+
+# Optional integrations (disabled by default)
+PROTOCOLS_IO_ACCESS_TOKEN=
+SLACK_WEBHOOK_URL=
+COTURN_SERVER=localhost
+COTURN_PORT=3478
+COTURN_SECRET=
+
+# Instrument booking settings
+ALLOW_OVERLAP_BOOKINGS=True
+DEFAULT_SERVICE_LAB_GROUP=MS Facility
+
+# LLaMA settings (disabled by default since USE_LLM=False)
+LLAMA_BIN_PATH=
+LLAMA_DEFAULT_MODEL=
 ENVEOF
 
-chown cupcake:cupcake /opt/cupcake/app/.env
+log_cupcake "Environment variables configured in OS and systemd"
 
 # Run Django setup using virtual environment (matching native script)
 log_cupcake "Running Django migrations and setup..."
@@ -496,7 +606,7 @@ log_cupcake "Performing final CUPCAKE installation verification..."
 critical_files=(
     "/opt/cupcake/app/manage.py"
     "/opt/cupcake/venv/bin/activate"
-    "/opt/cupcake/app/.env"
+    "/etc/environment.d/cupcake.conf"
     "/etc/systemd/system/cupcake-web.service"
     "/etc/systemd/system/cupcake-worker.service"
 )

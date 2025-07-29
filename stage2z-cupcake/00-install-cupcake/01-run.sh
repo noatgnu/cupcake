@@ -6,6 +6,23 @@
 # Strict error handling
 set -euo pipefail
 
+# Ensure we're running in ARM64 mode - critical for proper architecture detection
+log_cupcake "Verifying ARM64 build environment..."
+DETECTED_ARCH=$(uname -m)
+log_cupcake "Detected architecture: $DETECTED_ARCH"
+
+if [ "$DETECTED_ARCH" != "aarch64" ]; then
+    log_cupcake "ERROR: Build environment is $DETECTED_ARCH but should be aarch64"
+    log_cupcake "This pi-gen build must be configured for ARM64/aarch64"
+    log_cupcake "Check your pi-gen configuration and ensure:"
+    log_cupcake "1. Base image is ARM64 Raspberry Pi OS"
+    log_cupcake "2. IMG_NAME includes arm64 variant"
+    log_cupcake "3. TARGET_HOSTNAME is configured for 64-bit"
+    exit 1
+fi
+
+log_cupcake "✓ Confirmed ARM64 build environment"
+
 # Function to handle errors
 cupcake_error_handler() {
     local line_no=$1
@@ -249,6 +266,26 @@ su - cupcake -c "
     export _PYTHON_HOST_PLATFORM='linux-aarch64'
     export SETUPTOOLS_EXT_SUFFIX='.cpython-311-aarch64-linux-gnu.so'
     
+    # Override architecture detection for meson and other build systems
+    export CC_FOR_BUILD=aarch64-linux-gnu-gcc
+    export CXX_FOR_BUILD=aarch64-linux-gnu-g++
+    export MESON_CROSS_FILE=/tmp/aarch64-cross.ini
+    
+    # Create meson cross-compilation file to force ARM64 detection
+    cat > /tmp/aarch64-cross.ini << 'MESONEOF'
+[binaries]
+c = 'gcc'
+cpp = 'g++'
+ar = 'ar'
+strip = 'strip'
+
+[host_machine]
+system = 'linux'
+cpu_family = 'aarch64'
+cpu = 'cortex-a72'
+endian = 'little'
+MESONEOF
+    
     source /opt/cupcake/venv/bin/activate
     pip install --upgrade pip setuptools wheel
     
@@ -263,10 +300,9 @@ su - cupcake -c "
     
     # Install CUPCAKE Python dependencies with proper build settings
     pip install --prefer-binary --timeout=3600 -r /opt/cupcake/app/requirements.txt || {
-        log_cupcake 'Installation with binary preference failed, trying source compilation with forced ARM64 architecture...'
+        echo 'Installation with binary preference failed, trying source compilation with forced ARM64 architecture...'
         # Fallback: Source compilation with forced ARM64 architecture
         pip install --user --build /home/cupcake/build-temp --timeout=7200 \
-            --force-reinstall --no-binary=duckdb \
             -r /opt/cupcake/app/requirements.txt
     }
 "

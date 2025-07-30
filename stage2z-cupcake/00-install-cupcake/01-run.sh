@@ -585,6 +585,115 @@ su - cupcake -c "
     python manage.py load_cell_types --source cl
     
     echo 'All ontologies loaded successfully!'
+    
+    # Generate ontology statistics for release notes
+    echo 'Generating ontology statistics for release...'
+    python manage.py shell <<PYEOF
+import json
+import os
+from cc.models import (
+    MondoDisease, UberonAnatomy, NCBITaxonomy, ChEBICompound, PSIMSOntology,
+    Species, Unimod, Tissue, HumanDisease, MSUniqueVocabularies, 
+    SubcellularLocation, CellType
+)
+
+stats = {
+    'ontology_statistics': {
+        'MONDO_Disease_Ontology': MondoDisease.objects.count(),
+        'UBERON_Anatomy': UberonAnatomy.objects.count(),
+        'NCBI_Taxonomy': NCBITaxonomy.objects.count(),
+        'ChEBI_Compounds': ChEBICompound.objects.count(),
+        'PSI_MS_Ontology': PSIMSOntology.objects.count(),
+        'UniProt_Species': Species.objects.count(),
+        'UniMod_Modifications': Unimod.objects.count(),
+        'UniProt_Tissues': Tissue.objects.count(),
+        'UniProt_Human_Diseases': HumanDisease.objects.count(),
+        'MS_Unique_Vocabularies': MSUniqueVocabularies.objects.count(),
+        'Subcellular_Locations': SubcellularLocation.objects.count(),
+        'Cell_Types': CellType.objects.count()
+    },
+    'total_records': sum([
+        MondoDisease.objects.count(),
+        UberonAnatomy.objects.count(), 
+        NCBITaxonomy.objects.count(),
+        ChEBICompound.objects.count(),
+        PSIMSOntology.objects.count(),
+        Species.objects.count(),
+        Unimod.objects.count(),
+        Tissue.objects.count(),
+        HumanDisease.objects.count(),
+        MSUniqueVocabularies.objects.count(),
+        SubcellularLocation.objects.count(),
+        CellType.objects.count()
+    ])
+}
+
+# Save to file for GitHub release
+os.makedirs('/opt/cupcake/release-info', exist_ok=True)
+with open('/opt/cupcake/release-info/ontology_statistics.json', 'w') as f:
+    json.dump(stats, f, indent=2)
+
+print('Ontology statistics generated successfully!')
+print(f'Total ontology records: {stats["total_records"]:,}')
+PYEOF
+
+    # Generate package license information
+    echo 'Generating package license information...'
+    cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate
+    
+    # Install pip-licenses for license extraction
+    pip install pip-licenses --quiet
+    
+    # Generate license information in multiple formats
+    echo 'Extracting package licenses...'
+    pip-licenses --format=json --output-file=/opt/cupcake/release-info/package_licenses.json --with-urls --with-description --with-authors
+    pip-licenses --format=plain --output-file=/opt/cupcake/release-info/package_licenses.txt --with-urls --with-description --with-authors
+    
+    # Generate detailed package information
+    pip list --format=json > /opt/cupcake/release-info/installed_packages.json
+    pip list > /opt/cupcake/release-info/installed_packages.txt
+    
+    # Create a comprehensive release info file
+    python <<PYEOF
+import json
+import os
+from datetime import datetime
+
+# Load ontology stats
+with open('/opt/cupcake/release-info/ontology_statistics.json', 'r') as f:
+    ontology_stats = json.load(f)
+
+# Load package info
+with open('/opt/cupcake/release-info/installed_packages.json', 'r') as f:
+    packages = json.load(f)
+
+# Create comprehensive release info
+release_info = {
+    'build_date': datetime.now().isoformat(),
+    'cupcake_version': 'ARM64 Pi Build',
+    'ontology_databases': ontology_stats['ontology_statistics'],
+    'total_ontology_records': ontology_stats['total_records'],
+    'python_packages': {
+        'total_packages': len(packages),
+        'packages': {pkg['name']: pkg['version'] for pkg in packages}
+    },
+    'system_info': {
+        'architecture': 'ARM64 (aarch64)',
+        'target_platform': 'Raspberry Pi 4/5',
+        'python_version': '3.11',
+        'django_version': next((pkg['version'] for pkg in packages if pkg['name'].lower() == 'django'), 'unknown')
+    }
+}
+
+# Save comprehensive info
+with open('/opt/cupcake/release-info/release_info.json', 'w') as f:
+    json.dump(release_info, f, indent=2)
+
+print('Release information generated successfully!')
+PYEOF
+
+    echo 'Package license information generated successfully!'
+
 " || {
     log_cupcake "WARNING: Some ontology loading failed, but continuing with build"
     log_cupcake "Individual ontologies can be loaded later with respective commands"
@@ -713,3 +822,16 @@ log_cupcake "✓ Django application functional"
 log_cupcake "✓ Database connection working"
 log_cupcake "✓ Services configured for first boot"
 log_cupcake "CUPCAKE Pi image is ready for deployment"
+
+# Final cleanup to prevent chroot unmount issues
+log_cupcake "Performing final cleanup to prevent unmount issues..."
+# Stop any background services that may be holding file handles
+service postgresql stop || true
+service redis-server stop || true
+# Kill any remaining processes that might interfere with unmount
+pkill -f python3 || true
+pkill -f postgres || true
+pkill -f redis || true
+# Sync filesystem to ensure all writes are complete
+sync
+log_cupcake "✓ Final cleanup completed"

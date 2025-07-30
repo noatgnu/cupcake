@@ -119,6 +119,13 @@ class Command(BaseCommand):
             help='Ontology to load'
         )
         parser.add_argument(
+            '--chebi-filter',
+            type=str,
+            default='all',
+            choices=['all', 'proteomics', 'metabolomics', 'lipidomics'],
+            help='Filter ChEBI compounds by research area'
+        )
+        parser.add_argument(
             '--update-existing',
             action='store_true',
             help='Update existing records'
@@ -140,8 +147,11 @@ class Command(BaseCommand):
         update_existing = options['update_existing']
         limit = options['limit']
         skip_large = options['skip_large']
+        chebi_filter = options['chebi_filter']
         
         self.stdout.write(f'Loading ontology: {ontology}')
+        if ontology in ['all', 'chebi'] and chebi_filter != 'all':
+            self.stdout.write(f'ChEBI filter: {chebi_filter}')
         
         total_created = 0
         total_updated = 0
@@ -162,7 +172,7 @@ class Command(BaseCommand):
             total_updated += updated
             
         if ontology in ['all', 'chebi'] and not skip_large:
-            created, updated = self.load_chebi_compounds(update_existing, limit)
+            created, updated = self.load_chebi_compounds(update_existing, limit, chebi_filter)
             total_created += created
             total_updated += updated
             
@@ -475,7 +485,7 @@ class Command(BaseCommand):
         
         return created_count, updated_count
 
-    def load_chebi_compounds(self, update_existing=False, limit=10000):
+    def load_chebi_compounds(self, update_existing=False, limit=10000, chebi_filter='all'):
         """Load ChEBI compound ontology."""
         self.stdout.write('Loading ChEBI compounds...')
         
@@ -499,7 +509,7 @@ class Command(BaseCommand):
                 if not term_data.get('id', '').startswith('CHEBI:'):
                     continue
                     
-                created, updated = self._process_chebi_term(term_data, update_existing)
+                created, updated = self._process_chebi_term(term_data, update_existing, chebi_filter)
                 if created:
                     created_count += 1
                 if updated:
@@ -516,7 +526,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR(f'Error downloading ChEBI: {e}'))
             return 0, 0
 
-    def _process_chebi_term(self, term_data, update_existing):
+    def _process_chebi_term(self, term_data, update_existing, chebi_filter='all'):
         """Process a single ChEBI term."""
         if term_data.get('obsolete', False):
             return False, False
@@ -530,6 +540,11 @@ class Command(BaseCommand):
         
         if not name or not identifier:
             return False, False
+        
+        # Apply ChEBI filtering based on research area
+        if chebi_filter != 'all':
+            if not self._matches_chebi_filter(name, definition, synonyms, chebi_filter):
+                return False, False
 
         compound_data = {
             'identifier': identifier,
@@ -557,6 +572,51 @@ class Command(BaseCommand):
         except Exception as e:
             self.stdout.write(f'Error processing {name}: {e}')
             return False, False
+
+    def _matches_chebi_filter(self, name, definition, synonyms, chebi_filter):
+        """Check if a ChEBI term matches the specified research area filter."""
+        search_text = f"{name.lower()} {definition.lower()} {' '.join(synonyms).lower()}"
+        
+        if chebi_filter == 'proteomics':
+            proteomics_keywords = [
+                'protein', 'peptide', 'amino acid', 'trypsin', 'enzyme', 'protease',
+                'buffer', 'tris', 'bicine', 'hepes', 'bis-tris', 'tricine',
+                'urea', 'thiourea', 'guanidine', 'dtt', 'tcep', 'iodoacetamide',
+                'acetonitrile', 'formic acid', 'trifluoroacetic acid', 'acetic acid',
+                'methanol', 'water', 'ammonium', 'bicarbonate', 'phosphate',
+                'detergent', 'sds', 'triton', 'tween', 'chaps', 'deoxycholate',
+                'reagent', 'modifier', 'labeling', 'tag', 'dye', 'fluorophore',
+                'crosslink', 'digest', 'reduction', 'alkylation', 'derivatization'
+            ]
+            return any(keyword in search_text for keyword in proteomics_keywords)
+            
+        elif chebi_filter == 'metabolomics':
+            metabolomics_keywords = [
+                'metabolite', 'lipid', 'fatty acid', 'steroid', 'hormone',
+                'nucleotide', 'nucleoside', 'sugar', 'carbohydrate', 'glucose',
+                'amino acid', 'organic acid', 'carboxylic acid', 'phenolic',
+                'alkaloid', 'flavonoid', 'terpenoid', 'polyketide',
+                'vitamin', 'cofactor', 'coenzyme', 'prostaglandin',
+                'neurotransmitter', 'bile acid', 'sphingolipid',
+                'phospholipid', 'glycerolipid', 'cholesterol', 'ceramide'
+            ]
+            return any(keyword in search_text for keyword in metabolomics_keywords)
+            
+        elif chebi_filter == 'lipidomics':
+            lipidomics_keywords = [
+                'lipid', 'fatty acid', 'phospholipid', 'sphingolipid',
+                'glycerolipid', 'sterol', 'cholesterol', 'ceramide',
+                'phosphatidyl', 'lyso', 'plasmalogen', 'cardiolipin',
+                'triglyceride', 'diglyceride', 'monoglyceride',
+                'sphingomyelin', 'glucosylceramide', 'galactosylceramide',
+                'phosphatidic acid', 'phosphatidylcholine', 'phosphatidylethanolamine',
+                'phosphatidylserine', 'phosphatidylinositol', 'phosphatidylglycerol',
+                'arachidonic acid', 'oleic acid', 'palmitic acid', 'stearic acid',
+                'linoleic acid', 'docosahexaenoic acid', 'eicosapentaenoic acid'
+            ]
+            return any(keyword in search_text for keyword in lipidomics_keywords)
+            
+        return True  # Default case, shouldn't reach here
 
     def load_psims_ontology(self, update_existing=False, limit=10000):
         """Load PSI-MS Ontology."""

@@ -483,7 +483,7 @@ COTURN_SECRET=
 
 # Instrument booking settings
 ALLOW_OVERLAP_BOOKINGS=True
-DEFAULT_SERVICE_LAB_GROUP=MS Facility
+DEFAULT_SERVICE_LAB_GROUP="MS Facility"
 
 # LLaMA settings (disabled by default since USE_LLM=False)
 LLAMA_BIN_PATH=
@@ -553,38 +553,38 @@ su - cupcake -c "
     cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate
     
     # Load main ontologies (MONDO, UBERON, NCBI, ChEBI, PSI-MS)
-    log_cupcake 'Loading main ontologies (MONDO, UBERON, NCBI, ChEBI, PSI-MS)...'
-    python manage.py load_ontologies
+    echo 'Loading main ontologies (MONDO, UBERON, NCBI, ChEBI with proteomics filter, PSI-MS)...'
+    python manage.py load_ontologies --chebi-filter proteomics
     
     # Load UniProt species data
-    log_cupcake 'Loading UniProt species data...'
+    echo 'Loading UniProt species data...'
     python manage.py load_species
     
     # Load MS modifications (Unimod)
-    log_cupcake 'Loading MS modifications (Unimod)...'
+    echo 'Loading MS modifications (Unimod)...'
     python manage.py load_ms_mod
     
     # Load UniProt tissue data
-    log_cupcake 'Loading UniProt tissue data...'
+    echo 'Loading UniProt tissue data...'
     python manage.py load_tissue
     
     # Load UniProt human disease data
-    log_cupcake 'Loading UniProt human disease data...'
+    echo 'Loading UniProt human disease data...'
     python manage.py load_human_disease
     
     # Load MS terminology and vocabularies
-    log_cupcake 'Loading MS terminology and vocabularies...'
+    echo 'Loading MS terminology and vocabularies...'
     python manage.py load_ms_term
     
     # Load UniProt subcellular location data
-    log_cupcake 'Loading UniProt subcellular location data...'
+    echo 'Loading UniProt subcellular location data...'
     python manage.py load_subcellular_location
     
     # Load cell types and cell lines
-    log_cupcake 'Loading cell types and cell lines...'
+    echo 'Loading cell types and cell lines...'
     python manage.py load_cell_types --source cl
     
-    log_cupcake 'All ontologies loaded successfully!'
+    echo 'All ontologies loaded successfully!'
 " || {
     log_cupcake "WARNING: Some ontology loading failed, but continuing with build"
     log_cupcake "Individual ontologies can be loaded later with respective commands"

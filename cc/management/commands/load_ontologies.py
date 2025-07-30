@@ -377,8 +377,7 @@ class Command(BaseCommand):
                 tar_path = Path(temp_dir) / "taxdump.tar.gz"
                 with open(tar_path, 'wb') as f:
                     f.write(response.content)
-                
-                # Extract using Python (cross-platform)
+
                 import tarfile
                 with tarfile.open(tar_path, 'r:gz') as tar:
                     tar.extractall(temp_dir)
@@ -438,10 +437,20 @@ class Command(BaseCommand):
                     elif name_class in ['synonym', 'common name']:
                         taxa_data[tax_id]['synonyms'].append(name)
         
-        # Create taxonomy records
+        # Create taxonomy records with bulk operations
+        from django.db import transaction
+        from cc.models import NCBITaxonomy
+        
         created_count = 0
         updated_count = 0
         processed = 0
+        
+        # Process in batches for better performance
+        batch_size = 5000
+        batch_records = []
+        total_taxa = len(taxa_data)
+        
+        self.stdout.write(f'Processing {total_taxa:,} NCBI taxonomy records with bulk operations...')
         
         for tax_id, data in taxa_data.items():
             if limit is not None and processed >= limit:
@@ -461,27 +470,89 @@ class Command(BaseCommand):
                 'parent_tax_id': node_info.get('parent_tax_id')
             }
             
-            try:
-                taxonomy, created = NCBITaxonomy.objects.get_or_create(
-                    tax_id=tax_id,
-                    defaults=taxonomy_data
+            batch_records.append(taxonomy_data)
+            processed += 1
+            
+            # Process batch when full or at end
+            if len(batch_records) >= batch_size or processed == total_taxa or (limit is not None and processed >= limit):
+                batch_created, batch_updated = self._bulk_process_ncbi_taxonomy(
+                    batch_records, update_existing
                 )
+                created_count += batch_created
+                updated_count += batch_updated
                 
-                if not created and update_existing:
-                    for key, value in taxonomy_data.items():
-                        setattr(taxonomy, key, value)
-                    taxonomy.save()
-                    updated_count += 1
-                elif created:
-                    created_count += 1
-                    
-                processed += 1
+                # Clear batch and show progress
+                batch_records = []
+                progress_pct = (processed / total_taxa) * 100
+                self.stdout.write(f'Processed {processed:,}/{total_taxa:,} taxa ({progress_pct:.1f}%) - {created_count:,} created, {updated_count:,} updated')
                 
-                if processed % 1000 == 0:
-                    self.stdout.write(f'Processed {processed} taxa...')
+            if limit is not None and processed >= limit:
+                break
+        
+        return created_count, updated_count
+
+    def _bulk_process_ncbi_taxonomy(self, batch_records, update_existing):
+        """Process a batch of NCBI taxonomy records with bulk operations."""
+        from django.db import transaction
+        from cc.models import NCBITaxonomy
+        
+        created_count = 0
+        updated_count = 0
+        
+        try:
+            with transaction.atomic():
+                if update_existing:
+                    # For updates, we need individual processing
+                    for record in batch_records:
+                        taxonomy, created = NCBITaxonomy.objects.get_or_create(
+                            tax_id=record['tax_id'],
+                            defaults=record
+                        )
+                        if created:
+                            created_count += 1
+                        else:
+                            # Update existing record
+                            for key, value in record.items():
+                                setattr(taxonomy, key, value)
+                            taxonomy.save()
+                            updated_count += 1
+                else:
+                    # For new records, use bulk_create (much faster)
+                    # First filter out existing records
+                    existing_tax_ids = set(
+                        NCBITaxonomy.objects.filter(
+                            tax_id__in=[r['tax_id'] for r in batch_records]
+                        ).values_list('tax_id', flat=True)
+                    )
                     
-            except Exception as e:
-                self.stdout.write(f'Error processing tax_id {tax_id}: {e}')
+                    new_records = [
+                        NCBITaxonomy(**record) 
+                        for record in batch_records 
+                        if record['tax_id'] not in existing_tax_ids
+                    ]
+                    
+                    if new_records:
+                        NCBITaxonomy.objects.bulk_create(new_records, ignore_conflicts=True)
+                        created_count = len(new_records)
+                        
+        except Exception as e:
+            self.stdout.write(f'Error in bulk processing: {e}')
+            # Fallback to individual processing
+            for record in batch_records:
+                try:
+                    taxonomy, created = NCBITaxonomy.objects.get_or_create(
+                        tax_id=record['tax_id'],
+                        defaults=record
+                    )
+                    if created:
+                        created_count += 1
+                    elif update_existing:
+                        for key, value in record.items():
+                            setattr(taxonomy, key, value)
+                        taxonomy.save()
+                        updated_count += 1
+                except Exception as individual_error:
+                    self.stdout.write(f'Error processing tax_id {record["tax_id"]}: {individual_error}')
         
         return created_count, updated_count
 
@@ -492,32 +563,90 @@ class Command(BaseCommand):
         chebi_url = "http://purl.obolibrary.org/obo/chebi.obo"
         
         try:
-            response = requests.get(chebi_url, timeout=300)
+            # Download with streaming and progress - but accumulate full content
+            self.stdout.write('Downloading ChEBI database (250MB, this may take a few minutes)...')
+            response = requests.get(chebi_url, timeout=600, stream=True)
             response.raise_for_status()
             
-            parser = OBOParser()
-            terms = parser.parse_obo_content(response.text)
+            # Track download progress while accumulating content
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+            content_chunks = []
+            last_progress_report = 0
+            
+            for chunk in response.iter_content(chunk_size=1024*1024):  # 1MB chunks
+                if chunk:
+                    content_chunks.append(chunk)
+                    downloaded += len(chunk)
+                    
+                    # Report progress less frequently to avoid spam
+                    if total_size > 0:
+                        progress = (downloaded / total_size) * 100
+                        # Only report every 10% or 25MB to reduce log noise
+                        if progress - last_progress_report >= 10 or downloaded - (last_progress_report * total_size / 100) >= 25*1024*1024:
+                            self.stdout.write(f'Downloaded {progress:.1f}% ({downloaded // (1024*1024)}MB/{total_size // (1024*1024)}MB)')
+                            last_progress_report = progress
+                    else:
+                        # Report every 25MB when size unknown
+                        mb_downloaded = downloaded // (1024*1024)
+                        if mb_downloaded > 0 and mb_downloaded % 25 == 0:
+                            self.stdout.write(f'Downloaded {mb_downloaded}MB')
+            
+            # Safely combine all chunks and decode as complete content
+            self.stdout.write('Download complete, decoding content...')
+            try:
+                content = b''.join(content_chunks).decode('utf-8')
+            except UnicodeDecodeError:
+                # Fallback to latin-1 if UTF-8 fails
+                content = b''.join(content_chunks).decode('latin-1')
+            
+            self.stdout.write(f'Content decoded successfully ({len(content):,} characters)')
+            
+            # Parse the complete content (not using the old OBOParser to avoid confusion)
+            terms = self._parse_chebi_with_progress(content)
             
             created_count = 0
             updated_count = 0
             processed = 0
+            total_examined = 0
+            
+            # Process terms with batch database operations
+            from django.db import transaction
+            
+            self.stdout.write(f'Processing {len(terms):,} ChEBI terms with proteomics filter...')
+            
+            # Process in batches for better performance
+            batch_size = 1000
+            batch_compounds = []
             
             for term_data in terms:
-                if limit is not None and processed >= limit:
-                    break
-                    
+                total_examined += 1
+                
                 if not term_data.get('id', '').startswith('CHEBI:'):
                     continue
-                    
-                created, updated = self._process_chebi_term(term_data, update_existing, chebi_filter)
-                if created:
-                    created_count += 1
-                if updated:
-                    updated_count += 1
-                processed += 1
                 
-                if processed % 1000 == 0:
-                    self.stdout.write(f'Processed {processed} ChEBI terms...')
+                # Pre-filter before database operations
+                compound_data = self._prepare_chebi_compound(term_data, chebi_filter)
+                if compound_data:
+                    batch_compounds.append(compound_data)
+                    processed += 1
+                
+                # Process batch when full or at end
+                if len(batch_compounds) >= batch_size or total_examined == len(terms):
+                    if batch_compounds:
+                        batch_created, batch_updated = self._batch_process_chebi_compounds(
+                            batch_compounds, update_existing
+                        )
+                        created_count += batch_created
+                        updated_count += batch_updated
+                        batch_compounds = []
+                
+                # Show progress more frequently
+                if total_examined % 5000 == 0:
+                    self.stdout.write(f'Examined {total_examined:,}/{len(terms):,} ChEBI terms, found {processed:,} matching compounds...')
+                
+                if limit is not None and processed >= limit:
+                    break
             
             self.stdout.write(f'ChEBI: {created_count} created, {updated_count} updated')
             return created_count, updated_count
@@ -617,6 +746,140 @@ class Command(BaseCommand):
             return any(keyword in search_text for keyword in lipidomics_keywords)
             
         return True  # Default case, shouldn't reach here
+
+    def _parse_chebi_with_progress(self, content):
+        """Parse ChEBI content with progress reporting."""
+        import re
+        
+        self.stdout.write('Parsing ChEBI OBO format...')
+        
+        # Split content into lines for processing
+        lines = content.split('\n')
+        total_lines = len(lines)
+        self.stdout.write(f'Processing {total_lines:,} lines of ChEBI data...')
+        
+        # For now, use single-threaded parsing but with better progress
+        terms = []
+        current_term = {}
+        in_term = False
+        processed_lines = 0
+        
+        for line in lines:
+            processed_lines += 1
+            line = line.strip()
+            
+            if line == '[Term]':
+                if current_term:
+                    terms.append(current_term.copy())
+                current_term = {}
+                in_term = True
+                
+            elif line.startswith('[') and line.endswith(']'):
+                if current_term:
+                    terms.append(current_term.copy())
+                in_term = False
+                
+            elif in_term and ':' in line:
+                key, value = line.split(':', 1)
+                key = key.strip()
+                value = value.strip()
+                
+                if key == 'id':
+                    current_term['id'] = value
+                elif key == 'name':
+                    current_term['name'] = value
+                elif key == 'def':
+                    # Extract definition from quotes
+                    match = re.search(r'"([^"]*)"', value)
+                    if match:
+                        current_term['definition'] = match.group(1)
+                elif key == 'synonym':
+                    if 'synonyms' not in current_term:
+                        current_term['synonyms'] = []
+                    # Extract synonym from quotes
+                    match = re.search(r'"([^"]*)"', value)
+                    if match:
+                        current_term['synonyms'].append(match.group(1))
+                elif key == 'is_a':
+                    if 'is_a' not in current_term:
+                        current_term['is_a'] = []
+                    # Extract just the ID (before any comments)
+                    parent_id = value.split('!')[0].strip()
+                    current_term['is_a'].append(parent_id)
+                elif key == 'is_obsolete':
+                    current_term['obsolete'] = value.lower() == 'true'
+                elif key == 'replaced_by':
+                    current_term['replaced_by'] = value
+            
+            # Progress reporting every 50k lines
+            if processed_lines % 50000 == 0:
+                progress = (processed_lines / total_lines) * 100
+                self.stdout.write(f'Parsed {progress:.1f}% of ChEBI data ({len(terms):,} terms found)...')
+        
+        # Add last term
+        if current_term:
+            terms.append(current_term.copy())
+        
+        self.stdout.write(f'ChEBI parsing complete: {len(terms):,} terms extracted')
+        return terms
+
+    def _prepare_chebi_compound(self, term_data, chebi_filter):
+        """Prepare ChEBI compound data if it passes the filter."""
+        if term_data.get('obsolete', False):
+            return None
+            
+        identifier = term_data.get('id', '')
+        name = term_data.get('name', '')
+        definition = term_data.get('definition', '')
+        synonyms = term_data.get('synonyms', [])
+        parent_terms = term_data.get('is_a', [])
+        replacement = term_data.get('replaced_by', '')
+        
+        if not name or not identifier:
+            return None
+        
+        # Apply ChEBI filtering
+        if chebi_filter != 'all':
+            if not self._matches_chebi_filter(name, definition, synonyms, chebi_filter):
+                return None
+
+        return {
+            'identifier': identifier,
+            'name': name,
+            'definition': definition,
+            'synonyms': ';'.join(synonyms) if synonyms else '',
+            'parent_terms': ';'.join(parent_terms) if parent_terms else '',
+            'replacement_term': replacement
+        }
+
+    def _batch_process_chebi_compounds(self, batch_compounds, update_existing):
+        """Process a batch of ChEBI compounds with database operations."""
+        from django.db import transaction
+        from cc.models import ChEBICompound
+        
+        created_count = 0
+        updated_count = 0
+        
+        with transaction.atomic():
+            for compound_data in batch_compounds:
+                try:
+                    compound, created = ChEBICompound.objects.get_or_create(
+                        identifier=compound_data['identifier'],
+                        defaults=compound_data
+                    )
+                    
+                    if created:
+                        created_count += 1
+                    elif update_existing:
+                        for key, value in compound_data.items():
+                            setattr(compound, key, value)
+                        compound.save()
+                        updated_count += 1
+                        
+                except Exception as e:
+                    self.stdout.write(f'Error processing {compound_data["name"]}: {e}')
+        
+        return created_count, updated_count
 
     def load_psims_ontology(self, update_existing=False, limit=10000):
         """Load PSI-MS Ontology."""

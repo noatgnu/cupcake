@@ -20,16 +20,20 @@ Ontologies:
     - psims: PSI-MS Ontology
 """
 
-import requests
-import json
 import gzip
-import xml.etree.ElementTree as ET
-from django.core.management.base import BaseCommand, CommandError
-from cc.models import MondoDisease, UberonAnatomy, NCBITaxonomy, ChEBICompound, PSIMSOntology
-import time
+import json
 import re
-from pathlib import Path
+import tarfile
 import tempfile
+import time
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+import requests
+from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
+
+from cc.models import MondoDisease, UberonAnatomy, NCBITaxonomy, ChEBICompound, PSIMSOntology
 
 
 class OBOParser:
@@ -378,7 +382,6 @@ class Command(BaseCommand):
                 with open(tar_path, 'wb') as f:
                     f.write(response.content)
 
-                import tarfile
                 with tarfile.open(tar_path, 'r:gz') as tar:
                     tar.extractall(temp_dir)
                 
@@ -975,3 +978,4 @@ class Command(BaseCommand):
         except Exception as e:
             self.stdout.write(f'Error processing {name}: {e}')
             return False, False
+

@@ -126,7 +126,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--limit',
             type=int,
-            default=10000,
+            default=None,
             help='Limit number of records to process'
         )
         parser.add_argument(
@@ -195,7 +195,7 @@ class Command(BaseCommand):
             processed = 0
             
             for term_data in terms:
-                if processed >= limit:
+                if limit is not None and processed >= limit:
                     break
                     
                 if not term_data.get('id', '').startswith('MONDO:'):
@@ -280,7 +280,7 @@ class Command(BaseCommand):
             processed = 0
             
             for term_data in terms:
-                if processed >= limit:
+                if limit is not None and processed >= limit:
                     break
                     
                 if not term_data.get('id', '').startswith('UBERON:'):
@@ -434,7 +434,7 @@ class Command(BaseCommand):
         processed = 0
         
         for tax_id, data in taxa_data.items():
-            if processed >= limit:
+            if limit is not None and processed >= limit:
                 break
                 
             if not data['scientific_name']:
@@ -493,7 +493,7 @@ class Command(BaseCommand):
             processed = 0
             
             for term_data in terms:
-                if processed >= limit:
+                if limit is not None and processed >= limit:
                     break
                     
                 if not term_data.get('id', '').startswith('CHEBI:'):
@@ -530,17 +530,7 @@ class Command(BaseCommand):
         
         if not name or not identifier:
             return False, False
-        
-        # Filter for proteomics-relevant compounds
-        proteomics_keywords = [
-            'acid', 'buffer', 'reagent', 'solvent', 'salt', 'detergent',
-            'trypsin', 'enzyme', 'modifier', 'labeling', 'tag', 'dye'
-        ]
-        
-        if not any(keyword in name.lower() or keyword in definition.lower() 
-                  for keyword in proteomics_keywords):
-            return False, False
-        
+
         compound_data = {
             'identifier': identifier,
             'name': name,
@@ -586,7 +576,7 @@ class Command(BaseCommand):
             processed = 0
             
             for term_data in terms:
-                if processed >= limit:
+                if limit is not None and processed >= limit:
                     break
                     
                 if not term_data.get('id', '').startswith('MS:'):

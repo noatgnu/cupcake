@@ -44,7 +44,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--limit',
             type=int,
-            default=1000,
+            default=None,
             help='Limit number of records to process (for testing)'
         )
 
@@ -102,7 +102,7 @@ class Command(BaseCommand):
                 line = line.strip()
                 
                 if line == '[Term]':
-                    if current_term and processed < limit:
+                    if current_term and (limit is None or processed < limit):
                         created, updated = self._process_cl_term(current_term, update_existing)
                         if created:
                             created_count += 1
@@ -144,7 +144,7 @@ class Command(BaseCommand):
                         current_term['obsolete'] = value.lower() == 'true'
             
             # Process last term
-            if current_term and processed < limit:
+            if current_term and (limit is None or processed < limit):
                 created, updated = self._process_cl_term(current_term, update_existing)
                 if created:
                     created_count += 1
@@ -172,10 +172,7 @@ class Command(BaseCommand):
         if not name or not cl_id.startswith('CL:'):
             return False, False
             
-        # Filter for relevant cell types (basic filtering)
-        cell_keywords = ['cell', 'blast', 'cyte', 'phage', 'neuron']
-        if not any(keyword in name.lower() for keyword in cell_keywords):
-            return False, False
+        # Load all cell types without filtering
         
         identifier = f"cl_{cl_id.replace(':', '_').lower()}"
         

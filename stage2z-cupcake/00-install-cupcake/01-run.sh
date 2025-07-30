@@ -542,6 +542,54 @@ else:
     print("Superuser already exists")
 PYEOF
 
+# Load internal ontologies database
+log_cupcake "Loading internal ontologies database..."
+su - cupcake -c "
+    # Source environment variables
+    set -a  # automatically export all variables
+    source /etc/environment.d/cupcake.conf
+    set +a  # stop automatically exporting
+    
+    cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate
+    
+    # Load main ontologies (MONDO, UBERON, NCBI, ChEBI, PSI-MS)
+    log_cupcake 'Loading main ontologies (MONDO, UBERON, NCBI, ChEBI, PSI-MS)...'
+    python manage.py load_ontologies
+    
+    # Load UniProt species data
+    log_cupcake 'Loading UniProt species data...'
+    python manage.py load_species
+    
+    # Load MS modifications (Unimod)
+    log_cupcake 'Loading MS modifications (Unimod)...'
+    python manage.py load_ms_mod
+    
+    # Load UniProt tissue data
+    log_cupcake 'Loading UniProt tissue data...'
+    python manage.py load_tissue
+    
+    # Load UniProt human disease data
+    log_cupcake 'Loading UniProt human disease data...'
+    python manage.py load_human_disease
+    
+    # Load MS terminology and vocabularies
+    log_cupcake 'Loading MS terminology and vocabularies...'
+    python manage.py load_ms_term
+    
+    # Load UniProt subcellular location data
+    log_cupcake 'Loading UniProt subcellular location data...'
+    python manage.py load_subcellular_location
+    
+    # Load cell types and cell lines
+    log_cupcake 'Loading cell types and cell lines...'
+    python manage.py load_cell_types --source cl
+    
+    log_cupcake 'All ontologies loaded successfully!'
+" || {
+    log_cupcake "WARNING: Some ontology loading failed, but continuing with build"
+    log_cupcake "Individual ontologies can be loaded later with respective commands"
+}
+
 # Configure services
 log_cupcake "Setting up systemd services..."
 

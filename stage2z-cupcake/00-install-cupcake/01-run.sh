@@ -496,15 +496,29 @@ log_cupcake "Environment variables configured in OS and systemd"
 log_cupcake "Running Django migrations and setup..."
 cd /opt/cupcake/app
 
-# Run migrations with error checking
-su - cupcake -c "cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py migrate" || {
+# Run migrations with error checking - ensure environment variables are available
+su - cupcake -c "
+    # Source environment variables
+    set -a  # automatically export all variables
+    source /etc/environment.d/cupcake.conf
+    set +a  # stop automatically exporting
+    
+    cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py migrate
+" || {
     log_cupcake "FATAL: Django database migrations failed"
     exit 1
 }
 log_cupcake "✓ Django migrations completed successfully"
 
 # Collect static files with error checking
-su - cupcake -c "cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py collectstatic --noinput" || {
+su - cupcake -c "
+    # Source environment variables
+    set -a  # automatically export all variables
+    source /etc/environment.d/cupcake.conf
+    set +a  # stop automatically exporting
+    
+    cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py collectstatic --noinput
+" || {
     log_cupcake "FATAL: Django static file collection failed"
     exit 1
 }
@@ -512,7 +526,14 @@ log_cupcake "✓ Django static files collected successfully"
 
 # Create Django superuser
 log_cupcake "Creating Django superuser..."
-su - cupcake -c "cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py shell" <<PYEOF
+su - cupcake -c "
+    # Source environment variables
+    set -a  # automatically export all variables
+    source /etc/environment.d/cupcake.conf
+    set +a  # stop automatically exporting
+    
+    cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py shell
+" <<PYEOF
 from django.contrib.auth.models import User
 if not User.objects.filter(username='admin').exists():
     User.objects.create_superuser('admin', 'admin@cupcake.local', 'cupcake123')
@@ -538,9 +559,8 @@ Group=cupcake
 WorkingDirectory=/opt/cupcake/app
 Environment=PATH=/opt/cupcake/venv/bin:/usr/local/bin:/usr/bin:/bin
 Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
-Environment=DATABASE_URL=postgresql://cupcake:cupcake@localhost:5432/cupcake
-Environment=REDIS_URL=redis://localhost:6379/0
 Environment=PYTHONPATH=/opt/cupcake/app
+EnvironmentFile=/etc/environment.d/cupcake.conf
 ExecStart=/bin/bash -c 'cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && gunicorn --workers=3 cupcake.asgi:application --bind 127.0.0.1:8000 --timeout 300 -k uvicorn.workers.UvicornWorker'
 Restart=always
 RestartSec=5
@@ -565,9 +585,8 @@ Group=cupcake
 WorkingDirectory=/opt/cupcake/app
 Environment=PATH=/opt/cupcake/venv/bin:/usr/local/bin:/usr/bin:/bin
 Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
-Environment=DATABASE_URL=postgresql://cupcake:cupcake@localhost:5432/cupcake
-Environment=REDIS_URL=redis://localhost:6379/0
 Environment=PYTHONPATH=/opt/cupcake/app
+EnvironmentFile=/etc/environment.d/cupcake.conf
 ExecStart=/bin/bash -c 'cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py rqworker default'
 Restart=always
 RestartSec=5
@@ -621,7 +640,14 @@ done
 
 # Test Django installation
 log_cupcake "Testing Django installation..."
-su - cupcake -c "cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py check --deploy" || {
+su - cupcake -c "
+    # Source environment variables
+    set -a  # automatically export all variables
+    source /etc/environment.d/cupcake.conf
+    set +a  # stop automatically exporting
+    
+    cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && python manage.py check --deploy
+" || {
     log_cupcake "FATAL: Django installation verification failed"
     exit 1
 }

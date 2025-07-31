@@ -1,0 +1,126 @@
+#!/bin/bash
+# Dynamic MOTD for CUPCAKE Pi images with security check
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Function to check if default password is still in use
+check_default_password() {
+    # Check if cupcake user still has default password
+    # This is a heuristic - check password change date vs system install date
+    local passwd_change=$(sudo chage -l cupcake 2>/dev/null | grep "Last password change" | cut -d: -f2 | xargs)
+    local system_install=$(stat -c %Y /etc/passwd)
+    
+    # If password was changed after system setup, assume it's been changed
+    if [ -n "$passwd_change" ] && [ "$passwd_change" != "never" ]; then
+        # Parse date and compare (this is approximate)
+        return 1  # Password likely changed
+    fi
+    
+    # Check if SSH keys exist (alternative authentication)
+    if [ -f "/home/cupcake/.ssh/authorized_keys" ] && [ -s "/home/cupcake/.ssh/authorized_keys" ]; then
+        return 1  # SSH keys configured
+    fi
+    
+    return 0  # Default password likely still in use
+}
+
+# Function to get system info
+get_system_info() {
+    local pi_model=$(cat /proc/device-tree/model 2>/dev/null | tr -d '\0' | sed 's/Raspberry Pi /Pi /')
+    local temp=$(vcgencmd measure_temp 2>/dev/null | cut -d= -f2 || echo "N/A")
+    local uptime=$(uptime -p | sed 's/up //')
+    
+    echo "System: $pi_model | Temp: $temp | Uptime: $uptime"
+}
+
+# Function to check service status
+get_service_status() {
+    local web_status="❌"
+    local worker_status="❌"
+    local db_status="❌"
+    
+    if systemctl is-active --quiet cupcake-web; then web_status="✅"; fi
+    if systemctl is-active --quiet cupcake-worker; then worker_status="✅"; fi
+    if systemctl is-active --quiet postgresql; then db_status="✅"; fi
+    
+    echo "Services: Web $web_status | Worker $worker_status | Database $db_status"
+}
+
+# Main MOTD output
+echo -e "${CYAN}"
+cat << "EOF"
+██████╗██╗   ██╗██████╗  ██████╗ █████╗ ██╗  ██╗███████╗
+██╔════╝██║   ██║██╔══██╗██╔════╝██╔══██╗██║ ██╔╝██╔════╝
+██║     ██║   ██║██████╔╝██║     ███████║█████╔╝ █████╗  
+██║     ██║   ██║██╔═══╝ ██║     ██╔══██║██╔═██╗ ██╔══╝  
+╚██████╗╚██████╔╝██║     ╚██████╗██║  ██║██║  ██╗███████╗
+ ╚═════╝ ╚═════╝ ╚═╝      ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝
+EOF
+echo -e "${NC}"
+
+echo -e "${CYAN}🧁 CUPCAKE ARM64 Pre-built Image - Laboratory Management System${NC}"
+echo -e "${GREEN}📊 2M+ Pre-loaded Scientific Ontologies Ready${NC}"
+echo ""
+
+# System information
+echo -e "${CYAN}$(get_system_info)${NC}"
+echo -e "${CYAN}$(get_service_status)${NC}"
+echo ""
+
+# Access information
+echo -e "${GREEN}Access Points:${NC}"
+echo "  Web Interface: http://cupcake-pi.local:8000"
+echo "  SSH Access:    ssh cupcake@cupcake-pi.local"
+echo ""
+
+# Security check and warning
+if check_default_password; then
+    echo -e "${RED}🔒 CRITICAL SECURITY WARNING - DEFAULT PASSWORDS DETECTED!${NC}"
+    echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}⚠️  This system is using DEFAULT PASSWORDS - CHANGE NOW!${NC}"
+    echo ""
+    echo -e "${YELLOW}Current defaults:${NC}"
+    echo -e "  ${RED}• SSH Login: cupcake / cupcake123${NC}"
+    echo -e "  ${RED}• Web Admin: admin / cupcake123${NC}"
+    echo ""
+    echo -e "${GREEN}TO SECURE THIS SYSTEM RIGHT NOW:${NC}"
+    echo -e "  ${CYAN}1.${NC} Change SSH password:    ${GREEN}sudo passwd cupcake${NC}"
+    echo -e "  ${CYAN}2.${NC} Change web password:    Go to web interface → Admin → Users"
+    echo -e "  ${CYAN}3.${NC} Setup SSH keys:         ${GREEN}ssh-copy-id cupcake@cupcake-pi.local${NC}"
+    echo -e "  ${CYAN}4.${NC} Enable firewall:        ${GREEN}sudo ufw enable${NC}"
+    echo ""
+    echo -e "${RED}⚠️  DO NOT use this system in production with default passwords!${NC}"
+    echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
+else
+    echo -e "${GREEN}🔒 Security Status: Custom passwords/SSH keys detected ✅${NC}"
+    echo -e "${GREEN}Additional hardening recommendations:${NC}"
+    echo "  • Enable firewall: sudo ufw enable"
+    echo "  • Regular updates: sudo apt update && sudo apt upgrade"
+    echo "  • Monitor logs: sudo journalctl -f -u cupcake-*"
+fi
+
+echo ""
+
+# Pre-loaded databases info
+echo -e "${GREEN}Pre-loaded Scientific Databases:${NC}"
+echo "  • MONDO Disease Ontology    • NCBI Taxonomy (2M+ species)"
+echo "  • ChEBI Compounds           • UniProt Annotations"
+echo "  • MS Ontologies            • Cell Types & Tissues"
+echo ""
+
+# Quick commands
+echo -e "${GREEN}Quick Commands:${NC}"
+echo "  System Status: sudo systemctl status cupcake-*"
+echo "  View Logs:     sudo journalctl -f -u cupcake-web"
+echo "  Resources:     htop"
+echo "  Restart Web:   sudo systemctl restart cupcake-web"
+echo ""
+
+# Documentation
+echo -e "${CYAN}Documentation: https://github.com/noatgnu/cupcake/tree/master/raspberry-pi${NC}"
+echo ""

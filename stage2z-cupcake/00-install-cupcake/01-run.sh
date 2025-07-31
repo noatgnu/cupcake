@@ -55,20 +55,7 @@ apt-get upgrade -y || {
     exit 1
 }
 
-# Install PostgreSQL from official Raspbian repositories
-log_cupcake "Installing PostgreSQL from Raspbian repositories..."
-export DEBIAN_FRONTEND=noninteractive
-export APT_LISTCHANGES_FRONTEND=none
-
-# Update package lists
-apt-get update
-
-# Install PostgreSQL (default version from Raspbian)
-log_cupcake "Installing PostgreSQL packages..."
-apt-get install -y postgresql postgresql-client
-
-# PostgreSQL service is automatically configured by package installation
-log_cupcake "PostgreSQL installation completed via package manager"
+# PostgreSQL will be installed and configured via dedicated setup script
 
 # Install other dependencies
 log_cupcake "Installing other CUPCAKE dependencies..."
@@ -342,24 +329,173 @@ systemctl daemon-reload
 systemctl start postgresql
 systemctl enable postgresql
 
-# Configure PostgreSQL
-log_cupcake "Configuring PostgreSQL database..."
-# Start PostgreSQL first in chroot environment
-service postgresql start
+# Copy PostgreSQL setup script from repository
+log_cupcake "Setting up PostgreSQL configuration script..."
+cp -r /opt/cupcake/app/raspberry-pi/scripts/setup-postgresql.sh /opt/cupcake/scripts/
+chmod +x /opt/cupcake/scripts/setup-postgresql.sh
 
-# Create user and database (fixed for PostgreSQL 15)
-su - postgres -c "createuser cupcake" || true
-su - postgres -c "psql -c \"ALTER USER cupcake WITH PASSWORD 'cupcake';\""
-su - postgres -c "createdb -O cupcake cupcake" || true
+# Configure PostgreSQL using dedicated script
+log_cupcake "Configuring PostgreSQL database..."
+/opt/cupcake/scripts/setup-postgresql.sh || {
+    log_cupcake "FATAL: PostgreSQL configuration failed"
+    exit 1
+}
 
 # Configure environment
 log_cupcake "Setting up environment configuration..."
-# Ensure PostgreSQL is configured for port 5432
-echo "port = 5432" >> /etc/postgresql/15/main/postgresql.conf
 
-# Wait for PostgreSQL to be ready and restart with correct port
-service postgresql restart
-sleep 5
+# Setup dynamic MOTD with security warnings
+log_cupcake "Configuring dynamic MOTD with security checks..."
+# Remove default MOTD
+rm -f /etc/motd
+
+# Create update-motd.d directory if it doesn't exist
+mkdir -p /etc/update-motd.d
+
+# Create dynamic MOTD script with security warnings
+cat > /etc/update-motd.d/10-cupcake-security << 'MOTDEOF'
+#!/bin/bash
+# Dynamic MOTD for CUPCAKE Pi images with security check
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Function to check if default password is still in use
+check_default_password() {
+    # Check if SSH keys exist (alternative authentication)
+    if [ -f "/home/cupcake/.ssh/authorized_keys" ] && [ -s "/home/cupcake/.ssh/authorized_keys" ]; then
+        return 1  # SSH keys configured
+    fi
+    
+    # Check if password file has been modified recently (heuristic)
+    local shadow_mod=$(stat -c %Y /etc/shadow 2>/dev/null || echo 0)
+    local install_time=$(stat -c %Y /opt/cupcake/app/manage.py 2>/dev/null || echo 0)
+    
+    # If shadow was modified significantly after install, assume password changed
+    if [ $((shadow_mod - install_time)) -gt 300 ]; then
+        return 1  # Password likely changed
+    fi
+    
+    return 0  # Default password likely still in use
+}
+
+# Function to get system info
+get_system_info() {
+    local pi_model=$(cat /proc/device-tree/model 2>/dev/null | tr -d '\0' | sed 's/Raspberry Pi /Pi /' || echo "Pi Model Unknown")
+    local temp=$(vcgencmd measure_temp 2>/dev/null | cut -d= -f2 || echo "N/A")
+    local uptime=$(uptime -p 2>/dev/null | sed 's/up //' || echo "Unknown")
+    
+    echo "System: $pi_model | Temp: $temp | Uptime: $uptime"
+}
+
+# Function to check service status
+get_service_status() {
+    local web_status="❌"
+    local worker_status="❌"
+    local db_status="❌"
+    local nginx_status="❌"
+    
+    if systemctl is-active --quiet cupcake-web 2>/dev/null; then web_status="✅"; fi
+    if systemctl is-active --quiet cupcake-worker 2>/dev/null; then worker_status="✅"; fi
+    if systemctl is-active --quiet postgresql 2>/dev/null; then db_status="✅"; fi
+    if systemctl is-active --quiet nginx 2>/dev/null; then nginx_status="✅"; fi
+    
+    echo "Services: Nginx $nginx_status | Web $web_status | Worker $worker_status | DB $db_status"
+}
+
+# Main MOTD output
+echo -e "${CYAN}"
+cat << "EOF"
+██████╗██╗   ██╗██████╗  ██████╗ █████╗ ██╗  ██╗███████╗
+██╔════╝██║   ██║██╔══██╗██╔════╝██╔══██╗██║ ██╔╝██╔════╝
+██║     ██║   ██║██████╔╝██║     ███████║█████╔╝ █████╗  
+██║     ██║   ██║██╔═══╝ ██║     ██╔══██║██╔═██╗ ██╔══╝  
+╚██████╗╚██████╔╝██║     ╚██████╗██║  ██║██║  ██╗███████╗
+ ╚═════╝ ╚═════╝ ╚═╝      ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝
+EOF
+echo -e "${NC}"
+
+echo -e "${CYAN}🧁 CUPCAKE ARM64 Pre-built Image - Laboratory Management System${NC}"
+echo -e "${GREEN}📊 2M+ Pre-loaded Scientific Ontologies Ready${NC}"
+echo ""
+
+# System information
+echo -e "${CYAN}$(get_system_info)${NC}"
+echo -e "${CYAN}$(get_service_status)${NC}"
+echo ""
+
+# Access information
+echo -e "${GREEN}Access Points:${NC}"
+echo "  Web Interface: http://cupcake-pi.local"
+echo "  Direct Django: http://cupcake-pi.local:8000 (for debugging)"
+echo "  SSH Access:    ssh cupcake@cupcake-pi.local"
+echo ""
+
+# Security check and warning
+if check_default_password; then
+    echo -e "${RED}🔒 CRITICAL SECURITY WARNING - DEFAULT PASSWORDS DETECTED!${NC}"
+    echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}⚠️  This system is using DEFAULT PASSWORDS - CHANGE NOW!${NC}"
+    echo ""
+    echo -e "${YELLOW}Current defaults:${NC}"
+    echo -e "  ${RED}• SSH Login: cupcake / cupcake123${NC}"
+    echo -e "  ${RED}• Web Admin: admin / cupcake123${NC}"
+    echo ""
+    echo -e "${GREEN}TO SECURE THIS SYSTEM RIGHT NOW:${NC}"
+    echo -e "  ${CYAN}1.${NC} Change SSH password:    ${GREEN}sudo passwd cupcake${NC}"
+    echo -e "  ${CYAN}2.${NC} Change web password:    Go to web interface → Admin → Users"
+    echo -e "  ${CYAN}3.${NC} Setup SSH keys:         ${GREEN}ssh-copy-id cupcake@cupcake-pi.local${NC}"
+    echo -e "  ${CYAN}4.${NC} Enable firewall:        ${GREEN}sudo ufw enable${NC}"
+    echo ""
+    echo -e "${RED}⚠️  DO NOT use this system in production with default passwords!${NC}"
+    echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
+else
+    echo -e "${GREEN}🔒 Security Status: Custom passwords/SSH keys detected ✅${NC}"
+    echo -e "${GREEN}Additional hardening recommendations:${NC}"
+    echo "  • Enable firewall: sudo ufw enable"
+    echo "  • Regular updates: sudo apt update && sudo apt upgrade"
+    echo "  • Monitor logs: sudo journalctl -f -u cupcake-*"
+fi
+
+echo ""
+
+# Pre-loaded databases info
+echo -e "${GREEN}Pre-loaded Scientific Databases:${NC}"
+echo "  • MONDO Disease Ontology    • NCBI Taxonomy (2M+ species)"
+echo "  • ChEBI Compounds           • UniProt Annotations"
+echo "  • MS Ontologies            • Cell Types & Tissues"
+echo ""
+
+# Quick commands
+echo -e "${GREEN}Quick Commands:${NC}"
+echo "  System Status: sudo systemctl status cupcake-*"
+echo "  View Logs:     sudo journalctl -f -u cupcake-web"
+echo "  Resources:     htop"
+echo "  Restart Web:   sudo systemctl restart cupcake-web"
+echo ""
+
+# Documentation
+echo -e "${CYAN}Documentation: https://github.com/noatgnu/cupcake/tree/master/raspberry-pi${NC}"
+echo ""
+MOTDEOF
+
+# Make the MOTD script executable
+chmod +x /etc/update-motd.d/10-cupcake-security
+
+# Disable other default MOTD scripts that might conflict
+chmod -x /etc/update-motd.d/10-uname 2>/dev/null || true
+chmod -x /etc/update-motd.d/00-header 2>/dev/null || true
+
+# Test the MOTD generation
+/etc/update-motd.d/10-cupcake-security > /etc/motd || true
+
+log_cupcake "✓ Dynamic MOTD configured with security warnings"
+
+# PostgreSQL is already configured and running via setup script
 
 # Set environment variables directly in OS instead of creating .env file
 log_cupcake "Setting up environment variables directly in OS..."
@@ -718,7 +854,9 @@ Environment=PATH=/opt/cupcake/venv/bin:/usr/local/bin:/usr/bin:/bin
 Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
 Environment=PYTHONPATH=/opt/cupcake/app
 EnvironmentFile=/etc/environment.d/cupcake.conf
-ExecStart=/bin/bash -c 'cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && gunicorn --workers=3 cupcake.asgi:application --bind 127.0.0.1:8000 --timeout 300 -k uvicorn.workers.UvicornWorker'
+ExecStart=/bin/bash -c 'cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && gunicorn --workers=2 cupcake.asgi:application --bind 127.0.0.1:8000 --timeout 300 -k uvicorn.workers.UvicornWorker'
+ExecStartPost=/bin/bash -c 'sleep 3 && touch /tmp/cupcake-ready'
+ExecStopPost=/bin/bash -c 'rm -f /tmp/cupcake-ready'
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -754,9 +892,24 @@ StandardError=journal
 WantedBy=multi-user.target
 WORKEREOF
 
-# Enable services
+# Copy nginx setup script from repository
+log_cupcake "Setting up nginx configuration script..."
+mkdir -p /opt/cupcake/scripts
+cp -r /opt/cupcake/app/raspberry-pi/scripts/setup-nginx.sh /opt/cupcake/scripts/
+chmod +x /opt/cupcake/scripts/setup-nginx.sh
+
+# Configure Nginx for CUPCAKE using dedicated script
+log_cupcake "Configuring Nginx web server..."
+/opt/cupcake/scripts/setup-nginx.sh || {
+    log_cupcake "FATAL: Nginx configuration failed"
+    exit 1
+}
+
+log_cupcake "✓ Nginx configured to serve CUPCAKE on port 80"
+
+# Enable services (PostgreSQL already enabled by setup script)
 systemctl enable cupcake-web cupcake-worker
-systemctl enable nginx postgresql redis-server
+systemctl enable nginx redis-server
 
 # Clean up to reduce image size
 log_cupcake "Cleaning up installation artifacts..."

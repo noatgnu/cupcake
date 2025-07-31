@@ -1,15 +1,16 @@
 ██████╗██╗   ██╗██████╗  ██████╗ █████╗ ██╗  ██╗███████╗
 ██╔════╝██║   ██║██╔══██╗██╔════╝██╔══██╗██║ ██╔╝██╔════╝
 ██║     ██║   ██║██████╔╝██║     ███████║█████╔╝ █████╗  
-██║     ██║   ██║██╔═══╝ ██║     ██╔══██║██╔═██╗ ██╔══╝  
+██║     ██║   ██║██╔═══╙ ██║     ██╔══██║██╔═██╗ ██╔══╝  
 ╚██████╗╚██████╔╝██║     ╚██████╗██║  ██║██║  ██╗███████╗
  ╚═════╝ ╚═════╝ ╚═╝      ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝
 
-🥧 Raspberry Pi 5 Edition - Laboratory Management System
+🧁 ARM64 Pre-built Image - Laboratory Management System
+📊 2M+ Pre-loaded Scientific Ontologies Ready
 
-Web Interface: http://cupcake-pi.local
-Dashboard:     http://cupcake-pi.local/dashboard
-Admin Panel:   http://cupcake-pi.local/admin
+Access Points:
+  Web Interface: http://cupcake-pi.local:8000
+  Default Login: admin / cupcake123
 
 Quick Commands:
   System Status: sudo systemctl status cupcake-*
@@ -29,7 +30,26 @@ Service Management:
   Restart DB:    sudo systemctl restart postgresql
   View Status:   /opt/cupcake/scripts/monitoring.sh
 
-Security Reminder:
-⚠️  Change default passwords immediately after first login!
+🔒 SECURITY WARNING - DEFAULT PASSWORDS IN USE!
+═══════════════════════════════════════════════════════════
+⚠️  This system is using DEFAULT PASSWORDS - CHANGE IMMEDIATELY!
+  
+Current defaults:
+  • SSH Login: cupcake / cupcake123  
+  • Web Admin: admin / cupcake123
 
-Documentation: /opt/cupcake/README.md
+TO SECURE THIS SYSTEM:
+  1. Change SSH password:    sudo passwd cupcake
+  2. Change web password:    Go to web interface → Admin → Users
+  3. Setup SSH keys:         ~/.ssh/authorized_keys
+  4. Enable firewall:        sudo ufw enable
+  
+⚠️  DO NOT use default passwords in production environments!
+═══════════════════════════════════════════════════════════
+
+Pre-loaded Databases:
+  • MONDO Disease Ontology    • NCBI Taxonomy (2M+ species)
+  • ChEBI Compounds           • UniProt Annotations  
+  • MS Ontologies            • Cell Types & Tissues
+
+Documentation: https://github.com/noatgnu/cupcake/tree/master/raspberry-pi

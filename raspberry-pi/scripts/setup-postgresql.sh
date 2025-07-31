@@ -1,21 +1,128 @@
 #!/bin/bash
 set -e
 
-echo "=== Configuring PostgreSQL ==="
+# CUPCAKE PostgreSQL Setup Script for Raspberry Pi
+# This script configures PostgreSQL for optimal performance on Pi hardware
 
-# Configure PostgreSQL
+echo "=== Configuring PostgreSQL for CUPCAKE ==="
+
+# Check if running as root
+if [ "$EUID" -ne 0 ]; then
+    echo "Error: This script must be run as root (use sudo)"
+    exit 1
+fi
+
+# Install PostgreSQL if not already installed
+if ! command -v psql &> /dev/null; then
+    echo "Installing PostgreSQL..."
+    apt-get update
+    apt-get install -y postgresql postgresql-client
+fi
+
+# Enable PostgreSQL service
 systemctl enable postgresql
-echo 'shared_buffers = 256MB' >> /etc/postgresql/14/main/postgresql.conf
-echo 'work_mem = 8MB' >> /etc/postgresql/14/main/postgresql.conf
-echo 'effective_cache_size = 1GB' >> /etc/postgresql/14/main/postgresql.conf
-echo 'random_page_cost = 1.1' >> /etc/postgresql/14/main/postgresql.conf
 
-# Start PostgreSQL to create database
-service postgresql start
-sudo -u postgres createuser cupcake
-sudo -u postgres createdb cupcake_db -O cupcake
-sudo -u postgres psql -c "ALTER USER cupcake WITH PASSWORD 'cupcake123';" || \
-    sudo -u postgres psql -c $'ALTER USER cupcake WITH PASSWORD \'cupcake123\';'
-service postgresql stop
+echo "Configuring PostgreSQL for Raspberry Pi performance..."
 
-echo "=== PostgreSQL configuration completed ==="
+# Configure PostgreSQL for Raspberry Pi (optimized for 4-8GB RAM)
+cat >> /etc/postgresql/15/main/postgresql.conf << 'PGCONF'
+
+# CUPCAKE Raspberry Pi Optimized Settings
+# Optimized for 4-8GB Pi with moderate concurrent usage
+
+# Memory settings (conservative for Pi)
+shared_buffers = 256MB                    # 25% of RAM for 1GB, adjust for your Pi
+work_mem = 8MB                           # Per-operation memory
+maintenance_work_mem = 64MB              # Maintenance operations
+effective_cache_size = 1GB               # Available memory for caching
+
+# Connection settings
+max_connections = 50                     # Reduced for Pi resource limits
+
+# Write-ahead logging (performance vs reliability balance)
+wal_buffers = 16MB
+checkpoint_completion_target = 0.9
+checkpoint_timeout = 15min
+
+# Query planner settings (optimized for SSD/fast storage)
+random_page_cost = 1.1                  # Assumes SSD storage (Pi with NVMe)
+effective_io_concurrency = 200          # For SSD storage
+
+# Logging (reduced for Pi storage)
+log_destination = 'stderr'
+logging_collector = on
+log_directory = '/var/log/postgresql'
+log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'
+log_rotation_age = 1d
+log_rotation_size = 100MB
+log_min_duration_statement = 1000ms     # Log slow queries (1 second)
+
+# Auto vacuum settings (important for CUPCAKE data)
+autovacuum = on
+autovacuum_max_workers = 2               # Reduced for Pi
+autovacuum_naptime = 1min               # More frequent cleanup
+
+# Ensure correct port configuration
+port = 5432
+PGCONF
+
+echo "Starting PostgreSQL service..."
+
+# Start PostgreSQL service
+systemctl daemon-reload
+systemctl start postgresql
+
+# Wait for PostgreSQL to be ready
+sleep 3
+
+echo "Creating CUPCAKE database and user..."
+
+# Create user and database (with error handling for existing resources)
+su - postgres -c "createuser cupcake" 2>/dev/null || echo "User 'cupcake' already exists"
+su - postgres -c "psql -c \"ALTER USER cupcake WITH PASSWORD 'cupcake';\"" || {
+    echo "Error setting password for cupcake user"
+    exit 1
+}
+su - postgres -c "createdb -O cupcake cupcake" 2>/dev/null || echo "Database 'cupcake' already exists"
+
+echo "Testing database connection..."
+
+# Test database connection
+if su - postgres -c "psql -d cupcake -c 'SELECT 1;'" > /dev/null 2>&1; then
+    echo "✅ Database connection test successful"
+else
+    echo "❌ Database connection test failed"
+    exit 1
+fi
+
+echo "Configuring PostgreSQL service..."
+
+# Restart PostgreSQL to apply configuration changes
+systemctl restart postgresql
+
+# Verify PostgreSQL is running and configured correctly
+if systemctl is-active --quiet postgresql; then
+    echo "✅ PostgreSQL is running successfully"
+    echo "📊 Database: cupcake"
+    echo "👤 User: cupcake"
+    echo "🔌 Port: 5432"
+    echo "🗂️  Config: /etc/postgresql/15/main/postgresql.conf"
+else
+    echo "❌ PostgreSQL failed to start"
+    systemctl status postgresql
+    exit 1
+fi
+
+echo ""
+echo "=== PostgreSQL Configuration Summary ==="
+echo "✅ PostgreSQL 15 installed and configured"
+echo "✅ Optimized for Raspberry Pi hardware"
+echo "✅ CUPCAKE database and user created"
+echo "✅ Performance tuning applied"
+echo "✅ Logging configured for monitoring"
+echo ""
+echo "Database: cupcake"
+echo "User: cupcake / cupcake"
+echo "Port: 5432 (local only)"
+echo ""
+echo "=== PostgreSQL configuration completed successfully ==="

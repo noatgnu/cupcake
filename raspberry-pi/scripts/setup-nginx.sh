@@ -187,21 +187,31 @@ server {
         proxy_read_timeout 7d;
     }
     
-    # Main application - proxy to Django
+    # Frontend (Angular) - serve from files
     location / {
         # Show maintenance page if CUPCAKE is not ready
         if (!-f /tmp/cupcake-ready) {
             return 503;
         }
         
+        root /opt/cupcake/frontend;
+        try_files $uri $uri/ /index.html;
+        
+        # Cache static assets
+        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+    }
+    
+    # Admin interface - proxy to Django
+    location /admin/ {
         proxy_pass http://127.0.0.1:8000;
         include /etc/nginx/conf.d/proxy_params.conf;
         
-        # Handle large file uploads
-        proxy_request_buffering off;
-        proxy_buffering on;
-        proxy_buffer_size 4k;
-        proxy_buffers 8 4k;
+        # Additional security for admin
+        add_header X-Frame-Options DENY always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';" always;
     }
     
     # Security: Block access to sensitive files

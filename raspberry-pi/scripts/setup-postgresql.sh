@@ -19,8 +19,16 @@ if ! command -v psql &> /dev/null; then
     apt-get install -y postgresql postgresql-client
 fi
 
-# Enable PostgreSQL service
-systemctl enable postgresql
+# Enable PostgreSQL service (handle chroot environment)
+# Detect chroot: if /proc/1/root doesn't point to real root, we're in chroot
+if [ "$(stat -c %d:%i /)" != "$(stat -c %d:%i /proc/1/root/. 2>/dev/null)" ] 2>/dev/null; then
+    # We're in chroot, skip systemctl enable but still configure
+    echo "Detected chroot environment, will manually start PostgreSQL"
+    CHROOT_MODE=true
+else
+    systemctl enable postgresql
+    CHROOT_MODE=false
+fi
 
 echo "Configuring PostgreSQL for Raspberry Pi performance..."
 
@@ -66,14 +74,32 @@ autovacuum_naptime = 1min               # More frequent cleanup
 port = 5432
 PGCONF
 
-echo "Starting PostgreSQL service..."
-
-# Start PostgreSQL service
-systemctl daemon-reload
-systemctl start postgresql
-
-# Wait for PostgreSQL to be ready
-sleep 3
+if [ "$CHROOT_MODE" = "false" ]; then
+    echo "Starting PostgreSQL service..."
+    
+    # Start PostgreSQL service
+    systemctl daemon-reload
+    systemctl start postgresql
+    
+    # Wait for PostgreSQL to be ready
+    sleep 3
+else
+    echo "Starting PostgreSQL manually in chroot environment..."
+    
+    # Initialize database if needed
+    if [ ! -d "/var/lib/postgresql/15/main" ]; then
+        echo "Initializing PostgreSQL database cluster..."
+        su - postgres -c "/usr/lib/postgresql/15/bin/initdb -D /var/lib/postgresql/15/main"
+    fi
+    
+    # Start PostgreSQL manually
+    echo "Starting PostgreSQL server..."
+    su - postgres -c "/usr/lib/postgresql/15/bin/pg_ctl -D /var/lib/postgresql/15/main -l /var/log/postgresql/postgresql-15-main.log start" || {
+        echo "Manual PostgreSQL start failed"
+        exit 1
+    }
+    sleep 3
+fi
 
 echo "Creating CUPCAKE database and user..."
 
@@ -97,20 +123,32 @@ fi
 
 echo "Configuring PostgreSQL service..."
 
-# Restart PostgreSQL to apply configuration changes
-systemctl restart postgresql
-
-# Verify PostgreSQL is running and configured correctly
-if systemctl is-active --quiet postgresql; then
-    echo "✅ PostgreSQL is running successfully"
+if [ "$CHROOT_MODE" = "false" ]; then
+    # Restart PostgreSQL to apply configuration changes
+    systemctl restart postgresql
+    
+    # Verify PostgreSQL is running and configured correctly
+    if systemctl is-active --quiet postgresql; then
+        echo "✅ PostgreSQL is running successfully"
+        echo "📊 Database: cupcake"
+        echo "👤 User: cupcake"
+        echo "🔌 Port: 5432"
+        echo "🗂️  Config: /etc/postgresql/15/main/postgresql.conf"
+    else
+        echo "❌ PostgreSQL failed to start"
+        systemctl status postgresql
+        exit 1
+    fi
+else
+    echo "✅ PostgreSQL configured successfully (chroot mode)"
     echo "📊 Database: cupcake"
     echo "👤 User: cupcake"
     echo "🔌 Port: 5432"
     echo "🗂️  Config: /etc/postgresql/15/main/postgresql.conf"
-else
-    echo "❌ PostgreSQL failed to start"
-    systemctl status postgresql
-    exit 1
+    echo "ℹ️  Services will be started on first boot"
+    
+    # Stop the manually started PostgreSQL
+    su - postgres -c "/usr/lib/postgresql/15/bin/pg_ctl -D /var/lib/postgresql/15/main stop" 2>/dev/null || true
 fi
 
 echo ""

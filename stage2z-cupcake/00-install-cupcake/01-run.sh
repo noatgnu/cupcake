@@ -55,7 +55,20 @@ apt-get upgrade -y || {
     exit 1
 }
 
-# PostgreSQL will be installed and configured via dedicated setup script
+# Install PostgreSQL from official Raspbian repositories
+log_cupcake "Installing PostgreSQL from Raspbian repositories..."
+export DEBIAN_FRONTEND=noninteractive
+export APT_LISTCHANGES_FRONTEND=none
+
+# Update package lists
+apt-get update
+
+# Install PostgreSQL (default version from Raspbian)
+log_cupcake "Installing PostgreSQL packages..."
+apt-get install -y postgresql postgresql-client
+
+# PostgreSQL service is automatically configured by package installation
+log_cupcake "PostgreSQL installation completed via package manager"
 
 # Install other dependencies
 log_cupcake "Installing other CUPCAKE dependencies..."
@@ -325,177 +338,28 @@ log_cupcake "Python virtual environment setup completed"
 
 # Start PostgreSQL service
 log_cupcake "Starting PostgreSQL service..."
-systemctl daemon-reload
-systemctl start postgresql
-systemctl enable postgresql
+systemctl daemon-reload || echo "systemctl daemon-reload failed in chroot, continuing..."
+systemctl start postgresql || service postgresql start
+systemctl enable postgresql || echo "systemctl enable failed in chroot, service will be enabled on boot"
 
-# Copy PostgreSQL setup script from repository
-log_cupcake "Setting up PostgreSQL configuration script..."
-cp -r /opt/cupcake/app/raspberry-pi/scripts/setup-postgresql.sh /opt/cupcake/scripts/
-chmod +x /opt/cupcake/scripts/setup-postgresql.sh
-
-# Configure PostgreSQL using dedicated script
+# Configure PostgreSQL
 log_cupcake "Configuring PostgreSQL database..."
-/opt/cupcake/scripts/setup-postgresql.sh || {
-    log_cupcake "FATAL: PostgreSQL configuration failed"
-    exit 1
-}
+# Ensure PostgreSQL is running in chroot environment
+service postgresql start
+
+# Create user and database (fixed for PostgreSQL 15)
+su - postgres -c "createuser cupcake" || true
+su - postgres -c "psql -c \"ALTER USER cupcake WITH PASSWORD 'cupcake';\""
+su - postgres -c "createdb -O cupcake cupcake" || true
 
 # Configure environment
 log_cupcake "Setting up environment configuration..."
+# Ensure PostgreSQL is configured for port 5432
+echo "port = 5432" >> /etc/postgresql/15/main/postgresql.conf
 
-# Setup dynamic MOTD with security warnings
-log_cupcake "Configuring dynamic MOTD with security checks..."
-# Remove default MOTD
-rm -f /etc/motd
-
-# Create update-motd.d directory if it doesn't exist
-mkdir -p /etc/update-motd.d
-
-# Create dynamic MOTD script with security warnings
-cat > /etc/update-motd.d/10-cupcake-security << 'MOTDEOF'
-#!/bin/bash
-# Dynamic MOTD for CUPCAKE Pi images with security check
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
-
-# Function to check if default password is still in use
-check_default_password() {
-    # Check if SSH keys exist (alternative authentication)
-    if [ -f "/home/cupcake/.ssh/authorized_keys" ] && [ -s "/home/cupcake/.ssh/authorized_keys" ]; then
-        return 1  # SSH keys configured
-    fi
-    
-    # Check if password file has been modified recently (heuristic)
-    local shadow_mod=$(stat -c %Y /etc/shadow 2>/dev/null || echo 0)
-    local install_time=$(stat -c %Y /opt/cupcake/app/manage.py 2>/dev/null || echo 0)
-    
-    # If shadow was modified significantly after install, assume password changed
-    if [ $((shadow_mod - install_time)) -gt 300 ]; then
-        return 1  # Password likely changed
-    fi
-    
-    return 0  # Default password likely still in use
-}
-
-# Function to get system info
-get_system_info() {
-    local pi_model=$(cat /proc/device-tree/model 2>/dev/null | tr -d '\0' | sed 's/Raspberry Pi /Pi /' || echo "Pi Model Unknown")
-    local temp=$(vcgencmd measure_temp 2>/dev/null | cut -d= -f2 || echo "N/A")
-    local uptime=$(uptime -p 2>/dev/null | sed 's/up //' || echo "Unknown")
-    
-    echo "System: $pi_model | Temp: $temp | Uptime: $uptime"
-}
-
-# Function to check service status
-get_service_status() {
-    local web_status="❌"
-    local worker_status="❌"
-    local db_status="❌"
-    local nginx_status="❌"
-    
-    if systemctl is-active --quiet cupcake-web 2>/dev/null; then web_status="✅"; fi
-    if systemctl is-active --quiet cupcake-worker 2>/dev/null; then worker_status="✅"; fi
-    if systemctl is-active --quiet postgresql 2>/dev/null; then db_status="✅"; fi
-    if systemctl is-active --quiet nginx 2>/dev/null; then nginx_status="✅"; fi
-    
-    echo "Services: Nginx $nginx_status | Web $web_status | Worker $worker_status | DB $db_status"
-}
-
-# Main MOTD output
-echo -e "${CYAN}"
-cat << "EOF"
-██████╗██╗   ██╗██████╗  ██████╗ █████╗ ██╗  ██╗███████╗
-██╔════╝██║   ██║██╔══██╗██╔════╝██╔══██╗██║ ██╔╝██╔════╝
-██║     ██║   ██║██████╔╝██║     ███████║█████╔╝ █████╗  
-██║     ██║   ██║██╔═══╝ ██║     ██╔══██║██╔═██╗ ██╔══╝  
-╚██████╗╚██████╔╝██║     ╚██████╗██║  ██║██║  ██╗███████╗
- ╚═════╝ ╚═════╝ ╚═╝      ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝
-EOF
-echo -e "${NC}"
-
-echo -e "${CYAN}🧁 CUPCAKE ARM64 Pre-built Image - Laboratory Management System${NC}"
-echo -e "${GREEN}📊 2M+ Pre-loaded Scientific Ontologies Ready${NC}"
-echo ""
-
-# System information
-echo -e "${CYAN}$(get_system_info)${NC}"
-echo -e "${CYAN}$(get_service_status)${NC}"
-echo ""
-
-# Access information
-echo -e "${GREEN}Access Points:${NC}"
-echo "  Web Interface: http://cupcake-pi.local"
-echo "  Direct Django: http://cupcake-pi.local:8000 (for debugging)"
-echo "  SSH Access:    ssh cupcake@cupcake-pi.local"
-echo ""
-
-# Security check and warning
-if check_default_password; then
-    echo -e "${RED}🔒 CRITICAL SECURITY WARNING - DEFAULT PASSWORDS DETECTED!${NC}"
-    echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
-    echo -e "${YELLOW}⚠️  This system is using DEFAULT PASSWORDS - CHANGE NOW!${NC}"
-    echo ""
-    echo -e "${YELLOW}Current defaults:${NC}"
-    echo -e "  ${RED}• SSH Login: cupcake / cupcake123${NC}"
-    echo -e "  ${RED}• Web Admin: admin / cupcake123${NC}"
-    echo ""
-    echo -e "${GREEN}TO SECURE THIS SYSTEM RIGHT NOW:${NC}"
-    echo -e "  ${CYAN}1.${NC} Change SSH password:    ${GREEN}sudo passwd cupcake${NC}"
-    echo -e "  ${CYAN}2.${NC} Change web password:    Go to web interface → Admin → Users"
-    echo -e "  ${CYAN}3.${NC} Setup SSH keys:         ${GREEN}ssh-copy-id cupcake@cupcake-pi.local${NC}"
-    echo -e "  ${CYAN}4.${NC} Enable firewall:        ${GREEN}sudo ufw enable${NC}"
-    echo ""
-    echo -e "${RED}⚠️  DO NOT use this system in production with default passwords!${NC}"
-    echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
-else
-    echo -e "${GREEN}🔒 Security Status: Custom passwords/SSH keys detected ✅${NC}"
-    echo -e "${GREEN}Additional hardening recommendations:${NC}"
-    echo "  • Enable firewall: sudo ufw enable"
-    echo "  • Regular updates: sudo apt update && sudo apt upgrade"
-    echo "  • Monitor logs: sudo journalctl -f -u cupcake-*"
-fi
-
-echo ""
-
-# Pre-loaded databases info
-echo -e "${GREEN}Pre-loaded Scientific Databases:${NC}"
-echo "  • MONDO Disease Ontology    • NCBI Taxonomy (2M+ species)"
-echo "  • ChEBI Compounds           • UniProt Annotations"
-echo "  • MS Ontologies            • Cell Types & Tissues"
-echo ""
-
-# Quick commands
-echo -e "${GREEN}Quick Commands:${NC}"
-echo "  System Status: sudo systemctl status cupcake-*"
-echo "  View Logs:     sudo journalctl -f -u cupcake-web"
-echo "  Resources:     htop"
-echo "  Restart Web:   sudo systemctl restart cupcake-web"
-echo ""
-
-# Documentation
-echo -e "${CYAN}Documentation: https://github.com/noatgnu/cupcake/tree/master/raspberry-pi${NC}"
-echo ""
-MOTDEOF
-
-# Make the MOTD script executable
-chmod +x /etc/update-motd.d/10-cupcake-security
-
-# Disable other default MOTD scripts that might conflict
-chmod -x /etc/update-motd.d/10-uname 2>/dev/null || true
-chmod -x /etc/update-motd.d/00-header 2>/dev/null || true
-
-# Test the MOTD generation
-/etc/update-motd.d/10-cupcake-security > /etc/motd || true
-
-log_cupcake "✓ Dynamic MOTD configured with security warnings"
-
-# PostgreSQL is already configured and running via setup script
+# Wait for PostgreSQL to be ready and restart with correct port
+service postgresql restart
+sleep 5
 
 # Set environment variables directly in OS instead of creating .env file
 log_cupcake "Setting up environment variables directly in OS..."
@@ -678,6 +542,157 @@ else:
     print("Superuser already exists")
 PYEOF
 
+# Setup dynamic MOTD with security warnings
+log_cupcake "Configuring dynamic MOTD with security checks..."
+# Remove default MOTD
+rm -f /etc/motd
+
+# Create update-motd.d directory if it doesn't exist
+mkdir -p /etc/update-motd.d
+
+# Create dynamic MOTD script with security warnings
+cat > /etc/update-motd.d/10-cupcake-security << 'MOTDEOF'
+#!/bin/bash
+# Dynamic MOTD for CUPCAKE Pi images with security check
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Function to check if default password is still in use
+check_default_password() {
+    # Check if SSH keys exist (alternative authentication)
+    if [ -f "/home/cupcake/.ssh/authorized_keys" ] && [ -s "/home/cupcake/.ssh/authorized_keys" ]; then
+        return 1  # SSH keys configured
+    fi
+    
+    # Check if password file has been modified recently (heuristic)
+    local shadow_mod=$(stat -c %Y /etc/shadow 2>/dev/null || echo 0)
+    local install_time=$(stat -c %Y /opt/cupcake/app/manage.py 2>/dev/null || echo 0)
+    
+    # If shadow was modified significantly after install, assume password changed
+    if [ $((shadow_mod - install_time)) -gt 300 ]; then
+        return 1  # Password likely changed
+    fi
+    
+    return 0  # Default password likely still in use
+}
+
+# Function to get system info
+get_system_info() {
+    local pi_model=$(cat /proc/device-tree/model 2>/dev/null | tr -d '\0' | sed 's/Raspberry Pi /Pi /' || echo "Pi Model Unknown")
+    local temp=$(vcgencmd measure_temp 2>/dev/null | cut -d= -f2 || echo "N/A")
+    local uptime=$(uptime -p 2>/dev/null | sed 's/up //' || echo "Unknown")
+    
+    echo "System: $pi_model | Temp: $temp | Uptime: $uptime"
+}
+
+# Function to check service status
+get_service_status() {
+    local web_status="❌"
+    local worker_status="❌"
+    local db_status="❌"
+    local nginx_status="❌"
+    
+    if systemctl is-active --quiet cupcake-web 2>/dev/null; then web_status="✅"; fi
+    if systemctl is-active --quiet cupcake-worker 2>/dev/null; then worker_status="✅"; fi
+    if systemctl is-active --quiet postgresql 2>/dev/null; then db_status="✅"; fi
+    if systemctl is-active --quiet nginx 2>/dev/null; then nginx_status="✅"; fi
+    
+    echo "Services: Nginx $nginx_status | Web $web_status | Worker $worker_status | DB $db_status"
+}
+
+# Main MOTD output
+echo -e "${CYAN}"
+cat << "EOF"
+██████╗██╗   ██╗██████╗  ██████╗ █████╗ ██╗  ██╗███████╗
+██╔════╝██║   ██║██╔══██╗██╔════╝██╔══██╗██║ ██╔╝██╔════╝
+██║     ██║   ██║██████╔╝██║     ███████║█████╔╝ █████╗  
+██║     ██║   ██║██╔═══╝ ██║     ██╔══██║██╔═██╗ ██╔══╝  
+╚██████╗╚██████╔╝██║     ╚██████╗██║  ██║██║  ██╗███████╗
+ ╚═════╝ ╚═════╝ ╚═╝      ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝
+EOF
+echo -e "${NC}"
+
+echo -e "${CYAN}🧁 CUPCAKE ARM64 Pre-built Image - Laboratory Management System${NC}"
+echo -e "${GREEN}📊 2M+ Pre-loaded Scientific Ontologies Ready${NC}"
+echo ""
+
+# System information
+echo -e "${CYAN}$(get_system_info)${NC}"
+echo -e "${CYAN}$(get_service_status)${NC}"
+echo ""
+
+# Access information
+echo -e "${GREEN}Access Points:${NC}"
+echo "  Web Interface: http://cupcake-pi.local"
+echo "  Direct Django: http://cupcake-pi.local:8000 (for debugging)"
+echo "  SSH Access:    ssh cupcake@cupcake-pi.local"
+echo ""
+
+# Security check and warning
+if check_default_password; then
+    echo -e "${RED}🔒 CRITICAL SECURITY WARNING - DEFAULT PASSWORDS DETECTED!${NC}"
+    echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}⚠️  This system is using DEFAULT PASSWORDS - CHANGE NOW!${NC}"
+    echo ""
+    echo -e "${YELLOW}Current defaults:${NC}"
+    echo -e "  ${RED}• SSH Login: cupcake / cupcake123${NC}"
+    echo -e "  ${RED}• Web Admin: admin / cupcake123${NC}"
+    echo ""
+    echo -e "${GREEN}TO SECURE THIS SYSTEM RIGHT NOW:${NC}"
+    echo -e "  ${CYAN}1.${NC} Change SSH password:    ${GREEN}sudo passwd cupcake${NC}"
+    echo -e "  ${CYAN}2.${NC} Change web password:    Go to web interface → Admin → Users"
+    echo -e "  ${CYAN}3.${NC} Setup SSH keys:         ${GREEN}ssh-copy-id cupcake@cupcake-pi.local${NC}"
+    echo -e "  ${CYAN}4.${NC} Enable firewall:        ${GREEN}sudo ufw enable${NC}"
+    echo ""
+    echo -e "${RED}⚠️  DO NOT use this system in production with default passwords!${NC}"
+    echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
+else
+    echo -e "${GREEN}🔒 Security Status: Custom passwords/SSH keys detected ✅${NC}"
+    echo -e "${GREEN}Additional hardening recommendations:${NC}"
+    echo "  • Enable firewall: sudo ufw enable"
+    echo "  • Regular updates: sudo apt update && sudo apt upgrade"
+    echo "  • Monitor logs: sudo journalctl -f -u cupcake-*"
+fi
+
+echo ""
+
+# Pre-loaded databases info
+echo -e "${GREEN}Pre-loaded Scientific Databases:${NC}"
+echo "  • MONDO Disease Ontology    • NCBI Taxonomy (2M+ species)"
+echo "  • ChEBI Compounds           • UniProt Annotations"
+echo "  • MS Ontologies            • Cell Types & Tissues"
+echo ""
+
+# Quick commands
+echo -e "${GREEN}Quick Commands:${NC}"
+echo "  System Status: sudo systemctl status cupcake-*"
+echo "  View Logs:     sudo journalctl -f -u cupcake-web"
+echo "  Resources:     htop"
+echo "  Restart Web:   sudo systemctl restart cupcake-web"
+echo ""
+
+# Documentation
+echo -e "${CYAN}Documentation: https://github.com/noatgnu/cupcake/tree/master/raspberry-pi${NC}"
+echo ""
+MOTDEOF
+
+# Make the MOTD script executable
+chmod +x /etc/update-motd.d/10-cupcake-security
+
+# Disable other default MOTD scripts that might conflict
+chmod -x /etc/update-motd.d/10-uname 2>/dev/null || true
+chmod -x /etc/update-motd.d/00-header 2>/dev/null || true
+
+# Test the MOTD generation
+/etc/update-motd.d/10-cupcake-security > /etc/motd || true
+
+log_cupcake "✓ Dynamic MOTD configured with security warnings"
+
 # Load internal ontologies database
 log_cupcake "Loading internal ontologies database..."
 su - cupcake -c "
@@ -854,9 +869,7 @@ Environment=PATH=/opt/cupcake/venv/bin:/usr/local/bin:/usr/bin:/bin
 Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
 Environment=PYTHONPATH=/opt/cupcake/app
 EnvironmentFile=/etc/environment.d/cupcake.conf
-ExecStart=/bin/bash -c 'cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && gunicorn --workers=2 cupcake.asgi:application --bind 127.0.0.1:8000 --timeout 300 -k uvicorn.workers.UvicornWorker'
-ExecStartPost=/bin/bash -c 'sleep 3 && touch /tmp/cupcake-ready'
-ExecStopPost=/bin/bash -c 'rm -f /tmp/cupcake-ready'
+ExecStart=/bin/bash -c 'cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate && gunicorn --workers=3 cupcake.asgi:application --bind 127.0.0.1:8000 --timeout 300 -k uvicorn.workers.UvicornWorker'
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -892,14 +905,71 @@ StandardError=journal
 WantedBy=multi-user.target
 WORKEREOF
 
-# Copy nginx setup script from repository
-log_cupcake "Setting up nginx configuration script..."
+# Setup CUPCAKE frontend files
+log_cupcake "Setting up CUPCAKE frontend..."
+
+# Create frontend directory
+mkdir -p /opt/cupcake/frontend
+
+# Check if GitHub Actions built frontend exists in repository
+if [ -d "/opt/cupcake/app/frontend-dist" ] && [ "$(ls -A /opt/cupcake/app/frontend-dist)" ]; then
+    log_cupcake "Found pre-built frontend from GitHub Actions"
+    cp -r /opt/cupcake/app/frontend-dist/* /opt/cupcake/frontend/
+    chown -R www-data:www-data /opt/cupcake/frontend
+    log_cupcake "✓ Frontend files copied from GitHub Actions build"
+else
+    log_cupcake "WARNING: No pre-built frontend found in repository"
+    log_cupcake "Creating placeholder frontend for nginx to serve"
+    cat > /opt/cupcake/frontend/index.html << 'FRONTENDEOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CUPCAKE - Frontend Build Missing</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; margin: 50px; background: #f5f5f5; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        h1 { color: #e74c3c; margin-bottom: 20px; }
+        p { line-height: 1.6; margin-bottom: 15px; }
+        .code { background: #f8f9fa; padding: 10px; border-radius: 5px; font-family: monospace; margin: 15px 0; }
+        .admin-link { display: inline-block; background: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-top: 20px; }
+        .admin-link:hover { background: #0056b3; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧁 CUPCAKE Frontend Missing</h1>
+        <p><strong>The Angular frontend was not found in the repository.</strong></p>
+        <p>This means GitHub Actions has not built and committed the frontend files yet.</p>
+        
+        <p><strong>To access CUPCAKE admin interface:</strong></p>
+        <a href="/admin/" class="admin-link">Go to Admin Interface</a>
+        
+        <p><strong>Expected frontend location:</strong></p>
+        <div class="code">/opt/cupcake/app/frontend-dist/</div>
+        
+        <p><strong>To fix this:</strong></p>
+        <ol style="text-align: left; max-width: 400px; margin: 20px auto;">
+            <li>Ensure GitHub Actions runs the frontend build</li>
+            <li>Check that <code>prebuild-frontend.sh</code> is executed</li>
+            <li>Verify frontend files are committed to repository</li>
+            <li>Rebuild the Pi image</li>
+        </ol>
+    </div>
+</body>
+</html>
+FRONTENDEOF
+    chown www-data:www-data /opt/cupcake/frontend/index.html
+    log_cupcake "✓ Placeholder frontend created"
+fi
+
+# Configure Nginx for CUPCAKE using dedicated script
+log_cupcake "Configuring Nginx web server..."
 mkdir -p /opt/cupcake/scripts
 cp -r /opt/cupcake/app/raspberry-pi/scripts/setup-nginx.sh /opt/cupcake/scripts/
 chmod +x /opt/cupcake/scripts/setup-nginx.sh
 
-# Configure Nginx for CUPCAKE using dedicated script
-log_cupcake "Configuring Nginx web server..."
 /opt/cupcake/scripts/setup-nginx.sh || {
     log_cupcake "FATAL: Nginx configuration failed"
     exit 1
@@ -907,9 +977,16 @@ log_cupcake "Configuring Nginx web server..."
 
 log_cupcake "✓ Nginx configured to serve CUPCAKE on port 80"
 
-# Enable services (PostgreSQL already enabled by setup script)
-systemctl enable cupcake-web cupcake-worker
-systemctl enable nginx redis-server
+# Install CUPCAKE update script system-wide
+log_cupcake "Installing CUPCAKE update script..."
+cp /opt/cupcake/app/raspberry-pi/scripts/update-cupcake.sh /usr/local/bin/cupcake-update
+chmod +x /usr/local/bin/cupcake-update
+ln -sf /usr/local/bin/cupcake-update /usr/local/bin/update-cupcake 2>/dev/null || true
+log_cupcake "✓ CUPCAKE update script installed as 'cupcake-update'"
+
+# Enable services
+systemctl enable cupcake-web cupcake-worker || echo "systemctl enable failed in chroot, services will be enabled on boot"
+systemctl enable nginx postgresql redis-server || echo "systemctl enable failed in chroot, services will be enabled on boot"
 
 # Clean up to reduce image size
 log_cupcake "Cleaning up installation artifacts..."

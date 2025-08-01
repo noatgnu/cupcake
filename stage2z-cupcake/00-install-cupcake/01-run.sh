@@ -142,12 +142,29 @@ cmake .. \
     exit 1
 }
 
-# Build with full parallelism on GitHub Actions runner
+# Build with full parallelism on GitHub Actions runner - with retry for network issues
 log_cupcake "Building Arrow C++ libraries with full parallelism..."
-make -j$(nproc) || {
-    log_cupcake "FATAL: Arrow C++ build failed"
-    exit 1
-}
+
+# Retry logic for network-dependent Arrow build
+for attempt in 1 2 3; do
+    log_cupcake "Arrow build attempt $attempt/3..."
+    
+    if make -j$(nproc); then
+        log_cupcake "✓ Arrow build succeeded on attempt $attempt"
+        break
+    else
+        if [ $attempt -eq 3 ]; then
+            log_cupcake "FATAL: Arrow C++ build failed after 3 attempts"
+            log_cupcake "This is likely due to network issues downloading dependencies (utf8proc, re2, etc.)"
+            exit 1
+        else
+            log_cupcake "Arrow build attempt $attempt failed, retrying in 30 seconds..."
+            sleep 30
+            # Clean up partial downloads that might be corrupted
+            find . -name "*-download" -type f -delete 2>/dev/null || true
+        fi
+    fi
+done
 
 # Install Arrow libraries
 log_cupcake "Installing Arrow C++ libraries..."

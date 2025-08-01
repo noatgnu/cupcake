@@ -463,7 +463,8 @@ jobs:
         for img in *.img.xz; do
           if [ -f "$img" ]; then
             size=$(stat -c%s "$img")
-            echo "Final lite image: $img - $size bytes ($(($size / 1024 / 1024)) MB)"
+            size_mb=$((size / 1024 / 1024))
+            echo "Final lite image: $img - $size bytes ($size_mb MB)"
           fi
         done
 
@@ -884,7 +885,8 @@ jobs:
         for img in *.img.xz; do
           if [ -f "$img" ]; then
             size=$(stat -c%s "$img")
-            echo "Final lite image: $img - $size bytes ($(($size / 1024 / 1024)) MB)"
+            size_mb=$((size / 1024 / 1024))
+            echo "Final lite image: $img - $size bytes ($size_mb MB)"
           fi
         done
 
@@ -941,3 +943,4 @@ jobs:
         echo "🧹 Cleaning up build artifacts..."
         # GitHub automatically cleans up artifacts after retention period
         # This is just a placeholder for any additional cleanup needed
+

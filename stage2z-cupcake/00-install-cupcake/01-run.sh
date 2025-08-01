@@ -488,6 +488,11 @@ DEFAULT_SERVICE_LAB_GROUP="MS Facility"
 # LLaMA settings (disabled by default since USE_LLM=False)
 LLAMA_BIN_PATH=
 LLAMA_DEFAULT_MODEL=
+
+# Fix multiprocessing issues for ontology loading
+MULTIPROCESSING_FORCE_SINGLE_THREADED=1
+PRONTO_THREADS=1
+PYTHONDONTWRITEBYTECODE=1
 ENVEOF
 
 log_cupcake "Environment variables configured in OS and systemd"
@@ -703,6 +708,45 @@ su - cupcake -c "
     
     cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate
     
+    # Fix multiprocessing permission issues in chroot environment
+    export PYTHONPATH=/opt/cupcake/app
+    
+    # Create a Python script to fix semaphore permissions without disabling multiprocessing
+    cat > /tmp/fix_multiprocessing.py << 'FIXEOF'
+import os
+import sys
+import tempfile
+import multiprocessing
+
+# Create a writable temp directory for semaphores
+temp_dir = tempfile.mkdtemp(prefix='cupcake_mp_')
+os.environ['TMPDIR'] = temp_dir
+
+# Fix multiprocessing context to use filesystem-based locks instead of system semaphores
+def create_patched_context():
+    import multiprocessing.context
+    
+    # Use spawn method which is more isolated and works better in chroot
+    if hasattr(multiprocessing, 'get_context'):
+        ctx = multiprocessing.get_context('spawn')
+        multiprocessing.set_start_method('spawn', force=True)
+        return ctx
+    return multiprocessing
+
+# Apply the fix
+try:
+    create_patched_context()
+    # Set reasonable limits for chroot environment
+    os.environ['PRONTO_THREADS'] = '2'  # Use 2 threads instead of 1 or default
+except Exception as e:
+    # Fallback to single-threaded if patching fails
+    os.environ['PRONTO_THREADS'] = '1'
+    print(f"Warning: Multiprocessing patch failed, using single-threaded mode: {e}")
+FIXEOF
+    
+    # Apply the fix before running any ontology commands
+    export PYTHONSTARTUP=/tmp/fix_multiprocessing.py
+    
     # Load main ontologies (MONDO, UBERON, NCBI, ChEBI, PSI-MS)
     echo 'Loading main ontologies (MONDO, UBERON, NCBI, ChEBI with proteomics filter, PSI-MS)...'
     python manage.py load_ontologies --chebi-filter proteomics
@@ -788,6 +832,16 @@ print('Ontology statistics generated successfully!')
 print(f'Total ontology records: {stats["total_records"]:,}')
 PYEOF
 
+    # Verify the ontology statistics file was created
+    if [ ! -f "/opt/cupcake/release-info/ontology_statistics.json" ]; then
+        echo "❌ ERROR: ontology_statistics.json was not created!"
+        echo "The ontology statistics generation failed silently."
+        exit 1
+    else
+        echo "✅ ontology_statistics.json created successfully"
+        echo "File size: $(du -h /opt/cupcake/release-info/ontology_statistics.json | cut -f1)"
+    fi
+
     # Generate package license information
     echo 'Generating package license information...'
     cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate
@@ -810,9 +864,10 @@ import json
 import os
 from datetime import datetime
 
-# Load ontology stats
+# Load ontology statistics (should always exist at this point)
 with open('/opt/cupcake/release-info/ontology_statistics.json', 'r') as f:
     ontology_stats = json.load(f)
+print("Successfully loaded ontology statistics")
 
 # Load package info
 with open('/opt/cupcake/release-info/installed_packages.json', 'r') as f:
@@ -911,57 +966,17 @@ log_cupcake "Setting up CUPCAKE frontend..."
 # Create frontend directory
 mkdir -p /opt/cupcake/frontend
 
-# Check if GitHub Actions built frontend exists in repository
+# Frontend is required - GitHub Actions must have built it
 if [ -d "/opt/cupcake/app/frontend-dist" ] && [ "$(ls -A /opt/cupcake/app/frontend-dist)" ]; then
     log_cupcake "Found pre-built frontend from GitHub Actions"
     cp -r /opt/cupcake/app/frontend-dist/* /opt/cupcake/frontend/
     chown -R www-data:www-data /opt/cupcake/frontend
     log_cupcake "✓ Frontend files copied from GitHub Actions build"
 else
-    log_cupcake "WARNING: No pre-built frontend found in repository"
-    log_cupcake "Creating placeholder frontend for nginx to serve"
-    cat > /opt/cupcake/frontend/index.html << 'FRONTENDEOF'
-<!DOCTYPE html>
-<html>
-<head>
-    <title>CUPCAKE - Frontend Build Missing</title>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        body { font-family: Arial, sans-serif; text-align: center; margin: 50px; background: #f5f5f5; color: #333; }
-        .container { max-width: 600px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
-        h1 { color: #e74c3c; margin-bottom: 20px; }
-        p { line-height: 1.6; margin-bottom: 15px; }
-        .code { background: #f8f9fa; padding: 10px; border-radius: 5px; font-family: monospace; margin: 15px 0; }
-        .admin-link { display: inline-block; background: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; margin-top: 20px; }
-        .admin-link:hover { background: #0056b3; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🧁 CUPCAKE Frontend Missing</h1>
-        <p><strong>The Angular frontend was not found in the repository.</strong></p>
-        <p>This means GitHub Actions has not built and committed the frontend files yet.</p>
-        
-        <p><strong>To access CUPCAKE admin interface:</strong></p>
-        <a href="/admin/" class="admin-link">Go to Admin Interface</a>
-        
-        <p><strong>Expected frontend location:</strong></p>
-        <div class="code">/opt/cupcake/app/frontend-dist/</div>
-        
-        <p><strong>To fix this:</strong></p>
-        <ol style="text-align: left; max-width: 400px; margin: 20px auto;">
-            <li>Ensure GitHub Actions runs the frontend build</li>
-            <li>Check that <code>prebuild-frontend.sh</code> is executed</li>
-            <li>Verify frontend files are committed to repository</li>
-            <li>Rebuild the Pi image</li>
-        </ol>
-    </div>
-</body>
-</html>
-FRONTENDEOF
-    chown www-data:www-data /opt/cupcake/frontend/index.html
-    log_cupcake "✓ Placeholder frontend created"
+    log_cupcake "FATAL: No pre-built frontend found in repository"
+    log_cupcake "Frontend is required for CUPCAKE - build cannot continue"
+    log_cupcake "GitHub Actions must successfully build the frontend before Pi image build"
+    exit 1
 fi
 
 # Configure Nginx for CUPCAKE using dedicated script

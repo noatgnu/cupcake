@@ -139,7 +139,25 @@ jobs:
         # Ensure script has correct line endings and is executable
         dos2unix prebuild-frontend.sh 2>/dev/null || true
         chmod +x prebuild-frontend.sh
+        
+        # Run frontend build with explicit error checking
+        echo "=== Starting frontend pre-build ==="
         bash ./prebuild-frontend.sh --hostname cupcake-pi.local --output-dir ./frontend-dist
+        
+        # Verify frontend was built successfully
+        if [ ! -d "./frontend-dist" ]; then
+          echo "❌ ERROR: frontend-dist directory was not created"
+          exit 1
+        fi
+        
+        if [ -z "$(ls -A ./frontend-dist 2>/dev/null)" ]; then
+          echo "❌ ERROR: frontend-dist directory is empty"
+          exit 1
+        fi
+        
+        echo "✅ Frontend pre-build completed successfully"
+        echo "Frontend files created:"
+        ls -la ./frontend-dist/ | head -10
         
     - name: Build Pi 4 Lite image using native pi-gen
       run: |
@@ -158,6 +176,18 @@ jobs:
         
         # Create custom CUPCAKE stage using proper pi-gen naming (stage2a - runs after stage2)
         sudo cp -r ../stage2z-cupcake ./stage2a
+        
+        # Copy pre-built frontend to the stage2a directory so it gets included in the Pi image
+        if [ -d "../raspberry-pi/frontend-dist" ]; then
+          echo "=== Copying pre-built frontend to stage2a ==="
+          sudo cp -r ../raspberry-pi/frontend-dist ./stage2a/
+          echo "✅ Frontend copied to stage2a/frontend-dist"
+          ls -la ./stage2a/frontend-dist/ | head -5
+        else
+          echo "❌ CRITICAL ERROR: No pre-built frontend found in ../raspberry-pi/frontend-dist"
+          echo "Frontend is required for CUPCAKE - placeholder is not acceptable"
+          exit 1
+        fi
         
         # Fix line endings (convert Windows CRLF to Unix LF) and ensure proper format
         sudo sed -i 's/\r$//' ./stage2a/prerun.sh 2>/dev/null || true
@@ -530,7 +560,25 @@ jobs:
         # Ensure script has correct line endings and is executable
         dos2unix prebuild-frontend.sh 2>/dev/null || true
         chmod +x prebuild-frontend.sh
+        
+        # Run frontend build with explicit error checking
+        echo "=== Starting frontend pre-build ==="
         bash ./prebuild-frontend.sh --hostname cupcake-pi.local --output-dir ./frontend-dist
+        
+        # Verify frontend was built successfully
+        if [ ! -d "./frontend-dist" ]; then
+          echo "❌ ERROR: frontend-dist directory was not created"
+          exit 1
+        fi
+        
+        if [ -z "$(ls -A ./frontend-dist 2>/dev/null)" ]; then
+          echo "❌ ERROR: frontend-dist directory is empty"
+          exit 1
+        fi
+        
+        echo "✅ Frontend pre-build completed successfully"
+        echo "Frontend files created:"
+        ls -la ./frontend-dist/ | head -10
         
     - name: Build Pi 5 Lite image using native pi-gen
       run: |
@@ -549,6 +597,18 @@ jobs:
         
         # Create custom CUPCAKE stage using proper pi-gen naming (stage2a - runs after stage2)
         sudo cp -r ../stage2z-cupcake ./stage2a
+        
+        # Copy pre-built frontend to the stage2a directory so it gets included in the Pi image
+        if [ -d "../raspberry-pi/frontend-dist" ]; then
+          echo "=== Copying pre-built frontend to stage2a ==="
+          sudo cp -r ../raspberry-pi/frontend-dist ./stage2a/
+          echo "✅ Frontend copied to stage2a/frontend-dist"
+          ls -la ./stage2a/frontend-dist/ | head -5
+        else
+          echo "❌ CRITICAL ERROR: No pre-built frontend found in ../raspberry-pi/frontend-dist"
+          echo "Frontend is required for CUPCAKE - placeholder is not acceptable"
+          exit 1
+        fi
         
         # Fix line endings (convert Windows CRLF to Unix LF) and ensure proper format
         sudo sed -i 's/\r$//' ./stage2a/prerun.sh 2>/dev/null || true

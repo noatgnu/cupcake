@@ -181,8 +181,7 @@ server {
         proxy_set_header Connection "upgrade";
         include /etc/nginx/conf.d/proxy_params.conf;
         
-        # WebSocket specific timeouts
-        proxy_connect_timeout 7d;
+        # WebSocket specific timeouts (override proxy_params.conf)
         proxy_send_timeout 7d;
         proxy_read_timeout 7d;
     }
@@ -212,6 +211,72 @@ server {
         # Additional security for admin
         add_header X-Frame-Options DENY always;
         add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';" always;
+    }
+    
+    # API endpoints - proxy to Django
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+        include /etc/nginx/conf.d/proxy_params.conf;
+        
+        # CORS headers for API
+        add_header 'Access-Control-Allow-Origin' '$http_origin' always;
+        add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
+        add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization' always;
+        add_header 'Access-Control-Allow-Credentials' 'true' always;
+        
+        # Handle preflight requests
+        if ($request_method = 'OPTIONS') {
+            add_header 'Access-Control-Allow-Origin' '$http_origin';
+            add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS';
+            add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization';
+            add_header 'Access-Control-Max-Age' 86400;
+            add_header 'Content-Type' 'text/plain; charset=utf-8';
+            add_header 'Content-Length' 0;
+            return 204;
+        }
+    }
+    
+    # WebSocket support - proxy to Django
+    location /ws/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        include /etc/nginx/conf.d/proxy_params.conf;
+        
+        # WebSocket specific timeouts (override proxy_params.conf)
+        proxy_send_timeout 7d;
+        proxy_read_timeout 7d;
+    }
+    
+    # Auth endpoints - proxy to Django
+    location /auth/ {
+        proxy_pass http://127.0.0.1:8000;
+        include /etc/nginx/conf.d/proxy_params.conf;
+    }
+    
+    # DRF (Django REST Framework) endpoints - proxy to Django
+    location /drf/ {
+        proxy_pass http://127.0.0.1:8000;
+        include /etc/nginx/conf.d/proxy_params.conf;
+    }
+    
+    # OAuth endpoints - proxy to Django
+    location /o/ {
+        proxy_pass http://127.0.0.1:8000;
+        include /etc/nginx/conf.d/proxy_params.conf;
+    }
+    
+    # Social auth endpoints - proxy to Django
+    location /social/ {
+        proxy_pass http://127.0.0.1:8000;
+        include /etc/nginx/conf.d/proxy_params.conf;
+    }
+    
+    # MCP (Model Context Protocol) endpoints - proxy to Django
+    location /mcp/ {
+        proxy_pass http://127.0.0.1:8000;
+        include /etc/nginx/conf.d/proxy_params.conf;
     }
     
     # Security: Block access to sensitive files

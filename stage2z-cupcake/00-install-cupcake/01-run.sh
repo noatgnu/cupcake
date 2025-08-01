@@ -913,11 +913,6 @@ PYEOF
 
     echo 'Package license information generated successfully!'
 
-" || {
-    log_cupcake "WARNING: Some ontology loading failed, but continuing with build"
-    log_cupcake "Individual ontologies can be loaded later with respective commands"
-}
-
 # Configure services
 log_cupcake "Setting up systemd services..."
 

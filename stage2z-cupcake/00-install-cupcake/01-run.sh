@@ -711,6 +711,30 @@ su - cupcake -c "
     # Set Python path and prepare for ontology loading
     export PYTHONPATH=/opt/cupcake/app
     
+    # Fix multiprocessing semaphore access in chroot environment
+    # Recent pi-gen ARM64 updates and GitHub Actions Ubuntu 24.04 have stricter shared memory restrictions
+    log_cupcake "Configuring shared memory for multiprocessing in chroot..."
+    
+    # Ensure /dev/shm exists with correct permissions
+    mkdir -p /dev/shm
+    chmod 1777 /dev/shm
+    
+    # Mount tmpfs on /dev/shm if not already mounted (required for POSIX semaphores)
+    if ! mountpoint -q /dev/shm 2>/dev/null; then
+        mount -t tmpfs tmpfs /dev/shm -o size=512m,mode=1777 || {
+            log_cupcake "WARNING: Could not mount /dev/shm, multiprocessing may fail"
+        }
+    fi
+    
+    # Fix /run/shm symlink issues that can cause permission problems
+    if [ -L "/run/shm" ]; then
+        rm -f /run/shm
+    fi
+    mkdir -p /run/shm
+    chmod 1777 /run/shm
+    
+    log_cupcake "✓ Shared memory configured for multiprocessing"
+    
     # Load main ontologies (MONDO, UBERON, NCBI, ChEBI, PSI-MS)
     echo 'Loading main ontologies (MONDO, UBERON, NCBI, ChEBI with proteomics filter, PSI-MS)...'
     python manage.py load_ontologies --chebi-filter proteomics
@@ -750,13 +774,19 @@ su - cupcake -c "
     python manage.py shell <<PYEOF
 import json
 import os
-from cc.models import (
-    MondoDisease, UberonAnatomy, NCBITaxonomy, ChEBICompound, PSIMSOntology,
-    Species, Unimod, Tissue, HumanDisease, MSUniqueVocabularies, 
-    SubcellularLocation, CellType
-)
+try:
+    from cc.models import (
+        MondoDisease, UberonAnatomy, NCBITaxonomy, ChEBICompound, PSIMSOntology,
+        Species, Unimod, Tissue, HumanDisease, MSUniqueVocabularies, 
+        SubcellularLocation, CellType
+    )
+    print("Successfully imported Django models")
+except Exception as e:
+    print(f"ERROR importing models: {e}")
+    raise
 
-stats = {
+try:
+    stats = {
     'ontology_statistics': {
         'MONDO_Disease_Ontology': MondoDisease.objects.count(),
         'UBERON_Anatomy': UberonAnatomy.objects.count(),
@@ -784,16 +814,30 @@ stats = {
         MSUniqueVocabularies.objects.count(),
         SubcellularLocation.objects.count(),
         CellType.objects.count()
-    ])
-}
+        ])
+    }
 
-# Save to file for GitHub release
-os.makedirs('/opt/cupcake/release-info', exist_ok=True)
-with open('/opt/cupcake/release-info/ontology_statistics.json', 'w') as f:
-    json.dump(stats, f, indent=2)
+    # Save to file for GitHub release
+    os.makedirs('/opt/cupcake/release-info', exist_ok=True)
+    with open('/opt/cupcake/release-info/ontology_statistics.json', 'w') as f:
+        json.dump(stats, f, indent=2)
 
-print('Ontology statistics generated successfully!')
-print(f'Total ontology records: {stats["total_records"]:,}')
+    print('Ontology statistics generated successfully!')
+    print(f'Total ontology records: {stats["total_records"]:,}')
+    print(f'Stats keys created: {list(stats.keys())}')
+    print(f'JSON file will contain: total_records = {stats["total_records"]}')
+    
+except Exception as e:
+    print(f"ERROR generating ontology statistics: {e}")
+    print("Creating minimal stats file to prevent build failure")
+    stats = {
+        'ontology_statistics': {},
+        'total_records': 0
+    }
+    os.makedirs('/opt/cupcake/release-info', exist_ok=True)
+    with open('/opt/cupcake/release-info/ontology_statistics.json', 'w') as f:
+        json.dump(stats, f, indent=2)
+    raise
 PYEOF
 
     # Verify the ontology statistics file was created
@@ -832,6 +876,11 @@ from datetime import datetime
 with open('/opt/cupcake/release-info/ontology_statistics.json', 'r') as f:
     ontology_stats = json.load(f)
 print("Successfully loaded ontology statistics")
+print(f"Keys in ontology_stats: {list(ontology_stats.keys())}")
+if 'total_records' not in ontology_stats:
+    print("ERROR: 'total_records' key missing from ontology statistics!")
+    print(f"Available keys: {list(ontology_stats.keys())}")
+    raise KeyError("total_records key not found in ontology statistics")
 
 # Load package info
 with open('/opt/cupcake/release-info/installed_packages.json', 'r') as f:

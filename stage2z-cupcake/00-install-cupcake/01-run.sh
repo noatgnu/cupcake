@@ -708,44 +708,8 @@ su - cupcake -c "
     
     cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate
     
-    # Fix multiprocessing permission issues in chroot environment
+    # Set Python path and prepare for ontology loading
     export PYTHONPATH=/opt/cupcake/app
-    
-    # Create a Python script to fix semaphore permissions without disabling multiprocessing
-    cat > /tmp/fix_multiprocessing.py << 'FIXEOF'
-import os
-import sys
-import tempfile
-import multiprocessing
-
-# Create a writable temp directory for semaphores
-temp_dir = tempfile.mkdtemp(prefix='cupcake_mp_')
-os.environ['TMPDIR'] = temp_dir
-
-# Fix multiprocessing context to use filesystem-based locks instead of system semaphores
-def create_patched_context():
-    import multiprocessing.context
-    
-    # Use spawn method which is more isolated and works better in chroot
-    if hasattr(multiprocessing, 'get_context'):
-        ctx = multiprocessing.get_context('spawn')
-        multiprocessing.set_start_method('spawn', force=True)
-        return ctx
-    return multiprocessing
-
-# Apply the fix
-try:
-    create_patched_context()
-    # Set reasonable limits for chroot environment
-    os.environ['PRONTO_THREADS'] = '2'  # Use 2 threads instead of 1 or default
-except Exception as e:
-    # Fallback to single-threaded if patching fails
-    os.environ['PRONTO_THREADS'] = '1'
-    print(f"Warning: Multiprocessing patch failed, using single-threaded mode: {e}")
-FIXEOF
-    
-    # Apply the fix before running any ontology commands
-    export PYTHONSTARTUP=/tmp/fix_multiprocessing.py
     
     # Load main ontologies (MONDO, UBERON, NCBI, ChEBI, PSI-MS)
     echo 'Loading main ontologies (MONDO, UBERON, NCBI, ChEBI with proteomics filter, PSI-MS)...'

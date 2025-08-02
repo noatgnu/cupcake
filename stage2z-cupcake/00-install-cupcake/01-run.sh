@@ -917,9 +917,15 @@ release_info = {
         'architecture': 'ARM64 (aarch64)',
         'target_platform': 'Raspberry Pi 4/5',
         'python_version': '3.11',
-        'django_version': next((pkg['version'] for pkg in packages if pkg['name'].lower() == 'django'), 'unknown')
+        'django_version': 'unknown'
     }
 }
+
+# Find Django version separately to avoid complex nested expressions
+for pkg in packages:
+    if pkg['name'].lower() == 'django':
+        release_info['system_info']['django_version'] = pkg['version']
+        break
 
 # Save comprehensive info
 with open('/opt/cupcake/release-info/release_info.json', 'w') as f:

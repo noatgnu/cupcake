@@ -717,224 +717,49 @@ log_cupcake "✓ Dynamic MOTD configured with security warnings"
 
 # Load internal ontologies database
 log_cupcake "Loading internal ontologies database..."
-su - cupcake -c "
-    # Source environment variables
-    set -a  # automatically export all variables
-    source /etc/environment.d/cupcake.conf
-    set +a  # stop automatically exporting
-    
-    cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate
-    
-    # Set Python path and prepare for ontology loading
-    export PYTHONPATH=/opt/cupcake/app
-    
-    # Fix multiprocessing semaphore access in chroot environment
-    # Recent pi-gen ARM64 updates and GitHub Actions Ubuntu 24.04 have stricter shared memory restrictions
-    log_cupcake "Configuring shared memory for multiprocessing in chroot..."
-    
-    # Ensure /dev/shm exists with correct permissions
-    mkdir -p /dev/shm
-    chmod 1777 /dev/shm
-    
-    # Mount tmpfs on /dev/shm if not already mounted (required for POSIX semaphores)
-    if ! mountpoint -q /dev/shm 2>/dev/null; then
-        mount -t tmpfs tmpfs /dev/shm -o size=512m,mode=1777 || {
-            log_cupcake "WARNING: Could not mount /dev/shm, multiprocessing may fail"
-        }
-    fi
-    
-    # Fix /run/shm symlink issues that can cause permission problems
-    if [ -L "/run/shm" ]; then
-        rm -f /run/shm
-    fi
-    mkdir -p /run/shm
-    chmod 1777 /run/shm
-    
-    log_cupcake "✓ Shared memory configured for multiprocessing"
-    
-    # Load main ontologies (MONDO, UBERON, NCBI, ChEBI, PSI-MS)
-    echo 'Loading main ontologies (MONDO, UBERON, NCBI, ChEBI with proteomics filter, PSI-MS)...'
-    python manage.py load_ontologies --chebi-filter proteomics
-    
-    # Load UniProt species data
-    echo 'Loading UniProt species data...'
-    python manage.py load_species
-    
-    # Load MS modifications (Unimod)
-    echo 'Loading MS modifications (Unimod)...'
-    python manage.py load_ms_mod
-    
-    # Load UniProt tissue data
-    echo 'Loading UniProt tissue data...'
-    python manage.py load_tissue
-    
-    # Load UniProt human disease data
-    echo 'Loading UniProt human disease data...'
-    python manage.py load_human_disease
-    
-    # Load MS terminology and vocabularies
-    echo 'Loading MS terminology and vocabularies...'
-    python manage.py load_ms_term
-    
-    # Load UniProt subcellular location data
-    echo 'Loading UniProt subcellular location data...'
-    python manage.py load_subcellular_location
-    
-    # Load cell types and cell lines
-    echo 'Loading cell types and cell lines...'
-    python manage.py load_cell_types --source cl
-    
-    echo 'All ontologies loaded successfully!'
-    
-    # Generate ontology statistics for release notes
-    echo 'Generating ontology statistics for release...'
-    python manage.py shell <<PYEOF
-import json
-import os
-try:
-    from cc.models import (
-        MondoDisease, UberonAnatomy, NCBITaxonomy, ChEBICompound, PSIMSOntology,
-        Species, Unimod, Tissue, HumanDisease, MSUniqueVocabularies, 
-        SubcellularLocation, CellType
-    )
-    print("Successfully imported Django models")
-except Exception as e:
-    print(f"ERROR importing models: {e}")
-    raise
 
-try:
-    stats = {
-    'ontology_statistics': {
-        'MONDO_Disease_Ontology': MondoDisease.objects.count(),
-        'UBERON_Anatomy': UberonAnatomy.objects.count(),
-        'NCBI_Taxonomy': NCBITaxonomy.objects.count(),
-        'ChEBI_Compounds': ChEBICompound.objects.count(),
-        'PSI_MS_Ontology': PSIMSOntology.objects.count(),
-        'UniProt_Species': Species.objects.count(),
-        'UniMod_Modifications': Unimod.objects.count(),
-        'UniProt_Tissues': Tissue.objects.count(),
-        'UniProt_Human_Diseases': HumanDisease.objects.count(),
-        'MS_Unique_Vocabularies': MSUniqueVocabularies.objects.count(),
-        'Subcellular_Locations': SubcellularLocation.objects.count(),
-        'Cell_Types': CellType.objects.count()
-    },
-    'total_records': sum([
-        MondoDisease.objects.count(),
-        UberonAnatomy.objects.count(), 
-        NCBITaxonomy.objects.count(),
-        ChEBICompound.objects.count(),
-        PSIMSOntology.objects.count(),
-        Species.objects.count(),
-        Unimod.objects.count(),
-        Tissue.objects.count(),
-        HumanDisease.objects.count(),
-        MSUniqueVocabularies.objects.count(),
-        SubcellularLocation.objects.count(),
-        CellType.objects.count()
-        ])
-    }
+# Create scripts directory and copy scripts
+mkdir -p /opt/cupcake/scripts
+cp /opt/cupcake/app/stage2z-cupcake/00-install-cupcake/scripts/*.sh /opt/cupcake/scripts/
+chmod +x /opt/cupcake/scripts/*.sh
+chown cupcake:cupcake /opt/cupcake/scripts/*.sh
 
-    # Save to file for GitHub release
-    os.makedirs('/opt/cupcake/release-info', exist_ok=True)
-    with open('/opt/cupcake/release-info/ontology_statistics.json', 'w') as f:
-        json.dump(stats, f, indent=2)
-
-    print('Ontology statistics generated successfully!')
-    print(f'Total ontology records: {stats["total_records"]:,}')
-    print(f'Stats keys created: {list(stats.keys())}')
-    print(f'JSON file will contain: total_records = {stats["total_records"]}')
-    
-except Exception as e:
-    print(f"ERROR generating ontology statistics: {e}")
-    print("Creating minimal stats file to prevent build failure")
-    stats = {
-        'ontology_statistics': {},
-        'total_records': 0
-    }
-    os.makedirs('/opt/cupcake/release-info', exist_ok=True)
-    with open('/opt/cupcake/release-info/ontology_statistics.json', 'w') as f:
-        json.dump(stats, f, indent=2)
-    raise
-PYEOF
-
-    # Verify the ontology statistics file was created
-    if [ ! -f "/opt/cupcake/release-info/ontology_statistics.json" ]; then
-        echo "❌ ERROR: ontology_statistics.json was not created!"
-        echo "The ontology statistics generation failed silently."
-        exit 1
-    else
-        echo "✅ ontology_statistics.json created successfully"
-        echo "File size: $(du -h /opt/cupcake/release-info/ontology_statistics.json | cut -f1)"
-    fi
-
-    # Generate package license information
-    echo 'Generating package license information...'
-    cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate
-    
-    # Install pip-licenses for license extraction
-    pip install pip-licenses --quiet
-    
-    # Generate license information in multiple formats
-    echo 'Extracting package licenses...'
-    pip-licenses --format=json --output-file=/opt/cupcake/release-info/package_licenses.json --with-urls --with-description --with-authors
-    pip-licenses --format=plain --output-file=/opt/cupcake/release-info/package_licenses.txt --with-urls --with-description --with-authors
-    
-    # Generate detailed package information
-    pip list --format=json > /opt/cupcake/release-info/installed_packages.json
-    pip list > /opt/cupcake/release-info/installed_packages.txt
-    
-    # Create a comprehensive release info file
-    python <<PYEOF
-import json
-import os
-from datetime import datetime
-
-# Load ontology statistics (should always exist at this point)
-with open('/opt/cupcake/release-info/ontology_statistics.json', 'r') as f:
-    ontology_stats = json.load(f)
-print("Successfully loaded ontology statistics")
-print(f"Keys in ontology_stats: {list(ontology_stats.keys())}")
-if 'total_records' not in ontology_stats:
-    print("ERROR: 'total_records' key missing from ontology statistics!")
-    print(f"Available keys: {list(ontology_stats.keys())}")
-    raise KeyError("total_records key not found in ontology statistics")
-
-# Load package info
-with open('/opt/cupcake/release-info/installed_packages.json', 'r') as f:
-    packages = json.load(f)
-
-# Create comprehensive release info
-release_info = {
-    'build_date': datetime.now().isoformat(),
-    'cupcake_version': 'ARM64 Pi Build',
-    'ontology_databases': ontology_stats['ontology_statistics'],
-    'total_ontology_records': ontology_stats['total_records'],
-    'python_packages': {
-        'total_packages': len(packages),
-        'packages': {pkg['name']: pkg['version'] for pkg in packages}
-    },
-    'system_info': {
-        'architecture': 'ARM64 (aarch64)',
-        'target_platform': 'Raspberry Pi 4/5',
-        'python_version': '3.11',
-        'django_version': 'unknown'
-    }
+# Setup shared memory for multiprocessing
+log_cupcake "Setting up shared memory for multiprocessing..."
+su - cupcake -c "/opt/cupcake/scripts/setup-shared-memory.sh" || {
+    log_cupcake "FATAL: Shared memory setup failed"
+    exit 1
 }
 
-# Find Django version separately to avoid complex nested expressions
-for pkg in packages:
-    if pkg['name'].lower() == 'django':
-        release_info['system_info']['django_version'] = pkg['version']
-        break
+# Load ontologies
+log_cupcake "Loading ontologies and databases..."
+su - cupcake -c "/opt/cupcake/scripts/load-ontologies.sh" || {
+    log_cupcake "FATAL: Ontology loading failed"
+    exit 1
+}
 
-# Save comprehensive info
-with open('/opt/cupcake/release-info/release_info.json', 'w') as f:
-    json.dump(release_info, f, indent=2)
+# Generate ontology statistics
+log_cupcake "Generating ontology statistics..."
+su - cupcake -c "/opt/cupcake/scripts/generate-stats.sh" || {
+    log_cupcake "FATAL: Statistics generation failed"
+    exit 1
+}
 
-print('Release information generated successfully!')
-PYEOF
+# Generate package license information
+log_cupcake "Generating package license information..."
+su - cupcake -c "/opt/cupcake/scripts/generate-licenses.sh" || {
+    log_cupcake "FATAL: License generation failed"
+    exit 1
+}
 
-    echo 'Package license information generated successfully!'
+# Create comprehensive release info
+log_cupcake "Creating comprehensive release info..."
+su - cupcake -c "/opt/cupcake/scripts/generate-release-info.sh" || {
+    log_cupcake "FATAL: Release info generation failed"
+    exit 1
+}
+
+log_cupcake "✓ All ontologies and release information generated successfully"
 
 # Configure services
 log_cupcake "Setting up systemd services..."

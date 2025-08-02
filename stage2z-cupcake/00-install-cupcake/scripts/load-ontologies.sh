@@ -13,6 +13,17 @@ cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate
 # Set Python path
 export PYTHONPATH=/opt/cupcake/app
 
+# Configure multiprocessing for chroot environment
+# Force single-threaded operation to avoid POSIX semaphore permission issues
+export MULTIPROCESSING_FORCE_SINGLE_THREADED=1
+export PRONTO_THREADS=1
+export PYTHONDONTWRITEBYTECODE=1
+export OMP_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+
+echo "Multiprocessing configured for chroot environment (single-threaded mode)"
+
 # Load main ontologies (MONDO, UBERON, NCBI, ChEBI, PSI-MS)
 echo 'Loading main ontologies (MONDO, UBERON, NCBI, ChEBI with proteomics filter, PSI-MS)...'
 python manage.py load_ontologies --chebi-filter proteomics

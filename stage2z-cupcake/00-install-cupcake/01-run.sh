@@ -16,13 +16,25 @@ log_cupcake "=== FRONTEND VALIDATION ==="
 log_cupcake "Current working directory: $(pwd)"
 log_cupcake "Script location: $0"
 
-# GitHub Actions copies frontend to stage2a/00-install-cupcake/frontend-dist
-# In chroot environment, this becomes accessible at current working directory
-SCRIPT_DIR="$(dirname "$0")"
-FRONTEND_PATH="$SCRIPT_DIR/frontend-dist"
+# In pi-gen chroot environment, we need to look in the stage directory
+# The frontend should be copied to stage2z-cupcake/00-install-cupcake/frontend-dist
+# which is accessible at /opt/cupcake/app/stage2z-cupcake/00-install-cupcake/frontend-dist
+FRONTEND_PATH="/opt/cupcake/app/stage2z-cupcake/00-install-cupcake/frontend-dist"
+
+# Fallback: try relative to current working directory if absolute path doesn't exist
+if [ ! -d "$FRONTEND_PATH" ]; then
+    SCRIPT_DIR="$(dirname "$0")"
+    FRONTEND_PATH="$SCRIPT_DIR/frontend-dist"
+    log_cupcake "Absolute path not found, trying relative: $FRONTEND_PATH"
+fi
+
+# Second fallback: try in the current directory
+if [ ! -d "$FRONTEND_PATH" ]; then
+    FRONTEND_PATH="./frontend-dist"
+    log_cupcake "Relative path not found, trying current directory: $FRONTEND_PATH"
+fi
 
 log_cupcake "Looking for frontend at: $FRONTEND_PATH"
-log_cupcake "Script directory: $SCRIPT_DIR"
 
 if [ -d "$FRONTEND_PATH" ] && [ -n "$(ls -A $FRONTEND_PATH 2>/dev/null)" ]; then
     log_cupcake "  ✓ Found frontend with $(ls $FRONTEND_PATH | wc -l) files"

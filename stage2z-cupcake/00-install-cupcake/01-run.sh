@@ -11,46 +11,6 @@ log_cupcake() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] [CUPCAKE] $1"
 }
 
-# IMMEDIATE FRONTEND VALIDATION - Fail fast if frontend is missing
-log_cupcake "=== FRONTEND VALIDATION ==="
-log_cupcake "Current working directory: $(pwd)"
-log_cupcake "Script location: $0"
-
-# In pi-gen chroot environment, we need to look in the stage directory
-# The frontend should be copied to stage2z-cupcake/00-install-cupcake/frontend-dist
-# which is accessible at /opt/cupcake/app/stage2z-cupcake/00-install-cupcake/frontend-dist
-FRONTEND_PATH="/opt/cupcake/app/stage2z-cupcake/00-install-cupcake/frontend-dist"
-
-# Fallback: try relative to current working directory if absolute path doesn't exist
-if [ ! -d "$FRONTEND_PATH" ]; then
-    SCRIPT_DIR="$(dirname "$0")"
-    FRONTEND_PATH="$SCRIPT_DIR/frontend-dist"
-    log_cupcake "Absolute path not found, trying relative: $FRONTEND_PATH"
-fi
-
-# Second fallback: try in the current directory
-if [ ! -d "$FRONTEND_PATH" ]; then
-    FRONTEND_PATH="./frontend-dist"
-    log_cupcake "Relative path not found, trying current directory: $FRONTEND_PATH"
-fi
-
-log_cupcake "Looking for frontend at: $FRONTEND_PATH"
-
-if [ -d "$FRONTEND_PATH" ] && [ -n "$(ls -A $FRONTEND_PATH 2>/dev/null)" ]; then
-    log_cupcake "  ✓ Found frontend with $(ls $FRONTEND_PATH | wc -l) files"
-    VALID_FRONTEND="$FRONTEND_PATH"
-else
-    log_cupcake "FATAL: No frontend found at expected location: $FRONTEND_PATH"
-    log_cupcake "Directory exists: $([ -d "$FRONTEND_PATH" ] && echo "YES" || echo "NO")"
-    if [ -d "$FRONTEND_PATH" ]; then
-        log_cupcake "Directory contents: $(ls -la $FRONTEND_PATH | wc -l) items"
-    fi
-    log_cupcake "GitHub Actions must build and copy frontend correctly"
-    exit 1
-fi
-
-log_cupcake "✓ Frontend validation passed: $VALID_FRONTEND"
-export CUPCAKE_FRONTEND_PATH="$VALID_FRONTEND"
 
 # Function to handle errors
 cupcake_error_handler() {
@@ -267,6 +227,85 @@ if [ ! -f "/opt/cupcake/app/manage.py" ]; then
     exit 1
 fi
 log_cupcake "✓ CUPCAKE repository verified successfully"
+
+# FRONTEND VALIDATION - Now that repository is cloned
+log_cupcake "=== FRONTEND VALIDATION ==="
+log_cupcake "Looking for frontend files in repository..."
+
+# First, do a comprehensive search for any frontend-dist directories
+log_cupcake "Searching for all frontend-dist directories in the system..."
+FOUND_FRONTEND_DIRS=$(find / -name "frontend-dist" -type d 2>/dev/null | head -20)
+if [ -n "$FOUND_FRONTEND_DIRS" ]; then
+    log_cupcake "Found frontend-dist directories:"
+    echo "$FOUND_FRONTEND_DIRS" | while read -r dir; do
+        if [ -d "$dir" ]; then
+            file_count=$(ls -A "$dir" 2>/dev/null | wc -l)
+            log_cupcake "  - $dir (files: $file_count)"
+        fi
+    done
+else
+    log_cupcake "No frontend-dist directories found anywhere in the system"
+fi
+
+# Also search for other common frontend build directories
+log_cupcake "Searching for other common frontend directories..."
+OTHER_FRONTEND_DIRS=$(find /opt/cupcake/app -name "dist" -o -name "build" -o -name "frontend" 2>/dev/null | head -10)
+if [ -n "$OTHER_FRONTEND_DIRS" ]; then
+    log_cupcake "Found other potential frontend directories:"
+    echo "$OTHER_FRONTEND_DIRS" | while read -r dir; do
+        if [ -d "$dir" ]; then
+            file_count=$(ls -A "$dir" 2>/dev/null | wc -l)
+            log_cupcake "  - $dir (files: $file_count)"
+        fi
+    done
+else
+    log_cupcake "No other frontend directories found in /opt/cupcake/app"
+fi
+
+# Try multiple possible locations for frontend files
+FRONTEND_PATHS=(
+    "/opt/cupcake/app/frontend-dist"
+    "/opt/cupcake/app/dist"
+    "/opt/cupcake/app/build"
+    "/opt/cupcake/app/stage2z-cupcake/00-install-cupcake/frontend-dist"
+)
+
+VALID_FRONTEND=""
+for FRONTEND_PATH in "${FRONTEND_PATHS[@]}"; do
+    log_cupcake "Checking: $FRONTEND_PATH"
+    if [ -d "$FRONTEND_PATH" ] && [ -n "$(ls -A $FRONTEND_PATH 2>/dev/null)" ]; then
+        log_cupcake "  ✓ Found frontend with $(ls $FRONTEND_PATH | wc -l) files"
+        VALID_FRONTEND="$FRONTEND_PATH"
+        break
+    else
+        log_cupcake "  ❌ Not found or empty"
+    fi
+done
+
+if [ -z "$VALID_FRONTEND" ]; then
+    log_cupcake "FATAL: No frontend found in any expected location"
+    log_cupcake "Searched locations:"
+    for path in "${FRONTEND_PATHS[@]}"; do
+        log_cupcake "  - $path (exists: $([ -d "$path" ] && echo "YES" || echo "NO"))"
+    done
+
+    # Show the complete directory structure of the repository for debugging
+    log_cupcake "Complete directory structure of /opt/cupcake/app:"
+    find /opt/cupcake/app -type d | head -50 | while read -r dir; do
+        log_cupcake "  DIR: $dir"
+    done
+
+    log_cupcake "Files in repository root:"
+    ls -la /opt/cupcake/app/ | while read -r line; do
+        log_cupcake "  $line"
+    done
+
+    log_cupcake "GitHub Actions must build and include frontend files in repository"
+    exit 1
+fi
+
+log_cupcake "✓ Frontend validation passed: $VALID_FRONTEND"
+export CUPCAKE_FRONTEND_PATH="$VALID_FRONTEND"
 
 cd app
 

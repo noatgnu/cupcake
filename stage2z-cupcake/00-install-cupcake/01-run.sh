@@ -11,6 +11,42 @@ log_cupcake() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] [CUPCAKE] $1"
 }
 
+# IMMEDIATE FRONTEND VALIDATION - Fail fast if frontend is missing
+log_cupcake "=== FRONTEND VALIDATION ==="
+log_cupcake "Current working directory: $(pwd)"
+log_cupcake "Script location: $0"
+
+# Search for frontend-dist directory anywhere in /tmp
+FRONTEND_SEARCH_RESULTS=$(find /tmp -name "frontend-dist" -type d 2>/dev/null || true)
+
+if [ -z "$FRONTEND_SEARCH_RESULTS" ]; then
+    log_cupcake "FATAL: No frontend-dist directory found anywhere in /tmp"
+    log_cupcake "GitHub Actions must build the frontend before pi-gen starts"
+    exit 1
+fi
+
+# Check each found frontend-dist directory
+VALID_FRONTEND=""
+for frontend_dir in $FRONTEND_SEARCH_RESULTS; do
+    log_cupcake "Found frontend-dist at: $frontend_dir"
+    if [ -n "$(ls -A $frontend_dir 2>/dev/null)" ]; then
+        log_cupcake "  ✓ Contains $(ls $frontend_dir | wc -l) files"
+        VALID_FRONTEND="$frontend_dir"
+        break
+    else
+        log_cupcake "  ✗ Directory is empty"
+    fi
+done
+
+if [ -z "$VALID_FRONTEND" ]; then
+    log_cupcake "FATAL: Found frontend-dist directories but all are empty"
+    log_cupcake "GitHub Actions frontend build failed or was not copied properly"
+    exit 1
+fi
+
+log_cupcake "✓ Frontend validation passed: $VALID_FRONTEND"
+export CUPCAKE_FRONTEND_PATH="$VALID_FRONTEND"
+
 # Function to handle errors
 cupcake_error_handler() {
     local line_no=$1
@@ -822,24 +858,11 @@ log_cupcake "Setting up CUPCAKE frontend..."
 # Create frontend directory
 mkdir -p /opt/cupcake/frontend
 
-# Frontend is required - GitHub Actions must have built it
-# GitHub Actions copies frontend to stage2a/frontend-dist, which becomes /tmp/pi-gen/stage2a/frontend-dist during pi-gen
-FRONTEND_PATH="/tmp/pi-gen/stage2a/frontend-dist"
-
-if [ -d "$FRONTEND_PATH" ] && [ "$(ls -A $FRONTEND_PATH)" ]; then
-    log_cupcake "Found pre-built frontend at: $FRONTEND_PATH"
-    cp -r $FRONTEND_PATH/* /opt/cupcake/frontend/
-    chown -R www-data:www-data /opt/cupcake/frontend
-    log_cupcake "✓ Frontend files copied from GitHub Actions build"
-else
-    log_cupcake "FATAL: No pre-built frontend found at expected location: $FRONTEND_PATH"
-    log_cupcake "Directory exists: $([ -d "$FRONTEND_PATH" ] && echo "YES" || echo "NO")"
-    if [ -d "$FRONTEND_PATH" ]; then
-        log_cupcake "Directory contents: $(ls -la $FRONTEND_PATH | wc -l) items"
-    fi
-    log_cupcake "Frontend is required for CUPCAKE - build cannot continue"
-    exit 1
-fi
+# Frontend setup using validated path from beginning of script
+log_cupcake "Setting up frontend from validated location: $CUPCAKE_FRONTEND_PATH"
+cp -r $CUPCAKE_FRONTEND_PATH/* /opt/cupcake/frontend/
+chown -R www-data:www-data /opt/cupcake/frontend
+log_cupcake "✓ Frontend files copied successfully"
 
 # Configure Nginx for CUPCAKE using dedicated script
 log_cupcake "Configuring Nginx web server..."

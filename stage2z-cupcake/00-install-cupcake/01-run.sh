@@ -16,31 +16,24 @@ log_cupcake "=== FRONTEND VALIDATION ==="
 log_cupcake "Current working directory: $(pwd)"
 log_cupcake "Script location: $0"
 
-# Search for frontend-dist directory anywhere in /tmp
-FRONTEND_SEARCH_RESULTS=$(find /tmp -name "frontend-dist" -type d 2>/dev/null || true)
+# GitHub Actions copies frontend to stage2a/00-install-cupcake/frontend-dist
+# In chroot environment, this becomes accessible at current working directory
+SCRIPT_DIR="$(dirname "$0")"
+FRONTEND_PATH="$SCRIPT_DIR/frontend-dist"
 
-if [ -z "$FRONTEND_SEARCH_RESULTS" ]; then
-    log_cupcake "FATAL: No frontend-dist directory found anywhere in /tmp"
-    log_cupcake "GitHub Actions must build the frontend before pi-gen starts"
-    exit 1
-fi
+log_cupcake "Looking for frontend at: $FRONTEND_PATH"
+log_cupcake "Script directory: $SCRIPT_DIR"
 
-# Check each found frontend-dist directory
-VALID_FRONTEND=""
-for frontend_dir in $FRONTEND_SEARCH_RESULTS; do
-    log_cupcake "Found frontend-dist at: $frontend_dir"
-    if [ -n "$(ls -A $frontend_dir 2>/dev/null)" ]; then
-        log_cupcake "  ✓ Contains $(ls $frontend_dir | wc -l) files"
-        VALID_FRONTEND="$frontend_dir"
-        break
-    else
-        log_cupcake "  ✗ Directory is empty"
+if [ -d "$FRONTEND_PATH" ] && [ -n "$(ls -A $FRONTEND_PATH 2>/dev/null)" ]; then
+    log_cupcake "  ✓ Found frontend with $(ls $FRONTEND_PATH | wc -l) files"
+    VALID_FRONTEND="$FRONTEND_PATH"
+else
+    log_cupcake "FATAL: No frontend found at expected location: $FRONTEND_PATH"
+    log_cupcake "Directory exists: $([ -d "$FRONTEND_PATH" ] && echo "YES" || echo "NO")"
+    if [ -d "$FRONTEND_PATH" ]; then
+        log_cupcake "Directory contents: $(ls -la $FRONTEND_PATH | wc -l) items"
     fi
-done
-
-if [ -z "$VALID_FRONTEND" ]; then
-    log_cupcake "FATAL: Found frontend-dist directories but all are empty"
-    log_cupcake "GitHub Actions frontend build failed or was not copied properly"
+    log_cupcake "GitHub Actions must build and copy frontend correctly"
     exit 1
 fi
 

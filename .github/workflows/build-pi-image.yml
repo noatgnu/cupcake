@@ -177,12 +177,12 @@ jobs:
         # Create custom CUPCAKE stage using proper pi-gen naming (stage2a - runs after stage2)
         sudo cp -r ../stage2z-cupcake ./stage2a
         
-        # Copy pre-built frontend to the stage2a directory so it gets included in the Pi image
+        # Copy pre-built frontend INTO the install script directory so it's available in chroot
         if [ -d "../raspberry-pi/frontend-dist" ]; then
-          echo "=== Copying pre-built frontend to stage2a ==="
-          sudo cp -r ../raspberry-pi/frontend-dist ./stage2a/
-          echo "✅ Frontend copied to stage2a/frontend-dist"
-          ls -la ./stage2a/frontend-dist/ | head -5
+          echo "=== Copying pre-built frontend to stage2a/00-install-cupcake/ ==="
+          sudo cp -r ../raspberry-pi/frontend-dist ./stage2a/00-install-cupcake/
+          echo "✅ Frontend copied to stage2a/00-install-cupcake/frontend-dist"
+          ls -la ./stage2a/00-install-cupcake/frontend-dist/ | head -5
         else
           echo "❌ CRITICAL ERROR: No pre-built frontend found in ../raspberry-pi/frontend-dist"
           echo "Frontend is required for CUPCAKE - placeholder is not acceptable"
@@ -599,12 +599,12 @@ jobs:
         # Create custom CUPCAKE stage using proper pi-gen naming (stage2a - runs after stage2)
         sudo cp -r ../stage2z-cupcake ./stage2a
         
-        # Copy pre-built frontend to the stage2a directory so it gets included in the Pi image
+        # Copy pre-built frontend INTO the install script directory so it's available in chroot
         if [ -d "../raspberry-pi/frontend-dist" ]; then
-          echo "=== Copying pre-built frontend to stage2a ==="
-          sudo cp -r ../raspberry-pi/frontend-dist ./stage2a/
-          echo "✅ Frontend copied to stage2a/frontend-dist"
-          ls -la ./stage2a/frontend-dist/ | head -5
+          echo "=== Copying pre-built frontend to stage2a/00-install-cupcake/ ==="
+          sudo cp -r ../raspberry-pi/frontend-dist ./stage2a/00-install-cupcake/
+          echo "✅ Frontend copied to stage2a/00-install-cupcake/frontend-dist"
+          ls -la ./stage2a/00-install-cupcake/frontend-dist/ | head -5
         else
           echo "❌ CRITICAL ERROR: No pre-built frontend found in ../raspberry-pi/frontend-dist"
           echo "Frontend is required for CUPCAKE - placeholder is not acceptable"

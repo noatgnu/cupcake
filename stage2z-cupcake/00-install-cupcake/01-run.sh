@@ -823,15 +823,21 @@ log_cupcake "Setting up CUPCAKE frontend..."
 mkdir -p /opt/cupcake/frontend
 
 # Frontend is required - GitHub Actions must have built it
-if [ -d "/opt/cupcake/app/frontend-dist" ] && [ "$(ls -A /opt/cupcake/app/frontend-dist)" ]; then
-    log_cupcake "Found pre-built frontend from GitHub Actions"
-    cp -r /opt/cupcake/app/frontend-dist/* /opt/cupcake/frontend/
+# GitHub Actions copies frontend to stage2a/frontend-dist, which becomes /tmp/pi-gen/stage2a/frontend-dist during pi-gen
+FRONTEND_PATH="/tmp/pi-gen/stage2a/frontend-dist"
+
+if [ -d "$FRONTEND_PATH" ] && [ "$(ls -A $FRONTEND_PATH)" ]; then
+    log_cupcake "Found pre-built frontend at: $FRONTEND_PATH"
+    cp -r $FRONTEND_PATH/* /opt/cupcake/frontend/
     chown -R www-data:www-data /opt/cupcake/frontend
     log_cupcake "✓ Frontend files copied from GitHub Actions build"
 else
-    log_cupcake "FATAL: No pre-built frontend found in repository"
+    log_cupcake "FATAL: No pre-built frontend found at expected location: $FRONTEND_PATH"
+    log_cupcake "Directory exists: $([ -d "$FRONTEND_PATH" ] && echo "YES" || echo "NO")"
+    if [ -d "$FRONTEND_PATH" ]; then
+        log_cupcake "Directory contents: $(ls -la $FRONTEND_PATH | wc -l) items"
+    fi
     log_cupcake "Frontend is required for CUPCAKE - build cannot continue"
-    log_cupcake "GitHub Actions must successfully build the frontend before Pi image build"
     exit 1
 fi
 

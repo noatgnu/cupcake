@@ -45,8 +45,56 @@ log_cupcake "✓ Confirmed ARM64 build environment"
 log_cupcake "Starting CUPCAKE installation..."
 log_cupcake "CRITICAL: This installation MUST succeed or build MUST fail"
 
-# EARLY FRONTEND CHECK AND BUILD - Do this first before everything else
-log_cupcake "=== EARLY FRONTEND VALIDATION AND BUILD ==="
+# Update system and install essential dependencies first
+log_cupcake "Updating system packages..."
+apt-get update || {
+    log_cupcake "FATAL: Failed to update package lists"
+    exit 1
+}
+apt-get upgrade -y || {
+    log_cupcake "FATAL: Failed to upgrade system packages"
+    exit 1
+}
+
+# Install essential tools needed for frontend build and general installation
+log_cupcake "Installing essential tools for installation..."
+apt-get install -y git curl build-essential
+
+# Install PostgreSQL from official Raspbian repositories
+log_cupcake "Installing PostgreSQL from Raspbian repositories..."
+export DEBIAN_FRONTEND=noninteractive
+export APT_LISTCHANGES_FRONTEND=none
+
+# Update package lists
+apt-get update
+
+# Install PostgreSQL (default version from Raspbian)
+log_cupcake "Installing PostgreSQL packages..."
+apt-get install -y postgresql postgresql-client
+
+# PostgreSQL service is automatically configured by package installation
+log_cupcake "PostgreSQL installation completed via package manager"
+
+# Install other dependencies
+log_cupcake "Installing other CUPCAKE dependencies..."
+apt-get install -y \
+    python3 python3-pip python3-venv python3-dev python3-setuptools python3-wheel \
+    redis-server \
+    nginx \
+    git unzip \
+    build-essential libpq-dev \
+    ffmpeg \
+    fail2ban \
+    htop nano vim \
+    libssl-dev libffi-dev libjpeg-dev libpng-dev libfreetype6-dev \
+    cmake tesseract-ocr tesseract-ocr-eng \
+    pkg-config autotools-dev autoconf libtool \
+    libbz2-dev liblz4-dev libzstd-dev libsnappy-dev \
+    libicu-dev libxml2-dev libxslt1-dev \
+    libffi-dev libssl-dev zlib1g-dev
+
+# NOW DO FRONTEND CHECK AND BUILD - After all dependencies are installed
+log_cupcake "=== FRONTEND VALIDATION AND BUILD ==="
 log_cupcake "Checking if frontend files are available, building if necessary..."
 
 # Quick check for any existing frontend directories
@@ -164,153 +212,6 @@ else
     log_cupcake "✅ Pre-built frontend found - skipping emergency build"
 fi
 
-# Update system
-log_cupcake "Updating system packages..."
-apt-get update || {
-    log_cupcake "FATAL: Failed to update package lists"
-    exit 1
-}
-apt-get upgrade -y || {
-    log_cupcake "FATAL: Failed to upgrade system packages"
-    exit 1
-}
-
-# Install PostgreSQL from official Raspbian repositories
-log_cupcake "Installing PostgreSQL from Raspbian repositories..."
-export DEBIAN_FRONTEND=noninteractive
-export APT_LISTCHANGES_FRONTEND=none
-
-# Update package lists
-apt-get update
-
-# Install PostgreSQL (default version from Raspbian)
-log_cupcake "Installing PostgreSQL packages..."
-apt-get install -y postgresql postgresql-client
-
-# PostgreSQL service is automatically configured by package installation
-log_cupcake "PostgreSQL installation completed via package manager"
-
-# Install other dependencies
-log_cupcake "Installing other CUPCAKE dependencies..."
-apt-get install -y \
-    python3 python3-pip python3-venv python3-dev python3-setuptools python3-wheel \
-    redis-server \
-    nginx \
-    git unzip \
-    build-essential libpq-dev \
-    ffmpeg \
-    fail2ban \
-    htop nano vim \
-    libssl-dev libffi-dev libjpeg-dev libpng-dev libfreetype6-dev \
-    cmake tesseract-ocr tesseract-ocr-eng \
-    pkg-config autotools-dev autoconf libtool \
-    libbz2-dev liblz4-dev libzstd-dev libsnappy-dev \
-    libicu-dev libxml2-dev libxslt1-dev \
-    libffi-dev libssl-dev zlib1g-dev
-
-# Build Apache Arrow C++ libraries from source for PyArrow support
-log_cupcake "Building Apache Arrow C++ libraries from source..."
-log_cupcake "Following official Apache Arrow documentation for minimal build"
-
-# Install minimal Arrow build dependencies per official docs
-log_cupcake "Installing minimal Arrow build dependencies..."
-apt-get install -y \
-    build-essential \
-    cmake \
-    python3-dev
-
-# Check CMake version (Arrow requires 3.16+, but 21.0.0 may need newer)
-current_cmake_version=$(cmake --version 2>/dev/null | head -n1 | cut -d' ' -f3 || echo "0.0.0")
-log_cupcake "Current CMake version: $current_cmake_version"
-
-# Use exact Arrow version matching PyArrow in requirements.txt (20.0.0)
-log_cupcake "Using Apache Arrow 20.0.0 to match PyArrow version in requirements.txt..."
-cd /tmp
-git clone --depth 1 --branch apache-arrow-20.0.0 https://github.com/apache/arrow.git arrow-build || {
-    log_cupcake "FATAL: Failed to clone Apache Arrow repository"
-    exit 1
-}
-
-cd arrow-build
-export ARROW_HOME=/usr/local
-export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}:/usr/local/lib
-export CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH:-}:$ARROW_HOME
-
-# Configure Arrow C++ with minimal PyArrow-compatible features
-log_cupcake "Configuring minimal Arrow build for PyArrow support..."
-mkdir cpp/build
-cd cpp/build
-
-# Minimal configuration based on official docs (removed deprecated ARROW_PYTHON flag)
-cmake .. \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX=$ARROW_HOME \
-    -DCMAKE_INSTALL_LIBDIR=lib \
-    -DARROW_COMPUTE=ON \
-    -DARROW_CSV=ON \
-    -DARROW_DATASET=ON \
-    -DARROW_FILESYSTEM=ON \
-    -DARROW_JSON=ON \
-    -DARROW_PARQUET=ON \
-    -DARROW_BUILD_TESTS=OFF \
-    -DARROW_BUILD_BENCHMARKS=OFF \
-    -DARROW_BUILD_EXAMPLES=OFF \
-    -DARROW_DEPENDENCY_SOURCE=BUNDLED \
-    -DCMAKE_CXX_FLAGS="-mcpu=cortex-a72 -O2" \
-    -DCMAKE_C_FLAGS="-mcpu=cortex-a72 -O2" || {
-    log_cupcake "FATAL: Arrow CMake configuration failed"
-    exit 1
-}
-
-# Build with full parallelism on GitHub Actions runner - with retry for network issues
-log_cupcake "Building Arrow C++ libraries with full parallelism..."
-
-# Retry logic for network-dependent Arrow build
-for attempt in 1 2 3; do
-    log_cupcake "Arrow build attempt $attempt/3..."
-    
-    if make -j$(nproc); then
-        log_cupcake "✓ Arrow build succeeded on attempt $attempt"
-        break
-    else
-        if [ $attempt -eq 3 ]; then
-            log_cupcake "FATAL: Arrow C++ build failed after 3 attempts"
-            log_cupcake "This is likely due to network issues downloading dependencies (utf8proc, re2, etc.)"
-            exit 1
-        else
-            log_cupcake "Arrow build attempt $attempt failed, retrying in 30 seconds..."
-            sleep 30
-            # Clean up partial downloads that might be corrupted
-            find . -name "*-download" -type f -delete 2>/dev/null || true
-        fi
-    fi
-done
-
-# Install Arrow libraries
-log_cupcake "Installing Arrow C++ libraries..."
-make install || {
-    log_cupcake "FATAL: Arrow C++ installation failed"
-    exit 1
-}
-
-# Update library cache
-ldconfig
-
-# Verify installation
-log_cupcake "Verifying Arrow C++ installation..."
-if [ -f "/usr/local/lib/libarrow.so" ]; then
-    log_cupcake "✓ Apache Arrow C++ libraries built and installed successfully"
-else
-    log_cupcake "FATAL: Arrow libraries not found after installation"
-    exit 1
-fi
-
-# Clean up build directory to save space
-log_cupcake "Cleaning up Arrow build directory..."
-cd /
-rm -rf /tmp/arrow-build
-
-log_cupcake "✓ Apache Arrow C++ build completed successfully"
 
 # Create CUPCAKE user
 log_cupcake "Creating CUPCAKE system user..."

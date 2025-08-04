@@ -157,6 +157,12 @@ jobs:
           gpg pigz xxd arch-test debian-archive-keyring \
           wget parted gzip pigz xz-utils udev e2fsprogs
         
+        # Install GitHub CLI for artifact downloading inside chroot
+        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+        sudo apt-get update
+        sudo apt-get install -y gh
+        
         # Setup binfmt for ARM emulation (required for native pi-gen)
         sudo modprobe binfmt_misc
         
@@ -218,12 +224,15 @@ jobs:
           exit 1
         fi
         
-        # Extract frontend to stage directory
+        # Extract frontend to the correct location within the stage structure
+        # The CUPCAKE script expects frontend-dist to be in the same directory as the script
         cd ../pi-gen
         mkdir -p ./stage2a/00-install-cupcake/frontend-dist
         tar -xzf ../raspberry-pi/cupcake-frontend.tar.gz -C ./stage2a/00-install-cupcake/frontend-dist/
         
         echo "✅ Frontend artifact extracted to stage2a/00-install-cupcake/frontend-dist"
+        echo "Frontend files count: $(find ./stage2a/00-install-cupcake/frontend-dist/ -type f | wc -l)"
+        echo "Frontend directory size: $(du -sh ./stage2a/00-install-cupcake/frontend-dist/)"
         ls -la ./stage2a/00-install-cupcake/frontend-dist/ | head -5
         
         # Fix line endings (convert Windows CRLF to Unix LF) and ensure proper format
@@ -368,6 +377,17 @@ jobs:
         echo "Config summary:"
         cat config | grep -E "(STAGE_LIST|IMG_NAME|EXPORT)" || true
         echo ""
+        
+        # Pass GitHub Actions environment variables to the chroot environment
+        # This allows the CUPCAKE script to download frontend artifacts inside chroot
+        export GITHUB_RUN_ID="${{ github.run_id }}"
+        export GITHUB_TOKEN="${{ github.token }}"
+        export GITHUB_REPOSITORY="${{ github.repository }}"
+        
+        echo "=== GitHub Actions environment for chroot ==="
+        echo "GITHUB_RUN_ID: ${GITHUB_RUN_ID}"
+        echo "GITHUB_REPOSITORY: ${GITHUB_REPOSITORY}"
+        echo "GITHUB_TOKEN: ${GITHUB_TOKEN:+***set***}"
         
         # Add monitoring for stage2a execution early in build
         echo "=== Monitoring for stage2a execution ==="
@@ -571,6 +591,12 @@ jobs:
           gpg pigz xxd arch-test debian-archive-keyring \
           wget parted gzip pigz xz-utils udev e2fsprogs
         
+        # Install GitHub CLI for artifact downloading inside chroot
+        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+        sudo apt-get update
+        sudo apt-get install -y gh
+        
         # Setup binfmt for ARM emulation (required for native pi-gen)
         sudo modprobe binfmt_misc
         
@@ -632,12 +658,15 @@ jobs:
           exit 1
         fi
         
-        # Extract frontend to stage directory
+        # Extract frontend to the correct location within the stage structure
+        # The CUPCAKE script expects frontend-dist to be in the same directory as the script
         cd ../pi-gen
         mkdir -p ./stage2a/00-install-cupcake/frontend-dist
         tar -xzf ../raspberry-pi/cupcake-frontend.tar.gz -C ./stage2a/00-install-cupcake/frontend-dist/
         
         echo "✅ Frontend artifact extracted to stage2a/00-install-cupcake/frontend-dist"
+        echo "Frontend files count: $(find ./stage2a/00-install-cupcake/frontend-dist/ -type f | wc -l)"
+        echo "Frontend directory size: $(du -sh ./stage2a/00-install-cupcake/frontend-dist/)"
         ls -la ./stage2a/00-install-cupcake/frontend-dist/ | head -5
         
         # Fix line endings (convert Windows CRLF to Unix LF) and ensure proper format
@@ -782,6 +811,17 @@ jobs:
         echo "Config summary:"
         cat config | grep -E "(STAGE_LIST|IMG_NAME|EXPORT)" || true
         echo ""
+        
+        # Pass GitHub Actions environment variables to the chroot environment
+        # This allows the CUPCAKE script to download frontend artifacts inside chroot
+        export GITHUB_RUN_ID="${{ github.run_id }}"
+        export GITHUB_TOKEN="${{ github.token }}"
+        export GITHUB_REPOSITORY="${{ github.repository }}"
+        
+        echo "=== GitHub Actions environment for chroot ==="
+        echo "GITHUB_RUN_ID: ${GITHUB_RUN_ID}"
+        echo "GITHUB_REPOSITORY: ${GITHUB_REPOSITORY}"
+        echo "GITHUB_TOKEN: ${GITHUB_TOKEN:+***set***}"
         
         # Add monitoring for stage2a execution early in build
         echo "=== Monitoring for stage2a execution ==="

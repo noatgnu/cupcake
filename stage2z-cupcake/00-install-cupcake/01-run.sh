@@ -121,15 +121,68 @@ else
     fi
 fi
 
-# If no frontend found, FAIL THE BUILD - GitHub Actions must provide it
+# If no frontend found, try to download it from GitHub Actions
 if [ "$FRONTEND_EXISTS" = false ]; then
-    log_cupcake "FATAL: No pre-built frontend found - GitHub Actions frontend copy failed"
-    log_cupcake "The pi-gen build requires a pre-built frontend from GitHub Actions"
-    log_cupcake "Building Angular inside pi-gen causes memory issues and should not happen"
-    log_cupcake "Fix the GitHub Actions workflow to properly copy frontend-dist to the stage directory"
+    log_cupcake "No pre-built frontend found - attempting to download from GitHub Actions"
+
+    # Check if we have GitHub CLI available and necessary environment variables
+    if command -v gh >/dev/null 2>&1 && [ -n "${GITHUB_RUN_ID:-}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
+        log_cupcake "Attempting to download frontend artifact from current GitHub Actions run..."
+
+        # Create temporary directory for download
+        TEMP_DOWNLOAD_DIR=$(mktemp -d)
+        cd "$TEMP_DOWNLOAD_DIR"
+
+        # Download the frontend artifact from the current GitHub Actions run
+        if gh run download "$GITHUB_RUN_ID" --name cupcake-frontend-shared 2>/dev/null; then
+            log_cupcake "✅ Successfully downloaded frontend artifact from GitHub Actions"
+
+            # Extract the frontend files to the script directory
+            if [ -f "cupcake-frontend.tar.gz" ]; then
+                mkdir -p "$SCRIPT_DIR/frontend-dist"
+                tar -xzf cupcake-frontend.tar.gz -C "$SCRIPT_DIR/frontend-dist/"
+
+                # Verify extraction was successful
+                if [ -d "$SCRIPT_DIR/frontend-dist" ] && [ -n "$(ls -A "$SCRIPT_DIR/frontend-dist" 2>/dev/null)" ]; then
+                    log_cupcake "✅ Frontend files extracted successfully to $SCRIPT_DIR/frontend-dist"
+                    FRONTEND_EXISTS=true
+                else
+                    log_cupcake "❌ Failed to extract frontend files"
+                fi
+            else
+                log_cupcake "❌ Downloaded artifact does not contain cupcake-frontend.tar.gz"
+            fi
+        else
+            log_cupcake "❌ Failed to download frontend artifact from GitHub Actions"
+        fi
+
+        # Cleanup temporary directory
+        cd /
+        rm -rf "$TEMP_DOWNLOAD_DIR"
+    else
+        log_cupcake "GitHub CLI not available or missing environment variables for artifact download"
+        log_cupcake "GITHUB_RUN_ID: ${GITHUB_RUN_ID:-not_set}"
+        log_cupcake "GITHUB_TOKEN: ${GITHUB_TOKEN:+set}"
+        log_cupcake "gh command available: $(command -v gh >/dev/null 2>&1 && echo "yes" || echo "no")"
+    fi
+fi
+
+# If still no frontend found after download attempt, FAIL THE BUILD
+if [ "$FRONTEND_EXISTS" = false ]; then
+    log_cupcake "FATAL: No frontend found and unable to download from GitHub Actions"
+    log_cupcake "This could be due to:"
+    log_cupcake "1. Frontend artifact not created by GitHub Actions build-frontend job"
+    log_cupcake "2. GitHub CLI not available inside chroot environment"
+    log_cupcake "3. Missing GitHub authentication token"
+    log_cupcake "4. Network connectivity issues inside chroot"
+    log_cupcake ""
+    log_cupcake "Please ensure:"
+    log_cupcake "- The build-frontend job completes successfully"
+    log_cupcake "- GitHub CLI is installed in the pi-gen environment"
+    log_cupcake "- GITHUB_TOKEN is passed to the chroot environment"
     exit 1
 else
-    log_cupcake "✅ Pre-built frontend found - proceeding with installation"
+    log_cupcake "✅ Pre-built frontend available - proceeding with installation"
 fi
 
 

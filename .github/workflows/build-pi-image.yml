@@ -199,11 +199,6 @@ jobs:
         sudo dpkg --add-architecture armhf
         sudo dpkg --add-architecture arm64
 
-    - name: Download Frontend Artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: cupcake-frontend-shared
-        path: raspberry-pi/
 
     - name: Build Pi 4 Lite image using native pi-gen
       run: |
@@ -227,26 +222,6 @@ jobs:
         sudo chown -R $(whoami):$(id -gn) ./stage2a
         sudo chmod -R u+w ./stage2a
         
-        # Extract frontend artifact to stage directory
-        echo "=== Extracting frontend artifact for pi-gen ==="
-        cd ../raspberry-pi
-        
-        # Verify artifact was downloaded
-        if [ ! -f "cupcake-frontend.tar.gz" ]; then
-          echo "❌ CRITICAL ERROR: Frontend artifact not downloaded"
-          exit 1
-        fi
-        
-        # Extract frontend to the correct location within the stage structure
-        # The CUPCAKE script expects frontend-dist to be in the same directory as the script
-        cd ../pi-gen
-        mkdir -p ./stage2a/00-install-cupcake/frontend-dist
-        tar -xzf ../raspberry-pi/cupcake-frontend.tar.gz -C ./stage2a/00-install-cupcake/frontend-dist/
-        
-        echo "✅ Frontend artifact extracted to stage2a/00-install-cupcake/frontend-dist"
-        echo "Frontend files count: $(find ./stage2a/00-install-cupcake/frontend-dist/ -type f | wc -l)"
-        echo "Frontend directory size: $(du -sh ./stage2a/00-install-cupcake/frontend-dist/)"
-        ls -la ./stage2a/00-install-cupcake/frontend-dist/ | head -5
         
         # Fix line endings (convert Windows CRLF to Unix LF) and ensure proper format
         sudo sed -i 's/\r$//' ./stage2a/prerun.sh 2>/dev/null || true
@@ -633,11 +608,6 @@ jobs:
         sudo dpkg --add-architecture armhf
         sudo dpkg --add-architecture arm64
 
-    - name: Download Frontend Artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: cupcake-frontend-shared
-        path: raspberry-pi/
 
     - name: Build Pi 5 Lite image using native pi-gen
       run: |
@@ -661,26 +631,6 @@ jobs:
         sudo chown -R $(whoami):$(id -gn) ./stage2a
         sudo chmod -R u+w ./stage2a
         
-        # Extract frontend artifact to stage directory
-        echo "=== Extracting frontend artifact for pi-gen ==="
-        cd ../raspberry-pi
-        
-        # Verify artifact was downloaded
-        if [ ! -f "cupcake-frontend.tar.gz" ]; then
-          echo "❌ CRITICAL ERROR: Frontend artifact not downloaded"
-          exit 1
-        fi
-        
-        # Extract frontend to the correct location within the stage structure
-        # The CUPCAKE script expects frontend-dist to be in the same directory as the script
-        cd ../pi-gen
-        mkdir -p ./stage2a/00-install-cupcake/frontend-dist
-        tar -xzf ../raspberry-pi/cupcake-frontend.tar.gz -C ./stage2a/00-install-cupcake/frontend-dist/
-        
-        echo "✅ Frontend artifact extracted to stage2a/00-install-cupcake/frontend-dist"
-        echo "Frontend files count: $(find ./stage2a/00-install-cupcake/frontend-dist/ -type f | wc -l)"
-        echo "Frontend directory size: $(du -sh ./stage2a/00-install-cupcake/frontend-dist/)"
-        ls -la ./stage2a/00-install-cupcake/frontend-dist/ | head -5
         
         # Fix line endings (convert Windows CRLF to Unix LF) and ensure proper format
         sudo sed -i 's/\r$//' ./stage2a/prerun.sh 2>/dev/null || true

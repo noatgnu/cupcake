@@ -137,47 +137,119 @@ fi
 
 # If no frontend found, try to download it from GitHub Actions
 if [ "$FRONTEND_EXISTS" = false ]; then
-    log_cupcake "No pre-built frontend found - attempting to download from GitHub Actions"
+    log_cupcake "No pre-built frontend found - attempting to download from GitHub releases"
 
-    # Check if we have GitHub CLI available and necessary environment variables
-    if command -v gh >/dev/null 2>&1 && [ -n "${GITHUB_RUN_ID:-}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
-        log_cupcake "Attempting to download frontend artifact from current GitHub Actions run..."
+    # First try to download from GitHub releases (more reliable in chroot)
+    if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
+        log_cupcake "Attempting to download frontend from GitHub releases..."
 
         # Create temporary directory for download
         TEMP_DOWNLOAD_DIR=$(mktemp -d)
         cd "$TEMP_DOWNLOAD_DIR"
 
-        # Download the frontend artifact from the current GitHub Actions run
-        if gh run download "$GITHUB_RUN_ID" --name cupcake-frontend-shared 2>/dev/null; then
-            log_cupcake "✅ Successfully downloaded frontend artifact from GitHub Actions"
+        # Try to get the latest release or use a specific tag
+        REPO_OWNER="noatgnu"
+        REPO_NAME="cupcake"
+        DOWNLOAD_URL=""
 
-            # Extract the frontend files to the script directory
-            if [ -f "cupcake-frontend.tar.gz" ]; then
+        # If we have a specific version/tag, try that first
+        if [ -n "${CUPCAKE_VERSION:-}" ]; then
+            DOWNLOAD_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${CUPCAKE_VERSION}/cupcake-frontend.tar.gz"
+            log_cupcake "Trying version-specific download: ${CUPCAKE_VERSION}"
+        else
+            # Try latest release
+            DOWNLOAD_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download/cupcake-frontend.tar.gz"
+            log_cupcake "Trying latest release download"
+        fi
+
+        # Download using curl or wget
+        DOWNLOAD_SUCCESS=false
+        if command -v curl >/dev/null 2>&1; then
+            if curl -L -f -o cupcake-frontend.tar.gz "$DOWNLOAD_URL" 2>/dev/null; then
+                DOWNLOAD_SUCCESS=true
+                log_cupcake "✅ Successfully downloaded frontend using curl"
+            else
+                log_cupcake "❌ Failed to download frontend using curl"
+            fi
+        elif command -v wget >/dev/null 2>&1; then
+            if wget -O cupcake-frontend.tar.gz "$DOWNLOAD_URL" 2>/dev/null; then
+                DOWNLOAD_SUCCESS=true
+                log_cupcake "✅ Successfully downloaded frontend using wget"
+            else
+                log_cupcake "❌ Failed to download frontend using wget"
+            fi
+        fi
+
+        # If download succeeded, extract the frontend
+        if [ "$DOWNLOAD_SUCCESS" = true ] && [ -f "cupcake-frontend.tar.gz" ]; then
+            # Verify the downloaded file is not empty or an error page
+            if [ -s "cupcake-frontend.tar.gz" ]; then
                 mkdir -p "$SCRIPT_DIR/frontend-dist"
-                tar -xzf cupcake-frontend.tar.gz -C "$SCRIPT_DIR/frontend-dist/"
-
-                # Verify extraction was successful
-                if [ -d "$SCRIPT_DIR/frontend-dist" ] && [ -n "$(ls -A "$SCRIPT_DIR/frontend-dist" 2>/dev/null)" ]; then
-                    log_cupcake "✅ Frontend files extracted successfully to $SCRIPT_DIR/frontend-dist"
-                    FRONTEND_EXISTS=true
+                if tar -xzf cupcake-frontend.tar.gz -C "$SCRIPT_DIR/frontend-dist/" 2>/dev/null; then
+                    # Verify extraction was successful
+                    if [ -d "$SCRIPT_DIR/frontend-dist" ] && [ -n "$(ls -A "$SCRIPT_DIR/frontend-dist" 2>/dev/null)" ]; then
+                        log_cupcake "✅ Frontend files extracted successfully from GitHub releases"
+                        FRONTEND_EXISTS=true
+                    else
+                        log_cupcake "❌ Failed to extract frontend files from download"
+                    fi
                 else
-                    log_cupcake "❌ Failed to extract frontend files"
+                    log_cupcake "❌ Failed to extract downloaded frontend archive"
                 fi
             else
-                log_cupcake "❌ Downloaded artifact does not contain cupcake-frontend.tar.gz"
+                log_cupcake "❌ Downloaded file is empty or invalid"
             fi
-        else
-            log_cupcake "❌ Failed to download frontend artifact from GitHub Actions"
         fi
 
         # Cleanup temporary directory
         cd /
         rm -rf "$TEMP_DOWNLOAD_DIR"
-    else
-        log_cupcake "GitHub CLI not available or missing environment variables for artifact download"
-        log_cupcake "GITHUB_RUN_ID: ${GITHUB_RUN_ID:-not_set}"
-        log_cupcake "GITHUB_TOKEN: ${GITHUB_TOKEN:+set}"
-        log_cupcake "gh command available: $(command -v gh >/dev/null 2>&1 && echo "yes" || echo "no")"
+    fi
+
+    # Fallback: Try GitHub Actions artifact download if release download failed
+    if [ "$FRONTEND_EXISTS" = false ]; then
+        log_cupcake "GitHub releases download failed - trying GitHub Actions fallback..."
+
+        # Check if we have GitHub CLI available and necessary environment variables
+        if command -v gh >/dev/null 2>&1 && [ -n "${GITHUB_RUN_ID:-}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
+            log_cupcake "Attempting to download frontend artifact from current GitHub Actions run..."
+
+            # Create temporary directory for download
+            TEMP_DOWNLOAD_DIR=$(mktemp -d)
+            cd "$TEMP_DOWNLOAD_DIR"
+
+            # Download the frontend artifact from the current GitHub Actions run
+            if gh run download "$GITHUB_RUN_ID" --name cupcake-frontend-shared 2>/dev/null; then
+                log_cupcake "✅ Successfully downloaded frontend artifact from GitHub Actions"
+
+                # Extract the frontend files to the script directory
+                if [ -f "cupcake-frontend.tar.gz" ]; then
+                    mkdir -p "$SCRIPT_DIR/frontend-dist"
+                    tar -xzf cupcake-frontend.tar.gz -C "$SCRIPT_DIR/frontend-dist/"
+
+                    # Verify extraction was successful
+                    if [ -d "$SCRIPT_DIR/frontend-dist" ] && [ -n "$(ls -A "$SCRIPT_DIR/frontend-dist" 2>/dev/null)" ]; then
+                        log_cupcake "✅ Frontend files extracted successfully from GitHub Actions"
+                        FRONTEND_EXISTS=true
+                    else
+                        log_cupcake "❌ Failed to extract frontend files"
+                    fi
+                else
+                    log_cupcake "❌ Downloaded artifact does not contain cupcake-frontend.tar.gz"
+                fi
+            else
+                log_cupcake "❌ Failed to download frontend artifact from GitHub Actions"
+            fi
+
+            # Cleanup temporary directory
+            cd /
+            rm -rf "$TEMP_DOWNLOAD_DIR"
+        else
+            log_cupcake "GitHub CLI not available or missing environment variables for artifact download"
+            log_cupcake "GITHUB_RUN_ID: ${GITHUB_RUN_ID:-not_set}"
+            log_cupcake "GITHUB_TOKEN: ${GITHUB_TOKEN:+set}"
+            log_cupcake "gh command available: $(command -v gh >/dev/null 2>&1 && echo "yes" || echo "no")"
+        fi
     fi
 fi
 

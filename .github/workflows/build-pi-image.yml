@@ -95,6 +95,18 @@ jobs:
         path: raspberry-pi/cupcake-frontend.tar.gz
         retention-days: 1
 
+    # Upload frontend to release if this is a release build
+    - name: Upload Frontend to Release
+      if: github.event_name == 'release'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: raspberry-pi/cupcake-frontend.tar.gz
+        asset_name: cupcake-frontend.tar.gz
+        asset_content_type: application/gzip
+
   # TEMPORARILY DISABLED - Desktop builds disabled to focus on lite builds
   # build-pi4-desktop:
   #   if: ${{ github.event_name == 'schedule' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && (inputs.pi_model == 'pi4' || inputs.pi_model == 'both') && (inputs.build_type == 'desktop' || inputs.build_type == 'both')) }}

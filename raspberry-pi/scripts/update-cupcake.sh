@@ -771,21 +771,21 @@ update_frontend() {
     
     local download_url
     if [ "$version" = "latest" ]; then
-        download_url="https://github.com/${repo_owner}/${repo_name}/releases/latest/download/cupcake-frontend.tar.gz"
+        download_url="https://github.com/${repo_owner}/${repo_name}/releases/latest/download/cupcake-frontend-pi.tar.gz"
         log_info "Downloading latest frontend release..."
     else
-        download_url="https://github.com/${repo_owner}/${repo_name}/releases/download/${version}/cupcake-frontend.tar.gz"
+        download_url="https://github.com/${repo_owner}/${repo_name}/releases/download/${version}/cupcake-frontend-pi.tar.gz"
         log_info "Downloading frontend version: $version"
     fi
     
     # Download frontend archive
     local download_success=false
     if command -v curl >/dev/null 2>&1; then
-        if curl -L -f -o cupcake-frontend.tar.gz "$download_url" 2>/dev/null; then
+        if curl -L -f -o cupcake-frontend-pi.tar.gz "$download_url" 2>/dev/null; then
             download_success=true
         fi
     elif command -v wget >/dev/null 2>&1; then
-        if wget -O cupcake-frontend.tar.gz "$download_url" 2>/dev/null; then
+        if wget -O cupcake-frontend-pi.tar.gz "$download_url" 2>/dev/null; then
             download_success=true
         fi
     fi
@@ -797,7 +797,7 @@ update_frontend() {
     fi
     
     # Verify download
-    if [ ! -f "cupcake-frontend.tar.gz" ] || [ ! -s "cupcake-frontend.tar.gz" ]; then
+    if [ ! -f "cupcake-frontend-pi.tar.gz" ] || [ ! -s "cupcake-frontend-pi.tar.gz" ]; then
         log_error "Downloaded frontend file is empty or missing"
         rm -rf "$temp_dir"
         return 1
@@ -812,7 +812,7 @@ update_frontend() {
     # Extract new frontend
     log_info "Extracting new frontend..."
     mkdir -p "/opt/cupcake/frontend"
-    if tar -xzf cupcake-frontend.tar.gz -C "/opt/cupcake/frontend/" 2>/dev/null; then
+    if tar -xzf cupcake-frontend-pi.tar.gz -C "/opt/cupcake/frontend/" 2>/dev/null; then
         # Set proper ownership
         chown -R www-data:www-data "/opt/cupcake/frontend"
         

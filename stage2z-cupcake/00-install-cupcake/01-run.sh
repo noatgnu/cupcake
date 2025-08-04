@@ -154,11 +154,11 @@ if [ "$FRONTEND_EXISTS" = false ]; then
 
         # If we have a specific version/tag, try that first
         if [ -n "${CUPCAKE_VERSION:-}" ]; then
-            DOWNLOAD_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${CUPCAKE_VERSION}/cupcake-frontend.tar.gz"
+            DOWNLOAD_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${CUPCAKE_VERSION}/cupcake-frontend-pi.tar.gz"
             log_cupcake "Trying version-specific download: ${CUPCAKE_VERSION}"
         else
             # Try latest release
-            DOWNLOAD_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download/cupcake-frontend.tar.gz"
+            DOWNLOAD_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download/cupcake-frontend-pi.tar.gz"
             log_cupcake "Trying latest release download"
         fi
 
@@ -166,7 +166,7 @@ if [ "$FRONTEND_EXISTS" = false ]; then
         DOWNLOAD_SUCCESS=false
         if command -v curl >/dev/null 2>&1; then
             log_cupcake "Attempting download with curl: $DOWNLOAD_URL"
-            if curl -L -f -o cupcake-frontend.tar.gz "$DOWNLOAD_URL"; then
+            if curl -L -f -o cupcake-frontend-pi.tar.gz "$DOWNLOAD_URL"; then
                 DOWNLOAD_SUCCESS=true
                 log_cupcake "✅ Successfully downloaded frontend using curl"
             else
@@ -174,7 +174,7 @@ if [ "$FRONTEND_EXISTS" = false ]; then
             fi
         elif command -v wget >/dev/null 2>&1; then
             log_cupcake "Attempting download with wget: $DOWNLOAD_URL"
-            if wget -O cupcake-frontend.tar.gz "$DOWNLOAD_URL"; then
+            if wget -O cupcake-frontend-pi.tar.gz "$DOWNLOAD_URL"; then
                 DOWNLOAD_SUCCESS=true
                 log_cupcake "✅ Successfully downloaded frontend using wget"
             else
@@ -183,11 +183,11 @@ if [ "$FRONTEND_EXISTS" = false ]; then
         fi
 
         # If download succeeded, extract the frontend
-        if [ "$DOWNLOAD_SUCCESS" = true ] && [ -f "cupcake-frontend.tar.gz" ]; then
+        if [ "$DOWNLOAD_SUCCESS" = true ] && [ -f "cupcake-frontend-pi.tar.gz" ]; then
             # Verify the downloaded file is not empty or an error page
-            if [ -s "cupcake-frontend.tar.gz" ]; then
+            if [ -s "cupcake-frontend-pi.tar.gz" ]; then
                 mkdir -p "$SCRIPT_DIR/frontend-dist"
-                if tar -xzf cupcake-frontend.tar.gz -C "$SCRIPT_DIR/frontend-dist/" 2>/dev/null; then
+                if tar -xzf cupcake-frontend-pi.tar.gz -C "$SCRIPT_DIR/frontend-dist/" 2>/dev/null; then
                     # Verify extraction was successful
                     if [ -d "$SCRIPT_DIR/frontend-dist" ] && [ -n "$(ls -A "$SCRIPT_DIR/frontend-dist" 2>/dev/null)" ]; then
                         log_cupcake "✅ Frontend files extracted successfully from GitHub releases"
@@ -225,9 +225,9 @@ if [ "$FRONTEND_EXISTS" = false ]; then
                 log_cupcake "✅ Successfully downloaded frontend artifact from GitHub Actions"
 
                 # Extract the frontend files to the script directory
-                if [ -f "cupcake-frontend.tar.gz" ]; then
+                if [ -f "cupcake-frontend-pi.tar.gz" ]; then
                     mkdir -p "$SCRIPT_DIR/frontend-dist"
-                    tar -xzf cupcake-frontend.tar.gz -C "$SCRIPT_DIR/frontend-dist/"
+                    tar -xzf cupcake-frontend-pi.tar.gz -C "$SCRIPT_DIR/frontend-dist/"
 
                     # Verify extraction was successful
                     if [ -d "$SCRIPT_DIR/frontend-dist" ] && [ -n "$(ls -A "$SCRIPT_DIR/frontend-dist" 2>/dev/null)" ]; then
@@ -237,7 +237,7 @@ if [ "$FRONTEND_EXISTS" = false ]; then
                         log_cupcake "❌ Failed to extract frontend files"
                     fi
                 else
-                    log_cupcake "❌ Downloaded artifact does not contain cupcake-frontend.tar.gz"
+                    log_cupcake "❌ Downloaded artifact does not contain cupcake-frontend-pi.tar.gz"
                 fi
             else
                 log_cupcake "❌ Failed to download frontend artifact from GitHub Actions"

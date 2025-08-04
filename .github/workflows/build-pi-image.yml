@@ -86,24 +86,18 @@ jobs:
         echo "Frontend files created:"
         ls -la ./frontend-dist/ | head -10
         
-        # Create a tarball for artifact upload
-        echo "=== Creating frontend artifact ==="
-        tar -czf cupcake-frontend.tar.gz -C ./frontend-dist .
-        echo "Frontend artifact size: $(du -sh cupcake-frontend.tar.gz)"
+        # Create a tarball for release upload
+        echo "=== Creating frontend package for Pi environment ==="
+        tar -czf cupcake-frontend-pi.tar.gz -C ./frontend-dist .
+        echo "Frontend Pi package size: $(du -sh cupcake-frontend-pi.tar.gz)"
 
-    - name: Upload Frontend Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: cupcake-frontend-shared
-        path: raspberry-pi/cupcake-frontend.tar.gz
-        retention-days: 1
 
     # Upload frontend to release if this is a release build
     - name: Upload Frontend to Release
       if: github.event_name == 'release'
       uses: softprops/action-gh-release@v1
       with:
-        files: raspberry-pi/cupcake-frontend.tar.gz
+        files: raspberry-pi/cupcake-frontend-pi.tar.gz
         tag_name: ${{ github.ref_name }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

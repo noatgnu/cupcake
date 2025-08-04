@@ -75,6 +75,7 @@ jobs:
       ENABLE_SSH: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_ssh || 'true' }}
       WIFI_SSID: ${{ github.event_name == 'workflow_dispatch' && inputs.wifi_ssid || '' }}
       WIFI_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && inputs.wifi_password || '' }}
+      GH_TOKEN: ${{ github.token }}
     
     steps:
     - name: Checkout repository
@@ -517,6 +518,7 @@ jobs:
       ENABLE_SSH: ${{ github.event_name == 'workflow_dispatch' && inputs.enable_ssh || 'true' }}
       WIFI_SSID: ${{ github.event_name == 'workflow_dispatch' && inputs.wifi_ssid || '' }}
       WIFI_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && inputs.wifi_password || '' }}
+      GH_TOKEN: ${{ github.token }}
     
     steps:
     - name: Checkout repository

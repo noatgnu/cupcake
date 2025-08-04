@@ -204,6 +204,10 @@ jobs:
         # Create custom CUPCAKE stage using proper pi-gen naming (stage2a - runs after stage2)
         sudo cp -r ../stage2z-cupcake ./stage2a
         
+        # Fix ownership and permissions for the copied stage directory
+        sudo chown -R $(whoami):$(id -gn) ./stage2a
+        sudo chmod -R u+w ./stage2a
+        
         # Extract frontend artifact to stage directory
         echo "=== Extracting frontend artifact for pi-gen ==="
         cd ../raspberry-pi
@@ -613,6 +617,10 @@ jobs:
         
         # Create custom CUPCAKE stage using proper pi-gen naming (stage2a - runs after stage2)
         sudo cp -r ../stage2z-cupcake ./stage2a
+        
+        # Fix ownership and permissions for the copied stage directory
+        sudo chown -R $(whoami):$(id -gn) ./stage2a
+        sudo chmod -R u+w ./stage2a
         
         # Extract frontend artifact to stage directory
         echo "=== Extracting frontend artifact for pi-gen ==="

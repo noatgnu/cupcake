@@ -60,6 +60,20 @@ apt-get upgrade -y || {
 log_cupcake "Installing essential tools for installation..."
 apt-get install -y git curl build-essential
 
+# Install GitHub CLI inside chroot for artifact downloading
+log_cupcake "Installing GitHub CLI for artifact downloading..."
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+apt-get update
+apt-get install -y gh
+
+# Verify GitHub CLI installation
+if command -v gh >/dev/null 2>&1; then
+    log_cupcake "✓ GitHub CLI installed successfully: $(gh --version | head -1)"
+else
+    log_cupcake "❌ GitHub CLI installation failed"
+fi
+
 # Install PostgreSQL from official Raspbian repositories
 log_cupcake "Installing PostgreSQL from Raspbian repositories..."
 export DEBIAN_FRONTEND=noninteractive

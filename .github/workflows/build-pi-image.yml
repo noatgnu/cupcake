@@ -50,7 +50,52 @@ on:
     types: [published]
 
 jobs:
-  # TEMPORARILY DISABLED - Desktop builds disabled to focus on lite builds  
+  # Build frontend once and upload as artifact for all Pi builds to use
+  build-frontend:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Build Frontend and Upload as Artifact
+      run: |
+        cd raspberry-pi
+        # Ensure script has correct line endings and is executable
+        dos2unix prebuild-frontend.sh 2>/dev/null || true
+        chmod +x prebuild-frontend.sh
+        
+        # Run frontend build with explicit error checking
+        echo "=== Starting frontend pre-build ==="
+        bash ./prebuild-frontend.sh --hostname cupcake-pi.local --output-dir ./frontend-dist
+        
+        # Verify frontend was built successfully
+        if [ ! -d "./frontend-dist" ]; then
+          echo "❌ ERROR: frontend-dist directory was not created"
+          exit 1
+        fi
+        
+        if [ -z "$(ls -A ./frontend-dist 2>/dev/null)" ]; then
+          echo "❌ ERROR: frontend-dist directory is empty"
+          exit 1
+        fi
+        
+        echo "✅ Frontend pre-build completed successfully"
+        echo "Frontend files created:"
+        ls -la ./frontend-dist/ | head -10
+        
+        # Create a tarball for artifact upload
+        echo "=== Creating frontend artifact ==="
+        tar -czf cupcake-frontend.tar.gz -C ./frontend-dist .
+        echo "Frontend artifact size: $(du -sh cupcake-frontend.tar.gz)"
+
+    - name: Upload Frontend Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: cupcake-frontend-shared
+        path: raspberry-pi/cupcake-frontend.tar.gz
+        retention-days: 1
+
+  # TEMPORARILY DISABLED - Desktop builds disabled to focus on lite builds
   # build-pi4-desktop:
   #   if: ${{ github.event_name == 'schedule' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && (inputs.pi_model == 'pi4' || inputs.pi_model == 'both') && (inputs.build_type == 'desktop' || inputs.build_type == 'both')) }}
   #   runs-on: ubuntu-latest
@@ -61,6 +106,7 @@ jobs:
   # [Desktop build steps commented out - see git history to restore]
 
   build-pi4-lite:
+    needs: build-frontend
     if: ${{ github.event_name == 'schedule' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && (inputs.pi_model == 'pi4' || inputs.pi_model == 'both') && (inputs.build_type == 'lite' || inputs.build_type == 'both')) }}
     runs-on: ubuntu-latest
     permissions:
@@ -134,44 +180,12 @@ jobs:
         sudo dpkg --add-architecture armhf
         sudo dpkg --add-architecture arm64
 
-    - name: Build Frontend and Upload as Artifact
-      run: |
-        cd raspberry-pi
-        # Ensure script has correct line endings and is executable
-        dos2unix prebuild-frontend.sh 2>/dev/null || true
-        chmod +x prebuild-frontend.sh
-        
-        # Run frontend build with explicit error checking
-        echo "=== Starting frontend pre-build ==="
-        bash ./prebuild-frontend.sh --hostname cupcake-pi.local --output-dir ./frontend-dist
-        
-        # Verify frontend was built successfully
-        if [ ! -d "./frontend-dist" ]; then
-          echo "❌ ERROR: frontend-dist directory was not created"
-          exit 1
-        fi
-        
-        if [ -z "$(ls -A ./frontend-dist 2>/dev/null)" ]; then
-          echo "❌ ERROR: frontend-dist directory is empty"
-          exit 1
-        fi
-        
-        echo "✅ Frontend pre-build completed successfully"
-        echo "Frontend files created:"
-        ls -la ./frontend-dist/ | head -10
-        
-        # Create a tarball for artifact upload
-        echo "=== Creating frontend artifact ==="
-        tar -czf cupcake-frontend.tar.gz -C ./frontend-dist .
-        echo "Frontend artifact size: $(du -sh cupcake-frontend.tar.gz)"
-        
-    - name: Upload Frontend Artifact
-      uses: actions/upload-artifact@v4
+    - name: Download Frontend Artifact
+      uses: actions/download-artifact@v4
       with:
         name: cupcake-frontend-shared
-        path: raspberry-pi/cupcake-frontend.tar.gz
-        retention-days: 1
-        
+        path: raspberry-pi/
+
     - name: Build Pi 4 Lite image using native pi-gen
       run: |
         # Enable strict error handling - ANY error must fail the build
@@ -190,17 +204,9 @@ jobs:
         # Create custom CUPCAKE stage using proper pi-gen naming (stage2a - runs after stage2)
         sudo cp -r ../stage2z-cupcake ./stage2a
         
-        # Download frontend artifact and embed in stage directory
-        echo "=== Downloading frontend artifact for pi-gen ==="
+        # Extract frontend artifact to stage directory
+        echo "=== Extracting frontend artifact for pi-gen ==="
         cd ../raspberry-pi
-        
-        # Check if frontend artifact already exists from the build step
-        if [ -f "cupcake-frontend.tar.gz" ]; then
-          echo "✅ Frontend artifact already exists from build step, using existing file"
-        else
-          # Download the frontend artifact using GitHub CLI
-          gh run download ${{ github.run_id }} --name cupcake-frontend-shared
-        fi
         
         # Verify artifact was downloaded
         if [ ! -f "cupcake-frontend.tar.gz" ]; then
@@ -510,6 +516,7 @@ jobs:
   # [Desktop build steps commented out - see git history to restore]
 
   build-pi5-lite:
+    needs: build-frontend
     if: ${{ github.event_name == 'schedule' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && (inputs.pi_model == 'pi5' || inputs.pi_model == 'both') && (inputs.build_type == 'lite' || inputs.build_type == 'both')) }}
     runs-on: ubuntu-latest
     permissions:
@@ -583,44 +590,12 @@ jobs:
         sudo dpkg --add-architecture armhf
         sudo dpkg --add-architecture arm64
 
-    - name: Build Frontend and Upload as Artifact
-      run: |
-        cd raspberry-pi
-        # Ensure script has correct line endings and is executable
-        dos2unix prebuild-frontend.sh 2>/dev/null || true
-        chmod +x prebuild-frontend.sh
-        
-        # Run frontend build with explicit error checking
-        echo "=== Starting frontend pre-build ==="
-        bash ./prebuild-frontend.sh --hostname cupcake-pi.local --output-dir ./frontend-dist
-        
-        # Verify frontend was built successfully
-        if [ ! -d "./frontend-dist" ]; then
-          echo "❌ ERROR: frontend-dist directory was not created"
-          exit 1
-        fi
-        
-        if [ -z "$(ls -A ./frontend-dist 2>/dev/null)" ]; then
-          echo "❌ ERROR: frontend-dist directory is empty"
-          exit 1
-        fi
-        
-        echo "✅ Frontend pre-build completed successfully"
-        echo "Frontend files created:"
-        ls -la ./frontend-dist/ | head -10
-        
-        # Create a tarball for artifact upload
-        echo "=== Creating frontend artifact ==="
-        tar -czf cupcake-frontend.tar.gz -C ./frontend-dist .
-        echo "Frontend artifact size: $(du -sh cupcake-frontend.tar.gz)"
-        
-    - name: Upload Frontend Artifact
-      uses: actions/upload-artifact@v4
+    - name: Download Frontend Artifact
+      uses: actions/download-artifact@v4
       with:
         name: cupcake-frontend-shared
-        path: raspberry-pi/cupcake-frontend.tar.gz
-        retention-days: 1
-        
+        path: raspberry-pi/
+
     - name: Build Pi 5 Lite image using native pi-gen
       run: |
         # Enable strict error handling - ANY error must fail the build
@@ -639,17 +614,9 @@ jobs:
         # Create custom CUPCAKE stage using proper pi-gen naming (stage2a - runs after stage2)
         sudo cp -r ../stage2z-cupcake ./stage2a
         
-        # Download frontend artifact and embed in stage directory
-        echo "=== Downloading frontend artifact for pi-gen ==="
+        # Extract frontend artifact to stage directory
+        echo "=== Extracting frontend artifact for pi-gen ==="
         cd ../raspberry-pi
-        
-        # Check if frontend artifact already exists from the build step
-        if [ -f "cupcake-frontend.tar.gz" ]; then
-          echo "✅ Frontend artifact already exists from build step, using existing file"
-        else
-          # Download the frontend artifact using GitHub CLI
-          gh run download ${{ github.run_id }} --name cupcake-frontend-shared
-        fi
         
         # Verify artifact was downloaded
         if [ ! -f "cupcake-frontend.tar.gz" ]; then

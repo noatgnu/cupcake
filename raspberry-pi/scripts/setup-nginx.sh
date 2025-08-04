@@ -152,27 +152,6 @@ server {
         access_log off;
     }
     
-    # API endpoints with CORS headers
-    location /api/ {
-        # CORS headers for API
-        add_header Access-Control-Allow-Origin "$http_origin" always;
-        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization" always;
-        add_header Access-Control-Expose-Headers "Content-Length,Content-Range" always;
-        add_header Access-Control-Allow-Credentials "true" always;
-        
-        # Handle preflight requests
-        if ($request_method = 'OPTIONS') {
-            add_header Access-Control-Max-Age 86400;
-            add_header Content-Type 'text/plain; charset=utf-8';
-            add_header Content-Length 0;
-            return 204;
-        }
-        
-        proxy_pass http://127.0.0.1:8000;
-        include /etc/nginx/conf.d/proxy_params.conf;
-    }
-    
     # WebSocket support for real-time features
     location /ws/ {
         proxy_pass http://127.0.0.1:8000;
@@ -246,61 +225,6 @@ server {
             add_header 'Content-Length' 0;
             return 204;
         }
-    }
-    
-    # WebSocket support - proxy to Django
-    location /ws/ {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-
-        # WebSocket specific connection settings
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 7d;
-        proxy_read_timeout 7d;
-        proxy_redirect off;
-
-        # Minimal buffering for real-time connections
-        proxy_buffering off;
-
-        # Hide upstream headers
-        proxy_hide_header X-Powered-By;
-        proxy_hide_header Server;
-
-        # Add custom headers
-        proxy_set_header X-Forwarded-SSL $https;
-        proxy_set_header X-Client-IP $remote_addr;
-    }
-    
-    # Auth endpoints - proxy to Django
-    location /auth/ {
-        proxy_pass http://127.0.0.1:8000;
-        include /etc/nginx/conf.d/proxy_params.conf;
-    }
-    
-    # DRF (Django REST Framework) endpoints - proxy to Django
-    location /drf/ {
-        proxy_pass http://127.0.0.1:8000;
-        include /etc/nginx/conf.d/proxy_params.conf;
-    }
-    
-    # OAuth endpoints - proxy to Django
-    location /o/ {
-        proxy_pass http://127.0.0.1:8000;
-        include /etc/nginx/conf.d/proxy_params.conf;
-    }
-    
-    # Social auth endpoints - proxy to Django
-    location /social/ {
-        proxy_pass http://127.0.0.1:8000;
-        include /etc/nginx/conf.d/proxy_params.conf;
-    }
-    
-    # MCP (Model Context Protocol) endpoints - proxy to Django
-    location /mcp/ {
-        proxy_pass http://127.0.0.1:8000;
-        include /etc/nginx/conf.d/proxy_params.conf;
     }
     
     # Security: Block access to sensitive files

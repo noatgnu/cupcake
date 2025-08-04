@@ -133,7 +133,7 @@ jobs:
         sudo dpkg --add-architecture armhf
         sudo dpkg --add-architecture arm64
 
-    - name: Pre-build Frontend (x86 fast build)
+    - name: Build Frontend and Upload as Artifact
       run: |
         cd raspberry-pi
         # Ensure script has correct line endings and is executable
@@ -159,6 +159,18 @@ jobs:
         echo "Frontend files created:"
         ls -la ./frontend-dist/ | head -10
         
+        # Create a tarball for artifact upload
+        echo "=== Creating frontend artifact ==="
+        tar -czf cupcake-frontend.tar.gz -C ./frontend-dist .
+        echo "Frontend artifact size: $(du -sh cupcake-frontend.tar.gz)"
+        
+    - name: Upload Frontend Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: cupcake-frontend-${{ github.run_id }}
+        path: raspberry-pi/cupcake-frontend.tar.gz
+        retention-days: 1
+        
     - name: Build Pi 4 Lite image using native pi-gen
       run: |
         # Enable strict error handling - ANY error must fail the build
@@ -177,17 +189,25 @@ jobs:
         # Create custom CUPCAKE stage using proper pi-gen naming (stage2a - runs after stage2)
         sudo cp -r ../stage2z-cupcake ./stage2a
         
-        # Copy pre-built frontend INTO the install script directory so it's available in chroot
-        if [ -d "../raspberry-pi/frontend-dist" ]; then
-          echo "=== Copying pre-built frontend to stage2a/00-install-cupcake/ ==="
-          sudo cp -r ../raspberry-pi/frontend-dist ./stage2a/00-install-cupcake/
-          echo "✅ Frontend copied to stage2a/00-install-cupcake/frontend-dist"
-          ls -la ./stage2a/00-install-cupcake/frontend-dist/ | head -5
-        else
-          echo "❌ CRITICAL ERROR: No pre-built frontend found in ../raspberry-pi/frontend-dist"
-          echo "Frontend is required for CUPCAKE - placeholder is not acceptable"
+        # Download frontend artifact and embed in stage directory
+        echo "=== Downloading frontend artifact for pi-gen ==="
+        cd ../raspberry-pi
+        # Download the frontend artifact using GitHub CLI
+        gh run download ${{ github.run_id }} --name cupcake-frontend-${{ github.run_id }}
+        
+        # Verify artifact was downloaded
+        if [ ! -f "cupcake-frontend.tar.gz" ]; then
+          echo "❌ CRITICAL ERROR: Frontend artifact not downloaded"
           exit 1
         fi
+        
+        # Extract frontend to stage directory
+        cd ../pi-gen
+        mkdir -p ./stage2a/00-install-cupcake/frontend-dist
+        tar -xzf ../raspberry-pi/cupcake-frontend.tar.gz -C ./stage2a/00-install-cupcake/frontend-dist/
+        
+        echo "✅ Frontend artifact extracted to stage2a/00-install-cupcake/frontend-dist"
+        ls -la ./stage2a/00-install-cupcake/frontend-dist/ | head -5
         
         # Fix line endings (convert Windows CRLF to Unix LF) and ensure proper format
         sudo sed -i 's/\r$//' ./stage2a/prerun.sh 2>/dev/null || true
@@ -555,7 +575,7 @@ jobs:
         sudo dpkg --add-architecture armhf
         sudo dpkg --add-architecture arm64
 
-    - name: Pre-build Frontend (x86 fast build)
+    - name: Build Frontend and Upload as Artifact
       run: |
         cd raspberry-pi
         # Ensure script has correct line endings and is executable
@@ -581,6 +601,18 @@ jobs:
         echo "Frontend files created:"
         ls -la ./frontend-dist/ | head -10
         
+        # Create a tarball for artifact upload
+        echo "=== Creating frontend artifact ==="
+        tar -czf cupcake-frontend.tar.gz -C ./frontend-dist .
+        echo "Frontend artifact size: $(du -sh cupcake-frontend.tar.gz)"
+        
+    - name: Upload Frontend Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: cupcake-frontend-${{ github.run_id }}
+        path: raspberry-pi/cupcake-frontend.tar.gz
+        retention-days: 1
+        
     - name: Build Pi 5 Lite image using native pi-gen
       run: |
         # Enable strict error handling - ANY error must fail the build
@@ -599,17 +631,25 @@ jobs:
         # Create custom CUPCAKE stage using proper pi-gen naming (stage2a - runs after stage2)
         sudo cp -r ../stage2z-cupcake ./stage2a
         
-        # Copy pre-built frontend INTO the install script directory so it's available in chroot
-        if [ -d "../raspberry-pi/frontend-dist" ]; then
-          echo "=== Copying pre-built frontend to stage2a/00-install-cupcake/ ==="
-          sudo cp -r ../raspberry-pi/frontend-dist ./stage2a/00-install-cupcake/
-          echo "✅ Frontend copied to stage2a/00-install-cupcake/frontend-dist"
-          ls -la ./stage2a/00-install-cupcake/frontend-dist/ | head -5
-        else
-          echo "❌ CRITICAL ERROR: No pre-built frontend found in ../raspberry-pi/frontend-dist"
-          echo "Frontend is required for CUPCAKE - placeholder is not acceptable"
+        # Download frontend artifact and embed in stage directory
+        echo "=== Downloading frontend artifact for pi-gen ==="
+        cd ../raspberry-pi
+        # Download the frontend artifact using GitHub CLI
+        gh run download ${{ github.run_id }} --name cupcake-frontend-${{ github.run_id }}
+        
+        # Verify artifact was downloaded
+        if [ ! -f "cupcake-frontend.tar.gz" ]; then
+          echo "❌ CRITICAL ERROR: Frontend artifact not downloaded"
           exit 1
         fi
+        
+        # Extract frontend to stage directory
+        cd ../pi-gen
+        mkdir -p ./stage2a/00-install-cupcake/frontend-dist
+        tar -xzf ../raspberry-pi/cupcake-frontend.tar.gz -C ./stage2a/00-install-cupcake/frontend-dist/
+        
+        echo "✅ Frontend artifact extracted to stage2a/00-install-cupcake/frontend-dist"
+        ls -la ./stage2a/00-install-cupcake/frontend-dist/ | head -5
         
         # Fix line endings (convert Windows CRLF to Unix LF) and ensure proper format
         sudo sed -i 's/\r$//' ./stage2a/prerun.sh 2>/dev/null || true

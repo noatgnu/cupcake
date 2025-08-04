@@ -97,119 +97,39 @@ apt-get install -y \
 log_cupcake "=== FRONTEND VALIDATION AND BUILD ==="
 log_cupcake "Checking if frontend files are available, building if necessary..."
 
-# Quick check for any existing frontend directories
+# Check for GitHub Actions pre-built frontend in the exact location it should be
+SCRIPT_DIR="$(dirname "$0")"
+GITHUB_ACTIONS_FRONTEND="$SCRIPT_DIR/frontend-dist"
+
+log_cupcake "Checking for GitHub Actions pre-built frontend at: $GITHUB_ACTIONS_FRONTEND"
+log_cupcake "Script directory: $SCRIPT_DIR"
+log_cupcake "Current working directory: $(pwd)"
+
+# List contents of script directory for debugging
+log_cupcake "Contents of script directory:"
+ls -la "$SCRIPT_DIR" | while read line; do log_cupcake "  $line"; done
+
 FRONTEND_EXISTS=false
-EARLY_FRONTEND_PATHS=(
-    "/opt/cupcake/frontend-dist"
-    "/opt/cupcake/dist"
-    "/opt/cupcake/build"
-    "/tmp/stage2a/00-install-cupcake/frontend-dist"
-    "$(dirname "$0")/frontend-dist"
-)
-
-for path in "${EARLY_FRONTEND_PATHS[@]}"; do
-    if [ -d "$path" ] && [ -n "$(ls -A "$path" 2>/dev/null)" ]; then
-        log_cupcake "Found existing frontend at: $path"
-        FRONTEND_EXISTS=true
-        break
-    fi
-done
-
-# If no frontend found, build it immediately
-if [ "$FRONTEND_EXISTS" = false ]; then
-    log_cupcake "No pre-built frontend found anywhere - starting immediate frontend build"
-    log_cupcake "=== EMERGENCY FRONTEND BUILD PROCESS ==="
-
-    # Install Node.js first thing
-    log_cupcake "Installing Node.js for frontend build..."
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-    apt-get update
-    apt-get install -y nodejs
-
-    # Verify Node.js installation
-    node_version=$(node --version 2>/dev/null || echo "FAILED")
-    npm_version=$(npm --version 2>/dev/null || echo "FAILED")
-    log_cupcake "Node.js version: $node_version"
-    log_cupcake "npm version: $npm_version"
-
-    if [ "$node_version" = "FAILED" ] || [ "$npm_version" = "FAILED" ]; then
-        log_cupcake "FATAL: Failed to install Node.js - cannot build frontend"
-        exit 1
-    fi
-
-    # Create temporary build directory
-    FRONTEND_BUILD_DIR="/tmp/cupcake-frontend-build"
-    mkdir -p "$FRONTEND_BUILD_DIR"
-    cd "$FRONTEND_BUILD_DIR"
-
-    # Clone the Angular frontend repository
-    log_cupcake "Cloning CUPCAKE Angular frontend repository..."
-    git clone https://github.com/noatgnu/cupcake-ng.git . || {
-        log_cupcake "FATAL: Failed to clone Angular frontend repository"
-        exit 1
-    }
-
-    # Configure for Pi deployment
-    log_cupcake "Configuring frontend for Pi deployment..."
-    if [ -f "src/environments/environment.ts" ]; then
-        sed -i "s;https://cupcake.proteo.info;http://cupcake-pi.local;g" src/environments/environment.ts
-        sed -i "s;http://localhost;http://cupcake-pi.local;g" src/environments/environment.ts
-    fi
-
-    if [ -f "src/environments/environment.prod.ts" ]; then
-        sed -i "s;https://cupcake.proteo.info;http://cupcake-pi.local;g" src/environments/environment.prod.ts
-        sed -i "s;http://localhost;http://cupcake-pi.local;g" src/environments/environment.prod.ts
-    fi
-
-    # Set Node.js memory options for ARM64 build
-    export NODE_OPTIONS="--max-old-space-size=2048"
-
-    # Install npm dependencies
-    log_cupcake "Installing npm dependencies (this may take several minutes)..."
-    npm install --no-optional --production=false || {
-        log_cupcake "FATAL: Failed to install npm dependencies"
-        exit 1
-    }
-
-    # Build the Angular frontend
-    log_cupcake "Building Angular frontend for production (this may take 10-15 minutes on ARM64)..."
-    npm run build --prod || {
-        log_cupcake "FATAL: Failed to build Angular frontend"
-        exit 1
-    }
-
-    # Create the frontend directory where it will be expected later
-    BUILT_FRONTEND_DIR="/opt/cupcake/frontend-built"
-    mkdir -p "$BUILT_FRONTEND_DIR"
-
-    # Copy built files to the expected location
-    if [ -d "dist/browser" ]; then
-        log_cupcake "Copying built frontend from dist/browser to $BUILT_FRONTEND_DIR..."
-        cp -r dist/browser/* "$BUILT_FRONTEND_DIR/"
-    elif [ -d "dist" ]; then
-        log_cupcake "Copying built frontend from dist to $BUILT_FRONTEND_DIR..."
-        cp -r dist/* "$BUILT_FRONTEND_DIR/"
-    else
-        log_cupcake "FATAL: Cannot find built frontend files in dist/ directory"
-        exit 1
-    fi
-
-    # Verify frontend was built successfully
-    if [ ! -f "$BUILT_FRONTEND_DIR/index.html" ]; then
-        log_cupcake "FATAL: Frontend build failed - no index.html found"
-        exit 1
-    fi
-
-    # Clean up build directory to save space but keep the built frontend
-    cd /
-    rm -rf "$FRONTEND_BUILD_DIR"
-
-    log_cupcake "✅ EMERGENCY FRONTEND BUILD COMPLETED SUCCESSFULLY"
-    log_cupcake "Frontend built and available at: $BUILT_FRONTEND_DIR"
-    log_cupcake "Frontend files: $(ls -1 $BUILT_FRONTEND_DIR | wc -l) files"
-    log_cupcake "Frontend size: $(du -sh $BUILT_FRONTEND_DIR | cut -f1)"
+if [ -d "$GITHUB_ACTIONS_FRONTEND" ] && [ -n "$(ls -A "$GITHUB_ACTIONS_FRONTEND" 2>/dev/null)" ]; then
+    log_cupcake "✓ Found GitHub Actions pre-built frontend with $(ls "$GITHUB_ACTIONS_FRONTEND" | wc -l) files"
+    FRONTEND_EXISTS=true
 else
-    log_cupcake "✅ Pre-built frontend found - skipping emergency build"
+    log_cupcake "❌ GitHub Actions pre-built frontend not found or empty"
+    log_cupcake "Directory exists: $([ -d "$GITHUB_ACTIONS_FRONTEND" ] && echo "YES" || echo "NO")"
+    if [ -d "$GITHUB_ACTIONS_FRONTEND" ]; then
+        log_cupcake "Directory is empty: $([ -z "$(ls -A "$GITHUB_ACTIONS_FRONTEND" 2>/dev/null)" ] && echo "YES" || echo "NO")"
+    fi
+fi
+
+# If no frontend found, FAIL THE BUILD - GitHub Actions must provide it
+if [ "$FRONTEND_EXISTS" = false ]; then
+    log_cupcake "FATAL: No pre-built frontend found - GitHub Actions frontend copy failed"
+    log_cupcake "The pi-gen build requires a pre-built frontend from GitHub Actions"
+    log_cupcake "Building Angular inside pi-gen causes memory issues and should not happen"
+    log_cupcake "Fix the GitHub Actions workflow to properly copy frontend-dist to the stage directory"
+    exit 1
+else
+    log_cupcake "✅ Pre-built frontend found - proceeding with installation"
 fi
 
 

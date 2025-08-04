@@ -167,7 +167,7 @@ jobs:
     - name: Upload Frontend Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: cupcake-frontend-${{ github.run_id }}
+        name: cupcake-frontend-shared
         path: raspberry-pi/cupcake-frontend.tar.gz
         retention-days: 1
         
@@ -193,7 +193,7 @@ jobs:
         echo "=== Downloading frontend artifact for pi-gen ==="
         cd ../raspberry-pi
         # Download the frontend artifact using GitHub CLI
-        gh run download ${{ github.run_id }} --name cupcake-frontend-${{ github.run_id }}
+        gh run download ${{ github.run_id }} --name cupcake-frontend-shared
         
         # Verify artifact was downloaded
         if [ ! -f "cupcake-frontend.tar.gz" ]; then
@@ -609,7 +609,7 @@ jobs:
     - name: Upload Frontend Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: cupcake-frontend-${{ github.run_id }}
+        name: cupcake-frontend-shared
         path: raspberry-pi/cupcake-frontend.tar.gz
         retention-days: 1
         
@@ -635,7 +635,7 @@ jobs:
         echo "=== Downloading frontend artifact for pi-gen ==="
         cd ../raspberry-pi
         # Download the frontend artifact using GitHub CLI
-        gh run download ${{ github.run_id }} --name cupcake-frontend-${{ github.run_id }}
+        gh run download ${{ github.run_id }} --name cupcake-frontend-shared
         
         # Verify artifact was downloaded
         if [ ! -f "cupcake-frontend.tar.gz" ]; then

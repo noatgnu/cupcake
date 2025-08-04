@@ -707,5 +707,158 @@ main() {
     log "=== CUPCAKE Update Script Completed ==="
 }
 
+check_frontend_update() {
+    local repo_owner="${1:-Toasterson}"
+    local repo_name="${2:-cupcake}"
+    
+    log_info "Checking for frontend updates from GitHub releases..."
+    
+    # Get current frontend version if available
+    local current_version_file="/opt/cupcake/frontend/version.txt"
+    local current_version="unknown"
+    if [ -f "$current_version_file" ]; then
+        current_version=$(cat "$current_version_file" 2>/dev/null || echo "unknown")
+    fi
+    
+    # Get latest release info from GitHub API
+    local api_url="https://api.github.com/repos/${repo_owner}/${repo_name}/releases/latest"
+    local latest_info
+    
+    if command -v curl >/dev/null 2>&1; then
+        latest_info=$(curl -s "$api_url" 2>/dev/null)
+    elif command -v wget >/dev/null 2>&1; then
+        latest_info=$(wget -qO- "$api_url" 2>/dev/null)
+    else
+        log_error "Neither curl nor wget available for checking updates"
+        return 1
+    fi
+    
+    if [ -z "$latest_info" ] || echo "$latest_info" | grep -q '"message".*"Not Found"'; then
+        log_warning "Could not fetch release information from GitHub"
+        return 1
+    fi
+    
+    # Extract latest version tag
+    local latest_version=$(echo "$latest_info" | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' | head -1)
+    
+    if [ -z "$latest_version" ]; then
+        log_warning "Could not determine latest version from GitHub API"
+        return 1
+    fi
+    
+    log_info "Current frontend version: $current_version"
+    log_info "Latest frontend version: $latest_version"
+    
+    if [ "$current_version" = "$latest_version" ]; then
+        log "Frontend is up to date ($current_version)"
+        return 0
+    else
+        log "Frontend update available: $current_version → $latest_version"
+        return 2  # Update available
+    fi
+}
+
+update_frontend() {
+    local repo_owner="${1:-Toasterson}"
+    local repo_name="${2:-cupcake}"
+    local version="${3:-latest}"
+    
+    log "Updating CUPCAKE frontend..."
+    
+    # Create temporary directory for download
+    local temp_dir=$(mktemp -d)
+    cd "$temp_dir"
+    
+    local download_url
+    if [ "$version" = "latest" ]; then
+        download_url="https://github.com/${repo_owner}/${repo_name}/releases/latest/download/cupcake-frontend.tar.gz"
+        log_info "Downloading latest frontend release..."
+    else
+        download_url="https://github.com/${repo_owner}/${repo_name}/releases/download/${version}/cupcake-frontend.tar.gz"
+        log_info "Downloading frontend version: $version"
+    fi
+    
+    # Download frontend archive
+    local download_success=false
+    if command -v curl >/dev/null 2>&1; then
+        if curl -L -f -o cupcake-frontend.tar.gz "$download_url" 2>/dev/null; then
+            download_success=true
+        fi
+    elif command -v wget >/dev/null 2>&1; then
+        if wget -O cupcake-frontend.tar.gz "$download_url" 2>/dev/null; then
+            download_success=true
+        fi
+    fi
+    
+    if [ "$download_success" = false ]; then
+        log_error "Failed to download frontend from: $download_url"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    # Verify download
+    if [ ! -f "cupcake-frontend.tar.gz" ] || [ ! -s "cupcake-frontend.tar.gz" ]; then
+        log_error "Downloaded frontend file is empty or missing"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    # Create backup of current frontend
+    if [ -d "/opt/cupcake/frontend" ]; then
+        log_info "Backing up current frontend..."
+        mv "/opt/cupcake/frontend" "/opt/cupcake/frontend.backup.$(date +%Y%m%d_%H%M%S)"
+    fi
+    
+    # Extract new frontend
+    log_info "Extracting new frontend..."
+    mkdir -p "/opt/cupcake/frontend"
+    if tar -xzf cupcake-frontend.tar.gz -C "/opt/cupcake/frontend/" 2>/dev/null; then
+        # Set proper ownership
+        chown -R www-data:www-data "/opt/cupcake/frontend"
+        
+        # Save version information
+        if [ "$version" != "latest" ]; then
+            echo "$version" > "/opt/cupcake/frontend/version.txt"
+        else
+            # Try to get the actual version from GitHub API
+            local version_info
+            if command -v curl >/dev/null 2>&1; then
+                version_info=$(curl -s "https://api.github.com/repos/${repo_owner}/${repo_name}/releases/latest" 2>/dev/null)
+            elif command -v wget >/dev/null 2>&1; then
+                version_info=$(wget -qO- "https://api.github.com/repos/${repo_owner}/${repo_name}/releases/latest" 2>/dev/null)
+            fi
+            
+            if [ -n "$version_info" ]; then
+                local actual_version=$(echo "$version_info" | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' | head -1)
+                if [ -n "$actual_version" ]; then
+                    echo "$actual_version" > "/opt/cupcake/frontend/version.txt"
+                fi
+            fi
+        fi
+        
+        log "✅ Frontend updated successfully"
+        
+        # Restart nginx to ensure new frontend is served
+        if systemctl is-active --quiet nginx; then
+            log_info "Reloading nginx configuration..."
+            systemctl reload nginx || log_warning "Failed to reload nginx"
+        fi
+        
+        # Clean up temporary directory
+        rm -rf "$temp_dir"
+        return 0
+    else
+        log_error "Failed to extract frontend archive"
+        # Restore backup if extraction failed
+        if [ -d "/opt/cupcake/frontend.backup."* ]; then
+            log_info "Restoring frontend backup..."
+            rm -rf "/opt/cupcake/frontend"
+            mv "/opt/cupcake/frontend.backup."* "/opt/cupcake/frontend" 2>/dev/null || true
+        fi
+        rm -rf "$temp_dir"
+        return 1
+    fi
+}
+
 # Run main function
 main "$@"

@@ -53,6 +53,9 @@ jobs:
   # Build frontend once and upload as artifact for all Pi builds to use
   build-frontend:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required for uploading to releases
+      packages: read
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4

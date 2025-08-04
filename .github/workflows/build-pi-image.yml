@@ -193,8 +193,14 @@ jobs:
         # Download frontend artifact and embed in stage directory
         echo "=== Downloading frontend artifact for pi-gen ==="
         cd ../raspberry-pi
-        # Download the frontend artifact using GitHub CLI
-        gh run download ${{ github.run_id }} --name cupcake-frontend-shared
+        
+        # Check if frontend artifact already exists from the build step
+        if [ -f "cupcake-frontend.tar.gz" ]; then
+          echo "✅ Frontend artifact already exists from build step, using existing file"
+        else
+          # Download the frontend artifact using GitHub CLI
+          gh run download ${{ github.run_id }} --name cupcake-frontend-shared
+        fi
         
         # Verify artifact was downloaded
         if [ ! -f "cupcake-frontend.tar.gz" ]; then
@@ -636,8 +642,14 @@ jobs:
         # Download frontend artifact and embed in stage directory
         echo "=== Downloading frontend artifact for pi-gen ==="
         cd ../raspberry-pi
-        # Download the frontend artifact using GitHub CLI
-        gh run download ${{ github.run_id }} --name cupcake-frontend-shared
+        
+        # Check if frontend artifact already exists from the build step
+        if [ -f "cupcake-frontend.tar.gz" ]; then
+          echo "✅ Frontend artifact already exists from build step, using existing file"
+        else
+          # Download the frontend artifact using GitHub CLI
+          gh run download ${{ github.run_id }} --name cupcake-frontend-shared
+        fi
         
         # Verify artifact was downloaded
         if [ ! -f "cupcake-frontend.tar.gz" ]; then
@@ -985,4 +997,3 @@ jobs:
         echo "🧹 Cleaning up build artifacts..."
         # GitHub automatically cleans up artifacts after retention period
         # This is just a placeholder for any additional cleanup needed
-

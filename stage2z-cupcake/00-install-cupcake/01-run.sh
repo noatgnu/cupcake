@@ -165,18 +165,20 @@ if [ "$FRONTEND_EXISTS" = false ]; then
         # Download using curl or wget
         DOWNLOAD_SUCCESS=false
         if command -v curl >/dev/null 2>&1; then
-            if curl -L -f -o cupcake-frontend.tar.gz "$DOWNLOAD_URL" 2>/dev/null; then
+            log_cupcake "Attempting download with curl: $DOWNLOAD_URL"
+            if curl -L -f -o cupcake-frontend.tar.gz "$DOWNLOAD_URL"; then
                 DOWNLOAD_SUCCESS=true
                 log_cupcake "✅ Successfully downloaded frontend using curl"
             else
-                log_cupcake "❌ Failed to download frontend using curl"
+                log_cupcake "❌ Failed to download frontend using curl (exit code: $?)"
             fi
         elif command -v wget >/dev/null 2>&1; then
-            if wget -O cupcake-frontend.tar.gz "$DOWNLOAD_URL" 2>/dev/null; then
+            log_cupcake "Attempting download with wget: $DOWNLOAD_URL"
+            if wget -O cupcake-frontend.tar.gz "$DOWNLOAD_URL"; then
                 DOWNLOAD_SUCCESS=true
                 log_cupcake "✅ Successfully downloaded frontend using wget"
             else
-                log_cupcake "❌ Failed to download frontend using wget"
+                log_cupcake "❌ Failed to download frontend using wget (exit code: $?)"
             fi
         fi
 

@@ -43,7 +43,6 @@ proxy_set_header X-Forwarded-Port $server_port;
 
 # Connection settings optimized for Pi
 proxy_connect_timeout 60s;
-proxy_send_timeout 60s;
 proxy_read_timeout 60s;
 proxy_redirect off;
 
@@ -63,6 +62,36 @@ proxy_hide_header Server;
 proxy_set_header X-Forwarded-SSL $https;
 proxy_set_header X-Client-IP $remote_addr;
 PROXYEOF
+
+# Create separate proxy parameters for WebSocket connections
+cat > /etc/nginx/conf.d/proxy_params_ws.conf << 'PROXYWSEOF'
+# CUPCAKE Nginx Proxy Parameters for WebSocket
+# Extended timeouts for WebSocket connections
+
+proxy_set_header Host $http_host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host $host;
+proxy_set_header X-Forwarded-Port $server_port;
+
+# WebSocket specific connection settings
+proxy_connect_timeout 60s;
+proxy_send_timeout 7d;
+proxy_read_timeout 7d;
+proxy_redirect off;
+
+# Minimal buffering for real-time connections
+proxy_buffering off;
+
+# Hide upstream headers
+proxy_hide_header X-Powered-By;
+proxy_hide_header Server;
+
+# Add custom headers
+proxy_set_header X-Forwarded-SSL $https;
+proxy_set_header X-Client-IP $remote_addr;
+PROXYWSEOF
 
 echo "Creating CUPCAKE site configuration..."
 
@@ -179,11 +208,7 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
-        include /etc/nginx/conf.d/proxy_params.conf;
-        
-        # WebSocket specific timeouts (override proxy_params.conf)
-        proxy_send_timeout 7d;
-        proxy_read_timeout 7d;
+        include /etc/nginx/conf.d/proxy_params_ws.conf;
     }
     
     # Frontend (Angular) - serve from files
@@ -242,11 +267,7 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
-        include /etc/nginx/conf.d/proxy_params.conf;
-        
-        # WebSocket specific timeouts (override proxy_params.conf)
-        proxy_send_timeout 7d;
-        proxy_read_timeout 7d;
+        include /etc/nginx/conf.d/proxy_params_ws.conf;
     }
     
     # Auth endpoints - proxy to Django

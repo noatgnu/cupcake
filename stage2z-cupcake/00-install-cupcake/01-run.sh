@@ -147,19 +147,60 @@ if [ "$FRONTEND_EXISTS" = false ]; then
         TEMP_DOWNLOAD_DIR=$(mktemp -d)
         cd "$TEMP_DOWNLOAD_DIR"
 
-        # Try to get the latest release or use a specific tag
+        # Try to get the specific release version or use a specific tag
         REPO_OWNER="noatgnu"
         REPO_NAME="cupcake"
         DOWNLOAD_URL=""
 
-        # If we have a specific version/tag, try that first
+        # Determine the version to use for frontend download
+        FRONTEND_VERSION=""
+
+        # Priority 1: Use explicitly set CUPCAKE_VERSION environment variable
         if [ -n "${CUPCAKE_VERSION:-}" ]; then
-            DOWNLOAD_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${CUPCAKE_VERSION}/cupcake-frontend-pi.tar.gz"
-            log_cupcake "Trying version-specific download: ${CUPCAKE_VERSION}"
+            FRONTEND_VERSION="$CUPCAKE_VERSION"
+            log_cupcake "Using explicit CUPCAKE_VERSION: $FRONTEND_VERSION"
+        # Priority 2: Use GitHub ref if we're in GitHub Actions
+        elif [ -n "${GITHUB_REF:-}" ]; then
+            # Extract version from GitHub ref (e.g., refs/tags/v1.2.3 -> v1.2.3)
+            if [[ "$GITHUB_REF" =~ refs/tags/(.*) ]]; then
+                FRONTEND_VERSION="${BASH_REMATCH[1]}"
+                log_cupcake "Using GitHub tag from GITHUB_REF: $FRONTEND_VERSION"
+            elif [[ "$GITHUB_REF" =~ refs/heads/(.*) ]]; then
+                # For branch builds, try to get the latest tag
+                BRANCH_NAME="${BASH_REMATCH[1]}"
+                log_cupcake "Building from branch '$BRANCH_NAME', attempting to get latest tag..."
+                # Try to get the latest tag from the current repository
+                if command -v git >/dev/null 2>&1 && [ -d "/opt/cupcake/app/.git" ]; then
+                    cd /opt/cupcake/app
+                    FRONTEND_VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+                    if [ -n "$FRONTEND_VERSION" ]; then
+                        log_cupcake "Found latest git tag: $FRONTEND_VERSION"
+                    else
+                        log_cupcake "No git tags found, will use latest release"
+                    fi
+                fi
+            fi
+        # Priority 3: Try to get version from the cloned repository
+        elif command -v git >/dev/null 2>&1 && [ -d "/opt/cupcake/app/.git" ]; then
+            cd /opt/cupcake/app
+            FRONTEND_VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+            if [ -n "$FRONTEND_VERSION" ]; then
+                log_cupcake "Using latest git tag from repository: $FRONTEND_VERSION"
+            else
+                log_cupcake "No git tags found in repository"
+            fi
+        fi
+
+        # Build download URL
+        if [ -n "$FRONTEND_VERSION" ]; then
+            DOWNLOAD_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${FRONTEND_VERSION}/cupcake-frontend-pi.tar.gz"
+            log_cupcake "Trying version-specific download: ${FRONTEND_VERSION}"
+            log_cupcake "Download URL: $DOWNLOAD_URL"
         else
-            # Try latest release
+            # Only fall back to latest if no version could be determined
             DOWNLOAD_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest/download/cupcake-frontend-pi.tar.gz"
-            log_cupcake "Trying latest release download"
+            log_cupcake "WARNING: Could not determine version, falling back to latest release"
+            log_cupcake "This should not happen in GitHub Actions builds"
         fi
 
         # Download using curl or wget

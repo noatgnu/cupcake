@@ -1017,6 +1017,16 @@ log_cupcake "✓ CUPCAKE update script installed as 'cupcake-update'"
 systemctl enable cupcake-web cupcake-worker || echo "systemctl enable failed in chroot, services will be enabled on boot"
 systemctl enable nginx postgresql redis-server || echo "systemctl enable failed in chroot, services will be enabled on boot"
 
+# Run the enable-cupcake-services script to create the ready flag
+log_cupcake "Running enable-cupcake-services to create ready flag..."
+cp -r /opt/cupcake/app/raspberry-pi/scripts/enable-cupcake-services.sh /opt/cupcake/scripts/
+chmod +x /opt/cupcake/scripts/enable-cupcake-services.sh
+/opt/cupcake/scripts/enable-cupcake-services.sh || {
+    log_cupcake "FATAL: Enable cupcake services failed"
+    exit 1
+}
+log_cupcake "✓ CUPCAKE services enabled and ready flag created"
+
 # Clean up to reduce image size
 log_cupcake "Cleaning up installation artifacts..."
 apt-get autoremove -y

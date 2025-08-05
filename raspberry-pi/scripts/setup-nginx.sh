@@ -180,7 +180,7 @@ server {
     # Frontend (Angular) - serve from files
     location / {
         # Show maintenance page if CUPCAKE is not ready
-        if (!-f /tmp/cupcake-ready) {
+        if (!-f /opt/cupcake/services-enabled) {
             return 503;
         }
         
@@ -261,74 +261,131 @@ echo "Creating maintenance page..."
 mkdir -p /var/www/html
 cat > /var/www/html/maintenance.html << 'MAINTEOF'
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>CUPCAKE Starting Up</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CUPCAKE - Starting Up</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; text-align: center; margin: 0; padding: 50px 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; min-height: 100vh; box-sizing: border-box; }
-        .container { max-width: 600px; margin: 0 auto; background: rgba(255,255,255,0.95); padding: 40px; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); color: #333; }
-        .logo { font-size: 64px; margin-bottom: 20px; animation: bounce 2s infinite; }
-        @keyframes bounce { 0%, 20%, 50%, 80%, 100% { transform: translateY(0); } 40% { transform: translateY(-10px); } 60% { transform: translateY(-5px); } }
-        h1 { color: #333; margin-bottom: 20px; font-size: 28px; font-weight: 600; }
-        p { color: #666; line-height: 1.8; margin-bottom: 20px; font-size: 16px; }
-        .status { background: linear-gradient(135deg, #e3f2fd, #f3e5f5); padding: 20px; border-radius: 10px; margin: 25px 0; border-left: 4px solid #2196F3; }
-        .spinner { border: 3px solid #f3f3f3; border-top: 3px solid #2196F3; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 20px auto; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .access-info { background: #f8f9fa; padding: 20px; border-radius: 10px; margin: 20px 0; border: 2px solid #e9ecef; }
-        .access-info h3 { margin-top: 0; color: #495057; font-size: 18px; }
-        code { background: #007bff; color: white; padding: 4px 8px; border-radius: 4px; font-family: 'Monaco', 'Menlo', monospace; font-size: 14px; }
-        .footer { margin-top: 30px; font-size: 14px; color: #999; }
-        .progress { background: #e9ecef; border-radius: 10px; overflow: hidden; margin: 20px 0; }
-        .progress-bar { background: linear-gradient(90deg, #007bff, #0056b3); height: 6px; border-radius: 10px; animation: progress 3s ease-in-out infinite; }
-        @keyframes progress { 0% { width: 10%; } 50% { width: 80%; } 100% { width: 10%; } }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: #f8f9fa;
+            color: #333;
+            line-height: 1.6;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 500px;
+            background: white;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 20px;
+        }
+
+        .status {
+            background-color: #e3f2fd;
+            border: 1px solid #bbdefb;
+            border-radius: 4px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+
+        .status p {
+            margin-bottom: 10px;
+        }
+
+        .info-section {
+            background-color: #f5f5f5;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 15px 0;
+            text-align: left;
+        }
+
+        .info-section h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+
+        .info-section p {
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+
+        code {
+            background-color: #2c3e50;
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace;
+            font-size: 13px;
+        }
+
+        .footer {
+            margin-top: 30px;
+            font-size: 12px;
+            color: #666;
+        }
+
+        .footer p {
+            margin-bottom: 5px;
+        }
+
+        .warning {
+            color: #d32f2f;
+            font-weight: 600;
+        }
     </style>
-    <script>
-        let dots = 0;
-        setInterval(function() {
-            dots = (dots + 1) % 4;
-            const loading = document.getElementById('loading-text');
-            if (loading) {
-                loading.textContent = 'Services are initializing' + '.'.repeat(dots);
-            }
-        }, 500);
-        
-        setTimeout(function() { 
-            location.reload(); 
-        }, 15000);
-    </script>
 </head>
 <body>
     <div class="container">
-        <div class="logo">🧁</div>
         <h1>CUPCAKE is Starting Up</h1>
-        <div class="spinner"></div>
-        <div class="progress">
-            <div class="progress-bar"></div>
-        </div>
+
         <div class="status">
             <p><strong>Laboratory Management System</strong></p>
-            <p id="loading-text">Services are initializing...</p>
+            <p>Services are initializing...</p>
             <p>This usually takes 1-2 minutes on first boot.</p>
-            <p>The page will refresh automatically every 15 seconds.</p>
+            <p>Please refresh this page in a few moments.</p>
         </div>
-        <div class="access-info">
-            <h3>🌐 Default Access Information</h3>
+
+        <div class="info-section">
+            <h3>Access Information</h3>
             <p><strong>Web Interface:</strong> <code>http://cupcake-pi.local</code></p>
-            <p><strong>Username:</strong> <code>admin</code> | <strong>Password:</strong> <code>cupcake123</code></p>
             <p><strong>SSH Access:</strong> <code>ssh cupcake@cupcake-pi.local</code></p>
         </div>
-        <div class="access-info">
-            <h3>📊 What's Included</h3>
-            <p>✅ Pre-loaded with <strong>2M+ scientific ontology records</strong></p>
-            <p>✅ MONDO, NCBI, ChEBI, UniProt, PSI-MS databases</p>
-            <p>✅ Local audio transcription with Whisper.cpp</p>
-            <p>✅ Background workers for data processing</p>
+
+        <div class="info-section">
+            <h3>What's Included</h3>
+            <p>• Pre-loaded with 2M+ scientific ontology records</p>
+            <p>• MONDO, NCBI, ChEBI, UniProt, PSI-MS databases</p>
+            <p>• Local audio transcription with Whisper.cpp</p>
+            <p>• Background workers for data processing</p>
         </div>
+
         <div class="footer">
             <p><strong>Troubleshooting:</strong> If this page persists for more than 5 minutes, check service status with <code>sudo systemctl status cupcake-*</code></p>
-            <p><strong>Security:</strong> ⚠️ Change default passwords before production use!</p>
+            <p class="warning"><strong>Security:</strong> Change default passwords before production use!</p>
         </div>
     </div>
 </body>

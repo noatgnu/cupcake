@@ -180,7 +180,7 @@ server {
     # Frontend (Angular) - serve from files
     location / {
         # Show maintenance page if CUPCAKE is not ready
-        if (!-f /opt/cupcake/services-enabled) {
+        if (!-f /tmp/cupcake-ready) {
             return 503;
         }
         

@@ -1022,27 +1022,27 @@ StandardError=journal
 WantedBy=multi-user.target
 WORKEREOF
 
-# CUPCAKE first boot service (runs enable-cupcake-services.sh on first boot)
-cat > /etc/systemd/system/cupcake-firstboot.service <<FIRSTBOOTEOF
+# CUPCAKE boot service (runs enable-cupcake-services.sh on every boot)
+cat > /etc/systemd/system/cupcake-boot.service <<BOOTEOF
 [Unit]
-Description=CUPCAKE First Boot Service Enabler
-After=network.target
+Description=CUPCAKE Service Starter
+After=network.target postgresql.service redis-server.service
 Before=nginx.service cupcake-web.service cupcake-worker.service
 DefaultDependencies=false
 
 [Service]
 Type=oneshot
 ExecStart=/opt/cupcake/scripts/enable-cupcake-services.sh
-RemainAfterExit=true
+RemainAfterExit=false
 StandardOutput=journal
 StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
-FIRSTBOOTEOF
+BOOTEOF
 
-# Enable the first boot service
-systemctl enable cupcake-firstboot || echo "systemctl enable failed in chroot, service will be enabled on boot"
+# Enable the boot service
+systemctl enable cupcake-boot || echo "systemctl enable failed in chroot, service will be enabled on boot"
 
 # Setup CUPCAKE frontend files
 log_cupcake "Setting up CUPCAKE frontend..."

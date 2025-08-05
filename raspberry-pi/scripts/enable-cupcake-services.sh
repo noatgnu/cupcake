@@ -23,15 +23,12 @@ systemctl enable cupcake-worker
 systemctl start postgresql
 systemctl start redis-server
 
-# Create ready flag for nginx
-touch /tmp/cupcake-ready
-
 # Start web services
 systemctl start nginx
 systemctl start cupcake-web
 systemctl start cupcake-worker
 
-# Mark services as enabled
+# Mark services as enabled (this creates the ready flag for nginx)
 echo "Services enabled at: $(date)" > "$FIRSTBOOT_FLAG"
 
 echo "[$(date)] CUPCAKE services enabled and started successfully"

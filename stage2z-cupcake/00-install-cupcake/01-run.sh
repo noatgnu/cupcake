@@ -927,7 +927,7 @@ log_cupcake "Loading internal ontologies database..."
 # Create scripts directory and copy scripts
 mkdir -p /opt/cupcake/scripts
 cp /opt/cupcake/app/stage2z-cupcake/00-install-cupcake/scripts/*.sh /opt/cupcake/scripts/
-cp /opt/cupcake/app/raspberry-pi/scripts/cupcake-boot-service.sh /opt/cupcake/scripts/
+cp -r /opt/cupcake/app/raspberry-pi/scripts/cupcake-boot-service.sh /opt/cupcake/scripts/
 chmod +x /opt/cupcake/scripts/*.sh
 chown cupcake:cupcake /opt/cupcake/scripts/*.sh
 
@@ -1074,7 +1074,7 @@ log_cupcake "✓ Nginx configured to serve CUPCAKE on port 80"
 
 # Install CUPCAKE update script system-wide
 log_cupcake "Installing CUPCAKE update script..."
-cp /opt/cupcake/app/raspberry-pi/scripts/update-cupcake.sh /usr/local/bin/cupcake-update
+cp -r /opt/cupcake/app/raspberry-pi/scripts/update-cupcake.sh /usr/local/bin/cupcake-update
 chmod +x /usr/local/bin/cupcake-update
 ln -sf /usr/local/bin/cupcake-update /usr/local/bin/update-cupcake 2>/dev/null || true
 log_cupcake "✓ CUPCAKE update script installed as 'cupcake-update'"

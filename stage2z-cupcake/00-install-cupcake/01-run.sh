@@ -1033,9 +1033,12 @@ DefaultDependencies=false
 [Service]
 Type=oneshot
 ExecStart=/opt/cupcake/scripts/enable-cupcake-services.sh
-RemainAfterExit=false
+RemainAfterExit=true
+TimeoutSec=300
+User=root
 StandardOutput=journal
 StandardError=journal
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 [Install]
 WantedBy=multi-user.target

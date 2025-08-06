@@ -927,6 +927,7 @@ log_cupcake "Loading internal ontologies database..."
 # Create scripts directory and copy scripts
 mkdir -p /opt/cupcake/scripts
 cp /opt/cupcake/app/stage2z-cupcake/00-install-cupcake/scripts/*.sh /opt/cupcake/scripts/
+cp /opt/cupcake/app/raspberry-pi/scripts/cupcake-boot-service.sh /opt/cupcake/scripts/
 chmod +x /opt/cupcake/scripts/*.sh
 chown cupcake:cupcake /opt/cupcake/scripts/*.sh
 
@@ -1022,19 +1023,18 @@ StandardError=journal
 WantedBy=multi-user.target
 WORKEREOF
 
-# CUPCAKE boot service (runs enable-cupcake-services.sh on every boot)
+# CUPCAKE boot service (verifies services and creates ready flag)
 cat > /etc/systemd/system/cupcake-boot.service <<BOOTEOF
 [Unit]
-Description=CUPCAKE Service Starter
-After=network.target postgresql.service redis-server.service
-Before=nginx.service cupcake-web.service cupcake-worker.service
-DefaultDependencies=false
+Description=CUPCAKE Boot Verification
+After=network.target postgresql.service redis-server.service nginx.service cupcake-web.service cupcake-worker.service
+Wants=postgresql.service redis-server.service nginx.service cupcake-web.service cupcake-worker.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/cupcake/scripts/enable-cupcake-services.sh
+ExecStart=/opt/cupcake/scripts/cupcake-boot-service.sh
 RemainAfterExit=true
-TimeoutSec=300
+TimeoutSec=600
 User=root
 StandardOutput=journal
 StandardError=journal

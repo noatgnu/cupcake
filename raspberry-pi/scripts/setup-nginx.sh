@@ -66,14 +66,66 @@ PROXYEOF
 
 echo "Creating CUPCAKE site configuration..."
 
-# Create comprehensive CUPCAKE nginx site configuration
+# Create SSL certificate directory and generate self-signed certificate
+echo "Creating SSL certificates..."
+mkdir -p /etc/ssl/cupcake
+chmod 755 /etc/ssl/cupcake
+
+# Generate self-signed SSL certificate for cupcake-pi.local
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout /etc/ssl/cupcake/cupcake-pi.key \
+    -out /etc/ssl/cupcake/cupcake-pi.crt \
+    -subj "/C=US/ST=Lab/L=Lab/O=CUPCAKE/OU=Laboratory/CN=cupcake-pi.local" \
+    -addext "subjectAltName=DNS:cupcake-pi.local,DNS:cupcake-pi,DNS:localhost,IP:127.0.0.1,IP:192.168.1.100"
+
+# Set proper permissions for SSL files
+chmod 600 /etc/ssl/cupcake/cupcake-pi.key
+chmod 644 /etc/ssl/cupcake/cupcake-pi.crt
+chown root:root /etc/ssl/cupcake/*
+
+echo "✅ SSL certificates created"
+
+# Create comprehensive CUPCAKE nginx site configuration with HTTPS
 cat > /etc/nginx/sites-available/cupcake << 'NGINXEOF'
+# HTTP server - redirect to HTTPS
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name cupcake-pi.local cupcake-pi _;
     
-    # Security headers
+    # Health check endpoint (allow HTTP)
+    location /health {
+        access_log off;
+        add_header Content-Type text/plain;
+        return 200 "healthy\n";
+    }
+    
+    # Redirect all other traffic to HTTPS
+    location / {
+        return 301 https://$server_name$request_uri;
+    }
+}
+
+# HTTPS server - main configuration
+server {
+    listen 443 ssl http2 default_server;
+    listen [::]:443 ssl http2 default_server;
+    server_name cupcake-pi.local cupcake-pi _;
+    
+    # SSL Configuration
+    ssl_certificate /etc/ssl/cupcake/cupcake-pi.crt;
+    ssl_certificate_key /etc/ssl/cupcake/cupcake-pi.key;
+    
+    # Modern SSL configuration
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384:ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+    ssl_session_tickets off;
+    
+    # HTTPS Security headers
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
     add_header X-Frame-Options DENY always;
     add_header X-Content-Type-Options nosniff always;
     add_header X-XSS-Protection "1; mode=block" always;
@@ -152,12 +204,18 @@ server {
         access_log off;
     }
     
-    # WebSocket support for real-time features
+    # WebSocket support for real-time features (HTTPS)
     location /ws/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
 
         # WebSocket specific connection settings
         proxy_connect_timeout 60s;
@@ -172,8 +230,8 @@ server {
         proxy_hide_header X-Powered-By;
         proxy_hide_header Server;
 
-        # Add custom headers
-        proxy_set_header X-Forwarded-SSL $https;
+        # HTTPS specific headers
+        proxy_set_header X-Forwarded-SSL on;
         proxy_set_header X-Client-IP $remote_addr;
     }
     
@@ -371,8 +429,9 @@ cat > /var/www/html/maintenance.html << 'MAINTEOF'
 
         <div class="info-section">
             <h3>Access Information</h3>
-            <p><strong>Web Interface:</strong> <code>http://cupcake-pi.local</code></p>
+            <p><strong>Web Interface:</strong> <code>https://cupcake-pi.local</code></p>
             <p><strong>SSH Access:</strong> <code>ssh cupcake@cupcake-pi.local</code></p>
+            <p><em>Note: Accept the self-signed SSL certificate in your browser</em></p>
         </div>
 
         <div class="info-section">
@@ -435,15 +494,23 @@ fi
 
 echo ""
 echo "=== Nginx Configuration Summary ==="
-echo "✅ Nginx configured to serve CUPCAKE on port 80"
+echo "✅ Nginx configured to serve CUPCAKE on ports 80 (HTTP) and 443 (HTTPS)"
+echo "✅ Self-signed SSL certificate generated for cupcake-pi.local"
+echo "✅ HTTP traffic automatically redirected to HTTPS"
 echo "✅ Django backend proxied from port 8000"
 echo "✅ Static files served directly by nginx"
 echo "✅ Maintenance page configured for startup"
-echo "✅ Security headers and file restrictions enabled"
-echo "✅ WebSocket support configured"
+echo "✅ HTTPS security headers and HSTS enabled"
+echo "✅ WebSocket support configured for secure connections"
 echo "✅ CORS headers configured for API"
 echo ""
-echo "Access CUPCAKE at: http://cupcake-pi.local"
+echo "Access CUPCAKE at: https://cupcake-pi.local"
+echo "Note: You'll need to accept the self-signed certificate in your browser"
 echo "Default login: admin / cupcake123"
 echo ""
-echo "=== Nginx configuration completed successfully ==="
+echo "SSL Certificate Details:"
+echo "  Certificate: /etc/ssl/cupcake/cupcake-pi.crt"
+echo "  Private Key: /etc/ssl/cupcake/cupcake-pi.key"
+echo "  Valid for: cupcake-pi.local, cupcake-pi, localhost"
+echo ""
+echo "=== Nginx HTTPS configuration completed successfully ==="

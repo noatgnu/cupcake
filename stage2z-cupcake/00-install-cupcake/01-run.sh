@@ -350,6 +350,50 @@ if [ ! -f "/opt/cupcake/app/manage.py" ]; then
 fi
 log_cupcake "✓ CUPCAKE repository verified successfully"
 
+# COPY ALL SCRIPTS IMMEDIATELY - as soon as repository is available
+log_cupcake "Copying all required scripts to /opt/cupcake/scripts..."
+mkdir -p /opt/cupcake/scripts
+
+# Copy scripts from stage2z-cupcake directory (if they exist)
+if [ -d "/opt/cupcake/app/stage2z-cupcake/00-install-cupcake/scripts" ]; then
+    cp /opt/cupcake/app/stage2z-cupcake/00-install-cupcake/scripts/*.sh /opt/cupcake/scripts/ || {
+        log_cupcake "WARNING: Failed to copy stage2z-cupcake scripts (may not exist)"
+    }
+fi
+
+# Copy all raspberry-pi scripts with error handling
+REQUIRED_SCRIPTS=(
+    "cupcake-boot-service.sh"
+    "setup-nginx.sh"
+    "update-cupcake.sh"
+    "enable-cupcake-services.sh"
+)
+
+for script in "${REQUIRED_SCRIPTS[@]}"; do
+    if [ -f "/opt/cupcake/app/raspberry-pi/scripts/$script" ]; then
+        cp "/opt/cupcake/app/raspberry-pi/scripts/$script" "/opt/cupcake/scripts/" || {
+            log_cupcake "FATAL: Failed to copy required script: $script"
+            exit 1
+        }
+        log_cupcake "✓ Copied $script"
+    else
+        log_cupcake "FATAL: Required script not found: /opt/cupcake/app/raspberry-pi/scripts/$script"
+        exit 1
+    fi
+done
+
+# Set permissions on all scripts
+chmod +x /opt/cupcake/scripts/*.sh || {
+    log_cupcake "FATAL: Failed to set execute permissions on scripts"
+    exit 1
+}
+chown cupcake:cupcake /opt/cupcake/scripts/*.sh || {
+    log_cupcake "FATAL: Failed to set ownership on scripts"
+    exit 1
+}
+
+log_cupcake "✓ All required scripts copied and configured successfully"
+
 # FRONTEND VALIDATION - Now that repository is cloned
 log_cupcake "=== FRONTEND VALIDATION ==="
 log_cupcake "Looking for frontend files in repository..."
@@ -924,13 +968,6 @@ log_cupcake "✓ Dynamic MOTD configured with security warnings"
 # Load internal ontologies database
 log_cupcake "Loading internal ontologies database..."
 
-# Create scripts directory and copy scripts
-mkdir -p /opt/cupcake/scripts
-cp /opt/cupcake/app/stage2z-cupcake/00-install-cupcake/scripts/*.sh /opt/cupcake/scripts/
-cp -r /opt/cupcake/app/raspberry-pi/scripts/cupcake-boot-service.sh /opt/cupcake/scripts/
-chmod +x /opt/cupcake/scripts/*.sh
-chown cupcake:cupcake /opt/cupcake/scripts/*.sh
-
 # Setup shared memory for multiprocessing
 log_cupcake "Setting up shared memory for multiprocessing..."
 su - cupcake -c "/opt/cupcake/scripts/setup-shared-memory.sh" || {
@@ -1061,9 +1098,6 @@ log_cupcake "✓ Frontend files copied successfully"
 
 # Configure Nginx for CUPCAKE using dedicated script
 log_cupcake "Configuring Nginx web server..."
-mkdir -p /opt/cupcake/scripts
-cp -r /opt/cupcake/app/raspberry-pi/scripts/setup-nginx.sh /opt/cupcake/scripts/
-chmod +x /opt/cupcake/scripts/setup-nginx.sh
 
 /opt/cupcake/scripts/setup-nginx.sh || {
     log_cupcake "FATAL: Nginx configuration failed"
@@ -1085,8 +1119,6 @@ systemctl enable nginx postgresql redis-server || echo "systemctl enable failed 
 
 # Run the enable-cupcake-services script to create the ready flag
 log_cupcake "Running enable-cupcake-services to create ready flag..."
-cp -r /opt/cupcake/app/raspberry-pi/scripts/enable-cupcake-services.sh /opt/cupcake/scripts/
-chmod +x /opt/cupcake/scripts/enable-cupcake-services.sh
 /opt/cupcake/scripts/enable-cupcake-services.sh || {
     log_cupcake "FATAL: Enable cupcake services failed"
     exit 1

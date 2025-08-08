@@ -387,8 +387,14 @@ chmod +x /opt/cupcake/scripts/*.sh || {
     log_cupcake "FATAL: Failed to set execute permissions on scripts"
     exit 1
 }
-chown cupcake:cupcake /opt/cupcake/scripts/*.sh || {
-    log_cupcake "FATAL: Failed to set ownership on scripts"
+
+# Set ownership - boot service needs root access, others can be cupcake user
+chown root:root /opt/cupcake/scripts/cupcake-boot-service.sh || {
+    log_cupcake "FATAL: Failed to set root ownership on cupcake-boot-service.sh"
+    exit 1
+}
+chown cupcake:cupcake /opt/cupcake/scripts/setup-nginx.sh /opt/cupcake/scripts/update-cupcake.sh /opt/cupcake/scripts/enable-cupcake-services.sh || {
+    log_cupcake "FATAL: Failed to set cupcake ownership on user scripts"
     exit 1
 }
 

@@ -1060,6 +1060,21 @@ StandardError=journal
 WantedBy=multi-user.target
 WORKEREOF
 
+# CRITICAL VERIFICATION: Ensure cupcake-boot-service.sh exists before creating systemd service
+log_cupcake "CRITICAL VERIFICATION: Checking if cupcake-boot-service.sh exists before creating systemd service..."
+if [ ! -f "/opt/cupcake/scripts/cupcake-boot-service.sh" ]; then
+    log_cupcake "FATAL: cupcake-boot-service.sh is missing from /opt/cupcake/scripts/"
+    log_cupcake "Contents of /opt/cupcake/scripts/:"
+    ls -la /opt/cupcake/scripts/ | while read -r line; do
+        log_cupcake "  $line"
+    done
+    log_cupcake "This indicates the script copying failed earlier - aborting"
+    exit 1
+else
+    log_cupcake "✓ cupcake-boot-service.sh exists at /opt/cupcake/scripts/cupcake-boot-service.sh"
+    log_cupcake "File permissions: $(ls -l /opt/cupcake/scripts/cupcake-boot-service.sh)"
+fi
+
 # CUPCAKE boot service (verifies services and creates ready flag)
 cat > /etc/systemd/system/cupcake-boot.service <<BOOTEOF
 [Unit]
@@ -1152,6 +1167,7 @@ critical_files=(
     "/etc/environment.d/cupcake.conf"
     "/etc/systemd/system/cupcake-web.service"
     "/etc/systemd/system/cupcake-worker.service"
+    "/opt/cupcake/scripts/cupcake-boot-service.sh"
 )
 
 for file in "${critical_files[@]}"; do

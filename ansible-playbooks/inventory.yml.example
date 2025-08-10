@@ -1,0 +1,30 @@
+# CUPCAKE Ansible Inventory Example
+# Copy this file to inventory.yml and customize for your environment
+
+all:
+  hosts:
+    cupcake-server:
+      ansible_host: 192.168.1.100  # Replace with your server IP
+      ansible_user: ubuntu         # Replace with your SSH user
+      # ansible_ssh_private_key_file: ~/.ssh/id_rsa  # Uncomment if using SSH keys
+      
+      # CUPCAKE Configuration Variables
+      cupcake_db_password: "your_secure_password_here"
+      cupcake_secret_key: "your_django_secret_key_here"
+      cupcake_admin_password: "your_admin_password_here"
+      cupcake_version: "v1.0.0"  # Specify version or use 'latest'
+      
+    # Add more hosts if deploying to multiple servers
+    # cupcake-dev:
+    #   ansible_host: 192.168.1.101
+    #   ansible_user: ubuntu
+
+  vars:
+    # Global variables for all hosts
+    ansible_python_interpreter: /usr/bin/python3
+    
+    # Optional: Custom configuration
+    # cupcake_user: "cupcake"
+    # cupcake_home: "/opt/cupcake"
+    # postgres_db: "cupcake"
+    # postgres_user: "cupcake"

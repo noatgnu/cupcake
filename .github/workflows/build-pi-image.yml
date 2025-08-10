@@ -1,7 +1,6 @@
 name: Build CUPCAKE Raspberry Pi Image
 
 on:
-  # Manual trigger with full configuration options
   workflow_dispatch:
     inputs:
       pi_model:
@@ -41,20 +40,17 @@ on:
         required: false
         type: string
   
-  # Automatic builds every 2 weeks (Sunday at 2 AM UTC)
   schedule:
     - cron: '0 2 * * 0/14'
   
-  # Build and publish when a release is published
   release:
     types: [published]
 
 jobs:
-  # Build frontend once and upload as artifact for all Pi builds to use
   build-frontend:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # Required for uploading to releases
+      contents: write
       packages: read
     steps:
     - name: Checkout repository
@@ -63,15 +59,12 @@ jobs:
     - name: Build Frontend and Upload as Artifact
       run: |
         cd raspberry-pi
-        # Ensure script has correct line endings and is executable
         dos2unix prebuild-frontend.sh 2>/dev/null || true
         chmod +x prebuild-frontend.sh
         
-        # Run frontend build with explicit error checking
         echo "=== Starting frontend pre-build ==="
         bash ./prebuild-frontend.sh --hostname cupcake-pi.local --output-dir ./frontend-dist
         
-        # Verify frontend was built successfully
         if [ ! -d "./frontend-dist" ]; then
           echo "❌ ERROR: frontend-dist directory was not created"
           exit 1
@@ -86,13 +79,9 @@ jobs:
         echo "Frontend files created:"
         ls -la ./frontend-dist/ | head -10
         
-        # Create a tarball for release upload
         echo "=== Creating frontend package for Pi environment ==="
         tar -czf cupcake-frontend-pi.tar.gz -C ./frontend-dist .
         echo "Frontend Pi package size: $(du -sh cupcake-frontend-pi.tar.gz)"
-
-
-    # Upload frontend to release if this is a release build
     - name: Upload Frontend to Release
       if: github.event_name == 'release'
       uses: softprops/action-gh-release@v1
@@ -101,16 +90,6 @@ jobs:
         tag_name: ${{ github.ref_name }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # TEMPORARILY DISABLED - Desktop builds disabled to focus on lite builds
-  # build-pi4-desktop:
-  #   if: ${{ github.event_name == 'schedule' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && (inputs.pi_model == 'pi4' || inputs.pi_model == 'both') && (inputs.build_type == 'desktop' || inputs.build_type == 'both')) }}
-  #   runs-on: ubuntu-latest
-  #   permissions:
-  #     contents: read
-  #     packages: write
-  #   ...
-  # [Desktop build steps commented out - see git history to restore]
 
   build-pi4-lite:
     needs: build-frontend
@@ -121,7 +100,6 @@ jobs:
       packages: write
     
     env:
-      # Set defaults for scheduled/release builds
       PI_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.pi_model || 'both' }}
       BUILD_TYPE: 'lite'
       IMAGE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.image_version || (github.event_name == 'release' && github.ref_name || 'latest') }}
@@ -136,7 +114,6 @@ jobs:
 
     - name: Free up disk space
       run: |
-        # Remove large unused packages
         sudo rm -rf /usr/share/dotnet
         sudo rm -rf /usr/local/lib/android
         sudo rm -rf /opt/ghc
@@ -145,17 +122,14 @@ jobs:
         sudo rm -rf /usr/local/lib/python*
         sudo rm -rf /opt/az
         
-        # Clean docker and system caches
         sudo docker image prune --all --force
         sudo apt-get clean
         sudo apt-get autoremove -y
         
-        # Show available space
         df -h
 
     - name: Setup native pi-gen build environment
       run: |
-        # Install required packages for native pi-gen build
         sudo apt-get update
         sudo apt-get install -y \
           binfmt-support qemu-user-static dos2unix \
@@ -164,67 +138,52 @@ jobs:
           gpg pigz xxd arch-test debian-archive-keyring \
           wget parted gzip pigz xz-utils udev e2fsprogs
         
-        # Install GitHub CLI for artifact downloading inside chroot
         curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
         sudo apt-get update
         sudo apt-get install -y gh
         
-        # Setup binfmt for ARM emulation (required for native pi-gen)
         sudo modprobe binfmt_misc
         
-        # Enable binfmt-support service
         sudo systemctl enable binfmt-support
         sudo systemctl start binfmt-support
         
-        # Use update-binfmts to properly register ARM emulation
         sudo update-binfmts --enable qemu-arm || true
         sudo update-binfmts --enable qemu-aarch64 || true
         
-        # Manual fallback registration if update-binfmts fails
         echo ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-arm-static:F' | sudo tee /proc/sys/fs/binfmt_misc/register || true
         echo ':aarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-aarch64-static:F' | sudo tee /proc/sys/fs/binfmt_misc/register || true
         
-        # Verify emulation is working
         echo "Checking ARM emulation:"
         ls -la /proc/sys/fs/binfmt_misc/
         
-        # Test emulation functionality
         sudo dpkg --add-architecture armhf
         sudo dpkg --add-architecture arm64
 
 
     - name: Build Pi 4 Lite image using native pi-gen
       run: |
-        # Enable strict error handling - ANY error must fail the build
         set -euo pipefail
         
-        # Clone official pi-gen repository ARM64 branch for ARM64 builds
         git clone --branch arm64 https://github.com/RPi-Distro/pi-gen.git
         cd pi-gen
         
-        # Copy our custom stage as stage3 (pi-gen expects numbered stages)
         echo "=== DEBUGGING: Current working directory ==="
         pwd
         echo "=== DEBUGGING: Checking source path ==="
         ls -la ../stage2z-cupcake/
         
-        # Create custom CUPCAKE stage using proper pi-gen naming (stage2a - runs after stage2)
         sudo cp -r ../stage2z-cupcake ./stage2a
         
-        # Fix ownership and permissions for the copied stage directory
         sudo chown -R $(whoami):$(id -gn) ./stage2a
         sudo chmod -R u+w ./stage2a
         
         
-        # Fix line endings (convert Windows CRLF to Unix LF) and ensure proper format
         sudo sed -i 's/\r$//' ./stage2a/prerun.sh 2>/dev/null || true
         sudo sed -i 's/\r$//' ./stage2a/00-install-cupcake/01-run.sh 2>/dev/null || true
         
-        # Fix pi-gen naming convention: 01-run.sh should be 00-run-chroot.sh (runs inside chroot)
         sudo mv ./stage2a/00-install-cupcake/01-run.sh ./stage2a/00-install-cupcake/00-run-chroot.sh
         
-        # Verify the CUPCAKE stage was copied correctly
         echo "=== DEBUGGING: Checking CUPCAKE stage contents ==="
         echo "Source directory before copy:"
         ls -la ../stage2z-cupcake/
@@ -246,11 +205,9 @@ jobs:
         ls -la ./stage2a/00-install-cupcake/00-run-chroot.sh
         ls -la ./stage2a/prerun.sh
         
-        # Ensure scripts are executable (need sudo since files were copied with sudo)
         sudo chmod +x ./stage2a/00-install-cupcake/00-run-chroot.sh
         sudo chmod +x ./stage2a/prerun.sh
         
-        # Extra debugging for file issues
         echo "=== DEBUGGING: File validation ==="
         echo "prerun.sh file details:"
         ls -la ./stage2a/prerun.sh
@@ -263,25 +220,19 @@ jobs:
         echo "=== DEBUGGING: Directory structure ==="
         find ./stage2a -type f -name "*.sh" -exec ls -la {} \;
         
-        # Ensure the EXPORT_IMAGE file is properly set for lite builds (stage2a should export)
         echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage2a/EXPORT_IMAGE
         
-        # Verify EXPORT_IMAGE was created
         echo "=== DEBUGGING: Checking EXPORT_IMAGE ==="
         cat ./stage2a/EXPORT_IMAGE
         
-        # Remove any EXPORT_IMAGE files from intermediate stages to prevent multiple image creation
         sudo rm -f ./stage2/EXPORT_IMAGE || true
         sudo rm -f ./stage4/EXPORT_IMAGE || true
         sudo rm -f ./stage5/EXPORT_IMAGE || true
         
-        # Create SKIP files for stages we don't want to run
         touch ./stage3/SKIP ./stage4/SKIP ./stage5/SKIP
         
-        # Ensure stage2a does NOT have SKIP file (so it will run)
         sudo rm -f ./stage2a/SKIP || true
         
-        # Create pi-gen config file for Lite build
         cat > config <<EOF
         IMG_NAME=cupcake-pi4-lite-${{ env.IMAGE_VERSION }}
         RELEASE=bookworm
@@ -293,75 +244,59 @@ jobs:
         KEYBOARD_LAYOUT="English (UK)"
         TIMEZONE_DEFAULT=UTC
         
-        # User configuration
         FIRST_USER_NAME=cupcake
         FIRST_USER_PASS=cupcake123
         ENABLE_SSH=${{ env.ENABLE_SSH == 'true' && '1' || '0' }}
         
-        # Build configuration
         WORK_DIR=\$(pwd)/work
         DEPLOY_DIR=\$(pwd)/deploy
         
-        # Image size configuration (smaller for lite)
         IMG_SIZE=8G
         BOOT_SIZE=512M
         
-        # Stage configuration - Custom lite build with CUPCAKE (insert custom stage after stage2)  
+  
         STAGE_LIST="stage0 stage1 stage2 stage2a"
         
-        # Debootstrap configuration for better cross-architecture support
         BOOTSTRAP_KEYRING=debian-archive-keyring
         TARGET_ARCH=arm64
         TARGET_ARCHITECTURE=arm64
         
-        # Export configuration - only export final image from stage2a
         EXPORT_ROOTFS_DIR=stage2a
         EOF
         
-        # Export STAGE_LIST in current shell environment
         export STAGE_LIST="stage0 stage1 stage2 stage2a"
         
-        # WiFi configuration (if provided)
         if [ -n "${{ env.WIFI_SSID }}" ]; then
           cat >> config <<EOF
         
-        # WiFi configuration
         WPA_ESSID="${{ env.WIFI_SSID }}"
         WPA_PASSWORD="${{ env.WIFI_PASSWORD }}"
         WPA_COUNTRY=US
         EOF
         fi
         
-        # Debug: Check what build scripts are available
         echo "Available build scripts:"
         ls -la build*.sh || true
         
-        # Verify ARM emulation is working before build
         echo "Testing ARM emulation:"
         /usr/bin/qemu-arm-static --version || echo "ARM emulation not working"
         /usr/bin/qemu-aarch64-static --version || echo "AArch64 emulation not working"
         
-        # Set up debootstrap to use QEMU emulation
         export DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static
         echo "DEBOOTSTRAP_QEMU_USER_STATIC set to: $DEBOOTSTRAP_QEMU_USER_STATIC"
         
-        # Create any missing symlinks for debootstrap
         sudo mkdir -p /usr/lib/arch-test
         sudo ln -sf /usr/bin/qemu-aarch64-static /usr/lib/arch-test/ || true
         
-        # Run native pi-gen build with monitoring
         echo "Starting native pi-gen build..."
         echo "Available disk space before build:"
         df -h
         
-        # Run native pi-gen build (force native, not Docker) with timeout
         echo "=== Starting pi-gen build process ==="
         echo "Config summary:"
         cat config | grep -E "(STAGE_LIST|IMG_NAME|EXPORT)" || true
         echo ""
         
-        # Pass GitHub Actions environment variables to the chroot environment
-        # This allows the CUPCAKE script to download frontend artifacts inside chroot
         export GITHUB_RUN_ID="${{ github.run_id }}"
         export GITHUB_TOKEN="${{ github.token }}"
         export GITHUB_REPOSITORY="${{ github.repository }}"
@@ -371,11 +306,9 @@ jobs:
         echo "GITHUB_REPOSITORY: ${GITHUB_REPOSITORY}"
         echo "GITHUB_TOKEN: ${GITHUB_TOKEN:+***set***}"
         
-        # Add monitoring for stage2a execution early in build
         echo "=== Monitoring for stage2a execution ==="
         echo "Will monitor build logs for stage2a execution..."
         
-        # Debug: Check what stages pi-gen sees
         echo "=== Available stages ===" 
         ls -la stage*/ | head -20
         echo "=== Custom CUPCAKE stage ==="
@@ -384,7 +317,6 @@ jobs:
         echo "STAGE_LIST: ${STAGE_LIST:-not_set}"
         export | grep STAGE || echo "No STAGE variables found"
         
-        # Early validation: Check if pi-gen will recognize our stage
         echo "=== EARLY VALIDATION: Pi-gen stage detection ==="
         echo "Configured STAGE_LIST: $(grep STAGE_LIST config)"
         echo "Available stage directories:"
@@ -405,20 +337,17 @@ jobs:
           build_exit_code=$?
           echo "=== BUILD FAILED OR TIMED OUT (exit code: $build_exit_code) ==="
           
-          # Force cleanup of any stuck mounts before showing logs
           echo "=== Attempting emergency cleanup of stuck mounts ==="
           sudo pkill -f qemu-aarch64-static || true
           sudo pkill -f chroot || true
           sleep 3
           
-          # Force unmount any remaining mounts
           for mount_point in $(mount | grep "work/stage" | awk '{print $3}' | sort -r); do
             echo "Force unmounting: $mount_point"
             sudo umount -f "$mount_point" 2>/dev/null || true
             sudo umount -l "$mount_point" 2>/dev/null || true
           done
           
-          # Show general pi-gen logs with error suppression
           echo "=== Showing pi-gen logs ==="
           find work/ -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true
           
@@ -431,14 +360,12 @@ jobs:
           echo "=== Final work directory structure ==="
           find work/ -maxdepth 3 -type d 2>/dev/null || true
           
-          # Check if this was a timeout vs actual failure
           if [ "$build_exit_code" -eq 124 ]; then
             echo "=== BUILD TIMED OUT after 4 hours ==="
           else
             echo "=== BUILD FAILED with exit code $build_exit_code ==="
           fi
           
-          # Special case: If build succeeded but unmount failed, try to continue
           if find deploy/ -name "*.img*" -type f 2>/dev/null | grep -q .; then
             echo "=== IMPORTANT: Build artifacts found despite unmount failure ==="
             echo "=== CUPCAKE installation appears to have succeeded ==="
@@ -449,27 +376,23 @@ jobs:
           exit 1
         }
         
-        # Force cleanup after successful build to prevent unmount issues
         echo "=== Post-build cleanup to prevent unmount issues ==="
         sudo pkill -f qemu-aarch64-static || true
         sudo pkill -f chroot || true
         sleep 2
         
-        # Force unmount any remaining mounts before checking results
         for mount_point in $(mount | grep "work/stage" | awk '{print $3}' | sort -r); do
           echo "Post-build unmounting: $mount_point"
           sudo umount -f "$mount_point" 2>/dev/null || true
           sudo umount -l "$mount_point" 2>/dev/null || true
         done
         
-        # Check build results with better error handling
         echo "Build completed, checking results:"
         echo "Checking if deploy directory exists:"
         if [ -d "deploy" ]; then
           echo "=== Deploy directory contents ==="
           ls -la deploy/
           
-          # Check for successful image creation
           image_count=$(find deploy/ -name "*.img*" 2>/dev/null | wc -l)
           if [ "$image_count" -gt 0 ]; then
             echo "✓ Found $image_count image file(s) in deploy directory"
@@ -483,7 +406,6 @@ jobs:
           echo "Checking all stage directories:"
           ls -la stage*/EXPORT* 2>/dev/null || true
           
-          # Try to find any generated images in work directory
           echo "=== Searching for any generated images ==="
           find . -name "*.img*" -type f 2>/dev/null || true
           exit 1
@@ -491,14 +413,12 @@ jobs:
         echo "Final disk space usage:"
         df -h
         
-        # Lite builds: Skip PiShrink, use pi-gen compression level 9 (should be sufficient)
         echo "Lite build: Using pi-gen compression level 9 (skipping PiShrink)"
         cd deploy
         
         echo "Final lite build files:"
         ls -lah
         
-        # Show final image sizes
         for img in *.img.xz; do
           if [ -f "$img" ]; then
             size=$(stat -c%s "$img")
@@ -514,12 +434,6 @@ jobs:
         path: pi-gen/deploy/*.img.xz
         retention-days: 30
 
-  # TEMPORARILY DISABLED - Desktop builds disabled to focus on lite builds
-  # build-pi5-desktop:
-  #   if: ${{ github.event_name == 'schedule' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && (inputs.pi_model == 'pi5' || inputs.pi_model == 'both') && (inputs.build_type == 'desktop' || inputs.build_type == 'both')) }}
-  #   runs-on: ubuntu-latest
-  #   ...
-  # [Desktop build steps commented out - see git history to restore]
 
   build-pi5-lite:
     needs: build-frontend
@@ -530,7 +444,6 @@ jobs:
       packages: write
     
     env:
-      # Set defaults for scheduled/release builds
       PI_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.pi_model || 'both' }}
       BUILD_TYPE: 'lite'
       IMAGE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.image_version || (github.event_name == 'release' && github.ref_name || 'latest') }}
@@ -545,7 +458,6 @@ jobs:
 
     - name: Free up disk space
       run: |
-        # Remove large unused packages
         sudo rm -rf /usr/share/dotnet
         sudo rm -rf /usr/local/lib/android
         sudo rm -rf /opt/ghc
@@ -554,17 +466,14 @@ jobs:
         sudo rm -rf /usr/local/lib/python*
         sudo rm -rf /opt/az
         
-        # Clean docker and system caches
         sudo docker image prune --all --force
         sudo apt-get clean
         sudo apt-get autoremove -y
         
-        # Show available space
         df -h
 
     - name: Setup native pi-gen build environment
       run: |
-        # Install required packages for native pi-gen build
         sudo apt-get update
         sudo apt-get install -y \
           binfmt-support qemu-user-static dos2unix \
@@ -573,67 +482,52 @@ jobs:
           gpg pigz xxd arch-test debian-archive-keyring \
           wget parted gzip pigz xz-utils udev e2fsprogs
         
-        # Install GitHub CLI for artifact downloading inside chroot
         curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
         sudo apt-get update
         sudo apt-get install -y gh
         
-        # Setup binfmt for ARM emulation (required for native pi-gen)
         sudo modprobe binfmt_misc
         
-        # Enable binfmt-support service
         sudo systemctl enable binfmt-support
         sudo systemctl start binfmt-support
         
-        # Use update-binfmts to properly register ARM emulation
         sudo update-binfmts --enable qemu-arm || true
         sudo update-binfmts --enable qemu-aarch64 || true
         
-        # Manual fallback registration if update-binfmts fails
         echo ':arm:M::\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-arm-static:F' | sudo tee /proc/sys/fs/binfmt_misc/register || true
         echo ':aarch64:M::\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\xb7\x00:\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-aarch64-static:F' | sudo tee /proc/sys/fs/binfmt_misc/register || true
         
-        # Verify emulation is working
         echo "Checking ARM emulation:"
         ls -la /proc/sys/fs/binfmt_misc/
         
-        # Test emulation functionality
         sudo dpkg --add-architecture armhf
         sudo dpkg --add-architecture arm64
 
 
     - name: Build Pi 5 Lite image using native pi-gen
       run: |
-        # Enable strict error handling - ANY error must fail the build
         set -euo pipefail
         
-        # Clone official pi-gen repository ARM64 branch for ARM64 builds
         git clone --branch arm64 https://github.com/RPi-Distro/pi-gen.git
         cd pi-gen
         
-        # Copy our custom stage as stage3 (pi-gen expects numbered stages)
         echo "=== DEBUGGING: Current working directory ==="
         pwd
         echo "=== DEBUGGING: Checking source path ==="
         ls -la ../stage2z-cupcake/
         
-        # Create custom CUPCAKE stage using proper pi-gen naming (stage2a - runs after stage2)
         sudo cp -r ../stage2z-cupcake ./stage2a
         
-        # Fix ownership and permissions for the copied stage directory
         sudo chown -R $(whoami):$(id -gn) ./stage2a
         sudo chmod -R u+w ./stage2a
         
         
-        # Fix line endings (convert Windows CRLF to Unix LF) and ensure proper format
         sudo sed -i 's/\r$//' ./stage2a/prerun.sh 2>/dev/null || true
         sudo sed -i 's/\r$//' ./stage2a/00-install-cupcake/01-run.sh 2>/dev/null || true
         
-        # Fix pi-gen naming convention: 01-run.sh should be 00-run-chroot.sh (runs inside chroot)
         sudo mv ./stage2a/00-install-cupcake/01-run.sh ./stage2a/00-install-cupcake/00-run-chroot.sh
         
-        # Verify the CUPCAKE stage was copied correctly
         echo "=== DEBUGGING: Checking CUPCAKE stage contents ==="
         echo "Source directory before copy:"
         ls -la ../stage2z-cupcake/
@@ -655,11 +549,9 @@ jobs:
         ls -la ./stage2a/00-install-cupcake/00-run-chroot.sh
         ls -la ./stage2a/prerun.sh
         
-        # Ensure scripts are executable (need sudo since files were copied with sudo)
         sudo chmod +x ./stage2a/00-install-cupcake/00-run-chroot.sh
         sudo chmod +x ./stage2a/prerun.sh
         
-        # Extra debugging for file issues
         echo "=== DEBUGGING: File validation ==="
         echo "prerun.sh file details:"
         ls -la ./stage2a/prerun.sh
@@ -672,25 +564,19 @@ jobs:
         echo "=== DEBUGGING: Directory structure ==="
         find ./stage2a -type f -name "*.sh" -exec ls -la {} \;
         
-        # Ensure the EXPORT_IMAGE file is properly set for lite builds (stage2a should export)
         echo "IMG_SUFFIX=-cupcake" | sudo tee ./stage2a/EXPORT_IMAGE
         
-        # Verify EXPORT_IMAGE was created
         echo "=== DEBUGGING: Checking EXPORT_IMAGE ==="
         cat ./stage2a/EXPORT_IMAGE
         
-        # Remove any EXPORT_IMAGE files from intermediate stages to prevent multiple image creation
         sudo rm -f ./stage2/EXPORT_IMAGE || true
         sudo rm -f ./stage4/EXPORT_IMAGE || true
         sudo rm -f ./stage5/EXPORT_IMAGE || true
         
-        # Create SKIP files for stages we don't want to run
         touch ./stage3/SKIP ./stage4/SKIP ./stage5/SKIP
         
-        # Ensure stage2a does NOT have SKIP file (so it will run)
         sudo rm -f ./stage2a/SKIP || true
         
-        # Create pi-gen config file for Lite build
         cat > config <<EOF
         IMG_NAME=cupcake-pi5-lite-${{ env.IMAGE_VERSION }}
         RELEASE=bookworm
@@ -702,75 +588,59 @@ jobs:
         KEYBOARD_LAYOUT="English (UK)"
         TIMEZONE_DEFAULT=UTC
         
-        # User configuration
         FIRST_USER_NAME=cupcake
         FIRST_USER_PASS=cupcake123
         ENABLE_SSH=${{ env.ENABLE_SSH == 'true' && '1' || '0' }}
         
-        # Build configuration
         WORK_DIR=\$(pwd)/work
         DEPLOY_DIR=\$(pwd)/deploy
         
-        # Image size configuration (smaller for lite)
         IMG_SIZE=8G
         BOOT_SIZE=512M
         
-        # Stage configuration - Custom lite build with CUPCAKE (insert custom stage after stage2)  
+  
         STAGE_LIST="stage0 stage1 stage2 stage2a"
         
-        # Debootstrap configuration for better cross-architecture support
         BOOTSTRAP_KEYRING=debian-archive-keyring
         TARGET_ARCH=arm64
         TARGET_ARCHITECTURE=arm64
         
-        # Export configuration - only export final image from stage2a
         EXPORT_ROOTFS_DIR=stage2a
         EOF
         
-        # Export STAGE_LIST in current shell environment
         export STAGE_LIST="stage0 stage1 stage2 stage2a"
         
-        # WiFi configuration (if provided)
         if [ -n "${{ env.WIFI_SSID }}" ]; then
           cat >> config <<EOF
         
-        # WiFi configuration
         WPA_ESSID="${{ env.WIFI_SSID }}"
         WPA_PASSWORD="${{ env.WIFI_PASSWORD }}"
         WPA_COUNTRY=US
         EOF
         fi
         
-        # Debug: Check what build scripts are available
         echo "Available build scripts:"
         ls -la build*.sh || true
         
-        # Verify ARM emulation is working before build
         echo "Testing ARM emulation:"
         /usr/bin/qemu-arm-static --version || echo "ARM emulation not working"
         /usr/bin/qemu-aarch64-static --version || echo "AArch64 emulation not working"
         
-        # Set up debootstrap to use QEMU emulation
         export DEBOOTSTRAP_QEMU_USER_STATIC=/usr/bin/qemu-aarch64-static
         echo "DEBOOTSTRAP_QEMU_USER_STATIC set to: $DEBOOTSTRAP_QEMU_USER_STATIC"
         
-        # Create any missing symlinks for debootstrap
         sudo mkdir -p /usr/lib/arch-test
         sudo ln -sf /usr/bin/qemu-aarch64-static /usr/lib/arch-test/ || true
         
-        # Run native pi-gen build with monitoring
         echo "Starting native pi-gen build..."
         echo "Available disk space before build:"
         df -h
         
-        # Run native pi-gen build (force native, not Docker) with timeout
         echo "=== Starting pi-gen build process ==="
         echo "Config summary:"
         cat config | grep -E "(STAGE_LIST|IMG_NAME|EXPORT)" || true
         echo ""
         
-        # Pass GitHub Actions environment variables to the chroot environment
-        # This allows the CUPCAKE script to download frontend artifacts inside chroot
         export GITHUB_RUN_ID="${{ github.run_id }}"
         export GITHUB_TOKEN="${{ github.token }}"
         export GITHUB_REPOSITORY="${{ github.repository }}"
@@ -780,11 +650,9 @@ jobs:
         echo "GITHUB_REPOSITORY: ${GITHUB_REPOSITORY}"
         echo "GITHUB_TOKEN: ${GITHUB_TOKEN:+***set***}"
         
-        # Add monitoring for stage2a execution early in build
         echo "=== Monitoring for stage2a execution ==="
         echo "Will monitor build logs for stage2a execution..."
         
-        # Debug: Check what stages pi-gen sees
         echo "=== Available stages ===" 
         ls -la stage*/ | head -20
         echo "=== Custom CUPCAKE stage ==="
@@ -793,7 +661,6 @@ jobs:
         echo "STAGE_LIST: ${STAGE_LIST:-not_set}"
         export | grep STAGE || echo "No STAGE variables found"
         
-        # Early validation: Check if pi-gen will recognize our stage
         echo "=== EARLY VALIDATION: Pi-gen stage detection ==="
         echo "Configured STAGE_LIST: $(grep STAGE_LIST config)"
         echo "Available stage directories:"
@@ -814,20 +681,17 @@ jobs:
           build_exit_code=$?
           echo "=== BUILD FAILED OR TIMED OUT (exit code: $build_exit_code) ==="
           
-          # Force cleanup of any stuck mounts before showing logs
           echo "=== Attempting emergency cleanup of stuck mounts ==="
           sudo pkill -f qemu-aarch64-static || true
           sudo pkill -f chroot || true
           sleep 3
           
-          # Force unmount any remaining mounts
           for mount_point in $(mount | grep "work/stage" | awk '{print $3}' | sort -r); do
             echo "Force unmounting: $mount_point"
             sudo umount -f "$mount_point" 2>/dev/null || true
             sudo umount -l "$mount_point" 2>/dev/null || true
           done
           
-          # Show general pi-gen logs with error suppression
           echo "=== Showing pi-gen logs ==="
           find work/ -name "*.log" -exec echo "=== {} ===" \; -exec cat {} \; 2>/dev/null || true
           
@@ -840,14 +704,12 @@ jobs:
           echo "=== Final work directory structure ==="
           find work/ -maxdepth 3 -type d 2>/dev/null || true
           
-          # Check if this was a timeout vs actual failure
           if [ "$build_exit_code" -eq 124 ]; then
             echo "=== BUILD TIMED OUT after 4 hours ==="
           else
             echo "=== BUILD FAILED with exit code $build_exit_code ==="
           fi
           
-          # Special case: If build succeeded but unmount failed, try to continue
           if find deploy/ -name "*.img*" -type f 2>/dev/null | grep -q .; then
             echo "=== IMPORTANT: Build artifacts found despite unmount failure ==="
             echo "=== CUPCAKE installation appears to have succeeded ==="
@@ -858,27 +720,23 @@ jobs:
           exit 1
         }
         
-        # Force cleanup after successful build to prevent unmount issues
         echo "=== Post-build cleanup to prevent unmount issues ==="
         sudo pkill -f qemu-aarch64-static || true
         sudo pkill -f chroot || true
         sleep 2
         
-        # Force unmount any remaining mounts before checking results
         for mount_point in $(mount | grep "work/stage" | awk '{print $3}' | sort -r); do
           echo "Post-build unmounting: $mount_point"
           sudo umount -f "$mount_point" 2>/dev/null || true
           sudo umount -l "$mount_point" 2>/dev/null || true
         done
         
-        # Check build results with better error handling
         echo "Build completed, checking results:"
         echo "Checking if deploy directory exists:"
         if [ -d "deploy" ]; then
           echo "=== Deploy directory contents ==="
           ls -la deploy/
           
-          # Check for successful image creation
           image_count=$(find deploy/ -name "*.img*" 2>/dev/null | wc -l)
           if [ "$image_count" -gt 0 ]; then
             echo "✓ Found $image_count image file(s) in deploy directory"
@@ -892,7 +750,6 @@ jobs:
           echo "Checking all stage directories:"
           ls -la stage*/EXPORT* 2>/dev/null || true
           
-          # Try to find any generated images in work directory
           echo "=== Searching for any generated images ==="
           find . -name "*.img*" -type f 2>/dev/null || true
           exit 1
@@ -900,14 +757,12 @@ jobs:
         echo "Final disk space usage:"
         df -h
         
-        # Lite builds: Skip PiShrink, use pi-gen compression level 9 (should be sufficient)
         echo "Lite build: Using pi-gen compression level 9 (skipping PiShrink)"
         cd deploy
         
         echo "Final lite build files:"
         ls -lah
         
-        # Show final image sizes
         for img in *.img.xz; do
           if [ -f "$img" ]; then
             size=$(stat -c%s "$img")
@@ -967,5 +822,3 @@ jobs:
     - name: Cleanup build artifacts
       run: |
         echo "🧹 Cleaning up build artifacts..."
-        # GitHub automatically cleans up artifacts after retention period
-        # This is just a placeholder for any additional cleanup needed

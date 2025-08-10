@@ -1,0 +1,50 @@
+# CUPCAKE Ansible Variables Example
+# Copy this file to cupcake-vars.yml and customize for your deployment
+
+# Basic Configuration
+cupcake_user: "cupcake"
+cupcake_home: "/opt/cupcake"
+cupcake_repository: "https://github.com/noatgnu/cupcake.git"
+cupcake_branch: "master"
+
+# Security Settings
+cupcake_db_password: "{{ vault_cupcake_db_password }}"  # Use ansible-vault for sensitive data
+cupcake_secret_key: "{{ vault_cupcake_secret_key }}"
+cupcake_admin_password: "{{ vault_cupcake_admin_password }}"
+
+# Database Configuration
+postgres_db: "cupcake"
+postgres_user: "cupcake"
+
+# Frontend Configuration
+cupcake_version: "latest"  # or specify a release tag like "v1.0.0"
+
+# Django Configuration
+django_debug: false
+django_allowed_hosts: "localhost,127.0.0.1,*.local,your-domain.com"
+
+# Performance Tuning
+gunicorn_workers: 3
+redis_port: 6379
+whisper_threads: 4
+
+# Feature Flags
+enable_whisper: true
+enable_ocr: true
+enable_llm: false
+enable_coturn: false
+
+# Optional Integrations
+protocols_io_token: ""
+slack_webhook_url: ""
+
+# Email Configuration (optional)
+notification_email_from: ""
+aws_ses_access_key: ""
+aws_ses_secret_key: ""
+aws_ses_region: "us-east-1"
+
+# SSL/HTTPS Configuration (optional)
+enable_ssl: false
+ssl_certificate_path: "/etc/ssl/certs/cupcake.crt"
+ssl_private_key_path: "/etc/ssl/private/cupcake.key"

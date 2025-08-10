@@ -1,0 +1,22 @@
+[Unit]
+Description=CUPCAKE Background Worker
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=exec
+User={{ cupcake_user }}
+Group={{ cupcake_user }}
+WorkingDirectory={{ cupcake_home }}/app
+Environment=PATH={{ cupcake_home }}/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=DJANGO_SETTINGS_MODULE=cupcake.settings
+Environment=PYTHONPATH={{ cupcake_home }}/app
+EnvironmentFile=/etc/environment.d/cupcake.conf
+ExecStart=/bin/bash -c 'cd {{ cupcake_home }}/app && source {{ cupcake_home }}/venv/bin/activate && python manage.py rqworker default'
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

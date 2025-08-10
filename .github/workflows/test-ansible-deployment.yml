@@ -1,0 +1,429 @@
+name: Test Ansible CUPCAKE Deployment
+
+on:
+  push:
+    paths:
+      - 'ansible-playbooks/**'
+      - '.github/workflows/test-ansible-deployment.yml'
+  pull_request:
+    paths:
+      - 'ansible-playbooks/**'
+      - '.github/workflows/test-ansible-deployment.yml'
+  workflow_dispatch:
+    inputs:
+      test_level:
+        description: 'Test level to run'
+        required: true
+        default: 'basic'
+        type: choice
+        options:
+          - basic
+          - full
+          - stress
+
+env:
+  ANSIBLE_HOST_KEY_CHECKING: False
+  ANSIBLE_STDOUT_CALLBACK: yaml
+  ANSIBLE_VERBOSITY: 1
+
+jobs:
+  lint-playbook:
+    name: Lint Ansible Playbook
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible and dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible ansible-lint yamllint
+
+      - name: Lint YAML files
+        run: |
+          yamllint ansible-playbooks/
+
+      - name: Lint Ansible playbooks
+        run: |
+          ansible-lint ansible-playbooks/cupcake-standalone.yml
+
+      - name: Syntax check playbook
+        run: |
+          cd ansible-playbooks
+          ansible-playbook --syntax-check cupcake-standalone.yml
+
+  test-deployment:
+    name: Test Deployment
+    needs: lint-playbook
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target_os:
+          - ubuntu:20.04
+          - ubuntu:22.04
+          - debian:11
+          - debian:12
+        test_mode:
+          - basic
+          - with-ssl
+    
+    services:
+      target:
+        image: ${{ matrix.target_os }}
+        options: >-
+          --privileged
+          --cgroupns host
+          --tmpfs /tmp
+          --tmpfs /run
+          --tmpfs /run/lock
+          --volume /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python and Ansible
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Ansible and dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible paramiko
+
+      - name: Setup Docker container for testing
+        run: |
+          docker run -d \
+            --name cupcake-test \
+            --privileged \
+            --cgroupns host \
+            --tmpfs /tmp \
+            --tmpfs /run \
+            --tmpfs /run/lock \
+            --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            --volume $PWD:/workspace \
+            --workdir /workspace \
+            --publish 8080:80 \
+            --publish 8000:8000 \
+            ${{ matrix.target_os }} \
+            sleep infinity
+
+          docker exec cupcake-test bash -c "
+            apt-get update && 
+            DEBIAN_FRONTEND=noninteractive apt-get install -y \
+              openssh-server sudo python3 python3-pip systemd systemd-sysv dbus \
+              ca-certificates curl gnupg lsb-release &&
+            systemctl enable ssh &&
+            useradd -m -s /bin/bash -G sudo testuser &&
+            echo 'testuser:testpass' | chpasswd &&
+            echo 'testuser ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/testuser &&
+            mkdir -p /home/testuser/.ssh &&
+            chmod 700 /home/testuser/.ssh &&
+            service ssh start
+          "
+
+          CONTAINER_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' cupcake-test)
+          echo "CONTAINER_IP=$CONTAINER_IP" >> $GITHUB_ENV
+
+      - name: Setup SSH key for testing
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keygen -t rsa -b 2048 -f ~/.ssh/id_rsa -N ""
+          
+          docker exec cupcake-test bash -c "
+            echo '$(cat ~/.ssh/id_rsa.pub)' >> /home/testuser/.ssh/authorized_keys &&
+            chmod 600 /home/testuser/.ssh/authorized_keys &&
+            chown -R testuser:testuser /home/testuser/.ssh
+          "
+
+          cat > ~/.ssh/config << EOF
+          Host cupcake-test
+            HostName $CONTAINER_IP
+            User testuser
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+          EOF
+
+      - name: Create test inventory
+        run: |
+          cat > ansible-playbooks/test-inventory.yml << EOF
+          all:
+            hosts:
+              cupcake-test:
+                ansible_host: $CONTAINER_IP
+                ansible_user: testuser
+                ansible_ssh_private_key_file: ~/.ssh/id_rsa
+                ansible_python_interpreter: /usr/bin/python3
+                
+                cupcake_db_password: "test_secure_password"
+                cupcake_secret_key: "test_django_secret_key_$(date +%s)"
+                cupcake_admin_password: "test_admin_password"
+                cupcake_version: "latest"
+                django_debug: false
+          EOF
+
+      - name: Create test variables (SSL mode)
+        if: matrix.test_mode == 'with-ssl'
+        run: |
+          cat > ansible-playbooks/test-ssl-vars.yml << EOF
+          enable_ssl: true
+          ssl_certificate_path: "/etc/ssl/certs/cupcake-test.crt"
+          ssl_private_key_path: "/etc/ssl/private/cupcake-test.key"
+          django_allowed_hosts: "localhost,127.0.0.1,*.local,cupcake-test,test.cupcake.local"
+          EOF
+
+      - name: Wait for SSH to be ready
+        run: |
+          timeout 60 bash -c 'until ssh cupcake-test "echo SSH Ready"; do sleep 2; done'
+
+      - name: Test Ansible connectivity
+        run: |
+          cd ansible-playbooks
+          ansible all -i test-inventory.yml -m ping
+
+      - name: Run basic deployment tests
+        run: |
+          cd ansible-playbooks
+          
+          echo "::group::Dry run deployment"
+          ansible-playbook -i test-inventory.yml cupcake-standalone.yml --check --diff
+          echo "::endgroup::"
+          
+          echo "::group::Real deployment"
+          timeout 1800 ansible-playbook -i test-inventory.yml cupcake-standalone.yml -v
+          echo "::endgroup::"
+
+      - name: Run SSL-specific deployment
+        if: matrix.test_mode == 'with-ssl'
+        run: |
+          cd ansible-playbooks
+          
+          docker exec cupcake-test bash -c "
+            openssl req -x509 -nodes -days 1 -newkey rsa:2048 \
+              -keyout /etc/ssl/private/cupcake-test.key \
+              -out /etc/ssl/certs/cupcake-test.crt \
+              -subj '/CN=test.cupcake.local' &&
+            chmod 600 /etc/ssl/private/cupcake-test.key &&
+            chmod 644 /etc/ssl/certs/cupcake-test.crt
+          "
+          
+          ansible-playbook -i test-inventory.yml -e @test-ssl-vars.yml cupcake-standalone.yml --tags ssl,nginx -v
+
+      - name: Run validation script
+        run: |
+          docker exec cupcake-test bash -c "
+            cd /workspace && 
+            chmod +x ansible-playbooks/validate-deployment.sh &&
+            ./ansible-playbooks/validate-deployment.sh
+          "
+
+      - name: Test service health
+        run: |
+          echo "::group::Service Status Check"
+          docker exec cupcake-test systemctl status cupcake-web cupcake-worker postgresql redis-server nginx --no-pager -l || true
+          echo "::endgroup::"
+          
+          echo "::group::Web Server Test"
+          for i in {1..5}; do
+            if docker exec cupcake-test curl -f -s http://localhost/ > /dev/null; then
+              echo "✅ Web server responding on attempt $i"
+              break
+            else
+              echo "⚠️ Web server not responding, attempt $i/5"
+              sleep 10
+            fi
+          done
+          echo "::endgroup::"
+
+      - name: Test database connectivity
+        run: |
+          echo "::group::Database Test"
+          docker exec cupcake-test sudo -u postgres psql -d cupcake -c "
+            SELECT 'Database connection OK' as status, 
+                   current_database() as database, 
+                   current_user as user,
+                   version() as version;
+          "
+          echo "::endgroup::"
+
+      - name: Test Django management commands
+        run: |
+          echo "::group::Django Management Commands"
+          docker exec cupcake-test sudo -u cupcake bash -c "
+            cd /opt/cupcake/app &&
+            source /opt/cupcake/venv/bin/activate &&
+            set -a && source /etc/environment.d/cupcake.conf && set +a &&
+            echo 'Testing Django check...' &&
+            python manage.py check &&
+            echo 'Testing showmigrations...' &&
+            python manage.py showmigrations --plan | head -10
+          "
+          echo "::endgroup::"
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "::group::System Logs"
+          docker exec cupcake-test journalctl --no-pager -n 50
+          echo "::endgroup::"
+          
+          echo "::group::CUPCAKE Service Logs"
+          docker exec cupcake-test journalctl -u cupcake-web -u cupcake-worker --no-pager -n 30 || true
+          echo "::endgroup::"
+          
+          echo "::group::Nginx Logs"
+          docker exec cupcake-test tail -50 /var/log/nginx/cupcake_error.log || true
+          echo "::endgroup::"
+          
+          echo "::group::Directory Structure"
+          docker exec cupcake-test find /opt/cupcake -type d | head -20 || true
+          echo "::endgroup::"
+
+      - name: Performance test (if full test)
+        if: github.event.inputs.test_level == 'full' || github.event.inputs.test_level == 'stress'
+        run: |
+          echo "::group::Performance Test"
+          docker exec cupcake-test bash -c "
+            for i in {1..10}; do
+              curl -s -o /dev/null -w 'Request $i: %{http_code} %{time_total}s\n' http://localhost/ &
+            done
+            wait
+          "
+          echo "::endgroup::"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop cupcake-test || true
+          docker rm cupcake-test || true
+
+  integration-test:
+    name: Integration Test
+    needs: lint-playbook
+    runs-on: ubuntu-latest
+    if: github.event.inputs.test_level == 'full' || github.event.inputs.test_level == 'stress'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python and Ansible
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install ansible docker
+
+      - name: Create multi-container test environment
+        run: |
+          docker network create cupcake-test-net
+
+          for i in 1 2; do
+            docker run -d \
+              --name cupcake-test-$i \
+              --network cupcake-test-net \
+              --privileged \
+              --cgroupns host \
+              --tmpfs /tmp \
+              --tmpfs /run \
+              --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
+              --volume $PWD:/workspace \
+              ubuntu:22.04 \
+              sleep infinity
+
+            docker exec cupcake-test-$i bash -c "
+              apt-get update && 
+              DEBIAN_FRONTEND=noninteractive apt-get install -y \
+                openssh-server sudo python3 systemd dbus &&
+              useradd -m -s /bin/bash -G sudo testuser &&
+              echo 'testuser:testpass' | chpasswd &&
+              echo 'testuser ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/testuser &&
+              service ssh start
+            "
+          done
+
+      - name: Test deployment on multiple hosts
+        run: |
+          cat > ansible-playbooks/multi-inventory.yml << EOF
+          all:
+            hosts:
+              cupcake-test-1:
+                ansible_host: cupcake-test-1
+                ansible_user: testuser
+                ansible_connection: docker
+                cupcake_db_password: "multi_test_password_1"
+              cupcake-test-2:
+                ansible_host: cupcake-test-2  
+                ansible_user: testuser
+                ansible_connection: docker
+                cupcake_db_password: "multi_test_password_2"
+          EOF
+
+          cd ansible-playbooks
+          
+          ansible all -i multi-inventory.yml -m ping
+          
+          ansible-playbook -i multi-inventory.yml cupcake-standalone.yml --check -f 2
+
+      - name: Cleanup integration test
+        if: always()
+        run: |
+          docker stop cupcake-test-1 cupcake-test-2 || true
+          docker rm cupcake-test-1 cupcake-test-2 || true
+          docker network rm cupcake-test-net || true
+
+  test-summary:
+    name: Test Summary
+    needs: [lint-playbook, test-deployment, integration-test]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Summary
+        run: |
+          echo "## CUPCAKE Ansible Deployment Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ needs.lint-playbook.result }}" == "success" ]]; then
+            echo "✅ **Linting**: Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Linting**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ needs.test-deployment.result }}" == "success" ]]; then
+            echo "✅ **Deployment Tests**: Passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Deployment Tests**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [[ "${{ needs.integration-test.result }}" == "success" ]] || [[ "${{ needs.integration-test.result }}" == "skipped" ]]; then
+            echo "✅ **Integration Tests**: Passed/Skipped" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Integration Tests**: Failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Test Matrix Results" >> $GITHUB_STEP_SUMMARY
+          echo "- Ubuntu 20.04 (basic)" >> $GITHUB_STEP_SUMMARY  
+          echo "- Ubuntu 22.04 (basic)" >> $GITHUB_STEP_SUMMARY
+          echo "- Debian 11 (basic)" >> $GITHUB_STEP_SUMMARY
+          echo "- Debian 12 (basic)" >> $GITHUB_STEP_SUMMARY
+          echo "- Ubuntu 20.04 (with-ssl)" >> $GITHUB_STEP_SUMMARY
+          echo "- Ubuntu 22.04 (with-ssl)" >> $GITHUB_STEP_SUMMARY
+          echo "- Debian 11 (with-ssl)" >> $GITHUB_STEP_SUMMARY
+          echo "- Debian 12 (with-ssl)" >> $GITHUB_STEP_SUMMARY
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "- Review any failed tests above" >> $GITHUB_STEP_SUMMARY
+          echo "- Check detailed logs in failed job steps" >> $GITHUB_STEP_SUMMARY
+          echo "- Verify playbook functionality on target systems" >> $GITHUB_STEP_SUMMARY

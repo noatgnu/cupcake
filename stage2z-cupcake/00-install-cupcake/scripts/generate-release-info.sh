@@ -1,12 +1,12 @@
 #!/bin/bash -e
-# Create comprehensive release info file
+
 
 set -euo pipefail
 
-# Source environment variables
-set -a  # automatically export all variables
+
+set -a  
 source /etc/environment.d/cupcake.conf
-set +a  # stop automatically exporting
+set +a  
 
 cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate
 
@@ -17,7 +17,7 @@ import json
 import os
 from datetime import datetime
 
-# Load ontology statistics (should always exist at this point)
+
 with open('/opt/cupcake/release-info/ontology_statistics.json', 'r') as f:
     ontology_stats = json.load(f)
 print("Successfully loaded ontology statistics")
@@ -27,11 +27,11 @@ if 'total_records' not in ontology_stats:
     print(f"Available keys: {list(ontology_stats.keys())}")
     raise KeyError("total_records key not found in ontology statistics")
 
-# Load package info
+
 with open('/opt/cupcake/release-info/installed_packages.json', 'r') as f:
     packages = json.load(f)
 
-# Create comprehensive release info
+
 release_info = {
     'build_date': datetime.now().isoformat(),
     'cupcake_version': 'ARM64 Pi Build',
@@ -49,13 +49,13 @@ release_info = {
     }
 }
 
-# Find Django version separately to avoid complex nested expressions
+
 for pkg in packages:
     if pkg['name'].lower() == 'django':
         release_info['system_info']['django_version'] = pkg['version']
         break
 
-# Save comprehensive info
+
 with open('/opt/cupcake/release-info/release_info.json', 'w') as f:
     json.dump(release_info, f, indent=2)
 

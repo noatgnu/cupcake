@@ -1,16 +1,16 @@
 #!/bin/bash -e
-# Generate ontology statistics for release
+
 
 set -euo pipefail
 
-# Source environment variables
-set -a  # automatically export all variables
+
+set -a  
 source /etc/environment.d/cupcake.conf
-set +a  # stop automatically exporting
+set +a  
 
 cd /opt/cupcake/app && source /opt/cupcake/venv/bin/activate
 
-# Set Python path
+
 export PYTHONPATH=/opt/cupcake/app
 
 echo 'Generating ontology statistics for release...'
@@ -61,7 +61,7 @@ try:
         ])
     }
 
-    # Save to file for GitHub release
+    
     os.makedirs('/opt/cupcake/release-info', exist_ok=True)
     with open('/opt/cupcake/release-info/ontology_statistics.json', 'w') as f:
         json.dump(stats, f, indent=2)
@@ -84,7 +84,7 @@ except Exception as e:
     raise
 PYEOF
 
-# Verify the ontology statistics file was created
+
 if [ ! -f "/opt/cupcake/release-info/ontology_statistics.json" ]; then
     echo "❌ ERROR: ontology_statistics.json was not created!"
     echo "The ontology statistics generation failed silently."

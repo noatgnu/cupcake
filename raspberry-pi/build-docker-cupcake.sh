@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# CUPCAKE Pi-gen Docker Build Script
-# Based on official pi-gen build-docker.sh but using Bookworm base image
+
+
 
 set -eu
 
 DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 BUILD_OPTS="$*"
 
-# Allow user to override docker command
+
 DOCKER=${DOCKER:-docker}
 
-# Ensure that default docker command is not set up in rootless mode
+
 if \
   ! ${DOCKER} ps    >/dev/null 2>&1 || \
     ${DOCKER} info 2>/dev/null | grep -q rootless \
@@ -23,7 +23,7 @@ if ! ${DOCKER} ps >/dev/null; then
 	exit 1
 fi
 
-# Find pi-gen directory
+
 PI_GEN_DIR=""
 if [ -d "${DIR}/pi-gen" ]; then
 	PI_GEN_DIR="${DIR}/pi-gen"
@@ -50,17 +50,17 @@ do
 	esac
 done
 
-# Ensure that the configuration file is an absolute path
+
 if test -x /usr/bin/realpath; then
 	CONFIG_FILE=$(realpath -s "$CONFIG_FILE" || realpath "$CONFIG_FILE")
 fi
 
-# Ensure that the configuration file is present
+
 if test -z "${CONFIG_FILE}"; then
 	echo "Configuration file need to be present in '${PI_GEN_DIR}/config' or path passed as parameter"
 	exit 1
 else
-	# shellcheck disable=SC1090
+	
 	source ${CONFIG_FILE}
 fi
 
@@ -74,7 +74,7 @@ if [ -z "${IMG_NAME}" ]; then
 	exit 1
 fi
 
-# Ensure the Git Hash is recorded before entering the docker container
+
 GIT_HASH=${GIT_HASH:-"$(cd "${PI_GEN_DIR}" && git rev-parse HEAD || echo 'unknown')"}
 
 CONTAINER_EXISTS=$(${DOCKER} ps -a --filter name="${CONTAINER_NAME}" -q)
@@ -90,10 +90,10 @@ if [ "${CONTAINER_EXISTS}" != "" ] && [ "${CONTINUE}" != "1" ]; then
 	exit 1
 fi
 
-# Modify original build-options to allow config file to be mounted in the docker container
+
 BUILD_OPTS="$(echo "${BUILD_OPTS:-}" | sed -E 's@\-c\s?([^ ]+)@-c /config@')"
 
-# Build our custom pi-gen Docker image (using compatible Bullseye base)
+
 echo "Building CUPCAKE pi-gen Docker image (Bullseye base for compatibility)..."
 ${DOCKER} build --build-arg BASE_IMAGE=debian:bullseye -f "${DIR}/Dockerfile.cupcake-pigen" -t cupcake-pi-gen "${PI_GEN_DIR}"
 
@@ -107,7 +107,7 @@ else
   DOCKER_CMDLINE_POST=""
 fi
 
-# Ensure binfmt_misc is mounted for QEMU emulation
+
 if [[ "$OSTYPE" == "linux"* ]]; then
   if ! mountpoint -q -- /proc/sys/fs/binfmt_misc; then
     if ! sudo mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc; then
@@ -117,11 +117,11 @@ if [[ "$OSTYPE" == "linux"* ]]; then
     echo "binfmt_misc mounted"
   fi
   
-  # Register qemu-arm for binfmt_misc if needed
+  
   qemu_arm=$(which qemu-arm-static || echo "/usr/bin/qemu-arm-static")
   if [ -f "$qemu_arm" ]; then
     if ! grep -q "^interpreter ${qemu_arm}" /proc/sys/fs/binfmt_misc/qemu-arm* 2>/dev/null; then
-      # Register qemu-arm for binfmt_misc
+      
       reg="echo ':qemu-arm-rpi:M::"\
 "\x7fELF\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x28\x00:"\
 "\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:"\
@@ -139,11 +139,11 @@ echo "Build options: ${BUILD_OPTS}"
 echo "Container name: ${DOCKER_CMDLINE_NAME}"
 echo "Config file: ${CONFIG_FILE}"
 
-# Debug the Docker command first
+
 echo "Debug: DOCKER_CMDLINE_PRE=${DOCKER_CMDLINE_PRE}"
 echo "Debug: DOCKER_CMDLINE_POST=${DOCKER_CMDLINE_POST}"
 
-# Test if the Docker image exists
+
 if ! ${DOCKER} image inspect cupcake-pi-gen >/dev/null 2>&1; then
     echo "ERROR: Docker image 'cupcake-pi-gen' not found!"
     echo "Available Docker images:"
@@ -153,7 +153,7 @@ fi
 
 echo "Docker image exists, starting container..."
 
-# Run a simple test first
+
 echo "Testing Docker container startup..."
 ${DOCKER} run --rm cupcake-pi-gen bash -c "echo 'Container test successful'; ls -la /pi-gen/ | head -5"
 TEST_EXIT=$?
@@ -165,7 +165,7 @@ fi
 
 echo "Container test passed, running full build..."
 
-# Run Docker container and capture exit code properly
+
 ${DOCKER} run \
   $DOCKER_CMDLINE_PRE \
   --name "${DOCKER_CMDLINE_NAME}" \
@@ -201,7 +201,7 @@ ${DOCKER} run \
 BUILD_EXIT_CODE=$?
 echo "Docker container exit code: ${BUILD_EXIT_CODE}"
 
-# Always copy results and logs, even if build failed
+
 echo "copying results from deploy/"
 ${DOCKER} cp "${CONTAINER_NAME}":/pi-gen/deploy - | tar -xf - || echo "Failed to copy deploy directory"
 
@@ -211,7 +211,7 @@ ${DOCKER} logs --timestamps "${CONTAINER_NAME}" &>deploy/build-docker.log
 echo "Deploy directory contents:"
 ls -lah deploy
 
-# cleanup
+
 if [ "${PRESERVE_CONTAINER}" != "1" ]; then
 	${DOCKER} rm -v "${CONTAINER_NAME}" || ${DOCKER} rm -f "${CONTAINER_NAME}"
 fi

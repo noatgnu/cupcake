@@ -1,0 +1,17 @@
+[Unit]
+Description=CUPCAKE Boot Verification
+After=network.target postgresql.service redis-server.service nginx.service cupcake-web.service cupcake-worker.service
+Wants=postgresql.service redis-server.service nginx.service cupcake-web.service cupcake-worker.service
+
+[Service]
+Type=oneshot
+ExecStart={{ cupcake_home }}/scripts/cupcake-boot-service.sh
+RemainAfterExit=true
+TimeoutSec=600
+User=root
+StandardOutput=journal
+StandardError=journal
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=multi-user.target

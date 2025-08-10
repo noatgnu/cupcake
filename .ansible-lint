@@ -1,0 +1,30 @@
+exclude_paths:
+  - .cache/
+  - .github/
+  - .ansible-lint
+  - molecule/
+
+loop_var_prefix: "{role}_"
+
+var_naming_pattern: "^[a-z_][a-z0-9_]*$"
+
+use_default_rules: true
+
+skip_list:
+  - yaml[line-length]
+  - risky-file-permissions
+  - no-changed-when
+  - command-instead-of-shell
+  - package-latest
+
+enable_list:
+  - yaml
+  - name[casing]
+  - name[template]
+
+kinds:
+  - playbook: "*/playbooks/*.yml"
+  - tasks: "*/tasks/*.yml"
+  - handlers: "*/handlers/*.yml"
+  - vars: "*/vars/*.yml"
+  - meta: "**/meta/main.yml"

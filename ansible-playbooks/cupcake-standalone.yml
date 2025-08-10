@@ -1,0 +1,572 @@
+---
+- name: Deploy CUPCAKE Laboratory Management System (Standalone)
+  hosts: all
+  become: yes
+  vars:
+    # CUPCAKE Configuration
+    cupcake_user: "cupcake"
+    cupcake_home: "/opt/cupcake"
+    cupcake_repository: "https://github.com/noatgnu/cupcake.git"
+    cupcake_branch: "master"
+    
+    # Database Configuration
+    postgres_db: "cupcake"
+    postgres_user: "cupcake"
+    postgres_password: "{{ cupcake_db_password | default('cupcake') }}"
+    
+    # Redis Configuration
+    redis_port: 6379
+    
+    # Django Configuration
+    django_secret_key: "{{ cupcake_secret_key | default(ansible_machine_id | hash('sha256')) }}"
+    django_debug: false
+    django_allowed_hosts: "localhost,127.0.0.1,*.local,{{ ansible_hostname }},{{ ansible_fqdn }}"
+    
+    # Frontend Configuration
+    frontend_download_version: "{{ cupcake_version | default('latest') }}"
+    
+    # System Configuration
+    nginx_user: "www-data"
+    python_version: "python3"
+
+  pre_tasks:
+    - name: Update package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Install essential system packages
+      apt:
+        name:
+          - git
+          - curl
+          - build-essential
+          - ca-certificates
+          - gnupg
+          - lsb-release
+        state: present
+      when: ansible_os_family == "Debian"
+
+  tasks:
+    # =====================================
+    # System Dependencies
+    # =====================================
+    - name: Install PostgreSQL
+      apt:
+        name:
+          - postgresql
+          - postgresql-client
+          - postgresql-contrib
+          - libpq-dev
+        state: present
+
+    - name: Install Redis
+      apt:
+        name:
+          - redis-server
+        state: present
+
+    - name: Install Nginx
+      apt:
+        name:
+          - nginx
+        state: present
+
+    - name: Install Python dependencies
+      apt:
+        name:
+          - "{{ python_version }}"
+          - "{{ python_version }}-pip"
+          - "{{ python_version }}-venv"
+          - "{{ python_version }}-dev"
+          - "{{ python_version }}-setuptools"
+          - "{{ python_version }}-wheel"
+        state: present
+
+    - name: Install additional dependencies
+      apt:
+        name:
+          - ffmpeg
+          - fail2ban
+          - htop
+          - nano
+          - vim
+          - libssl-dev
+          - libffi-dev
+          - libjpeg-dev
+          - libpng-dev
+          - libfreetype6-dev
+          - cmake
+          - tesseract-ocr
+          - tesseract-ocr-eng
+          - pkg-config
+          - autotools-dev
+          - autoconf
+          - libtool
+          - libbz2-dev
+          - liblz4-dev
+          - libzstd-dev
+          - libsnappy-dev
+          - libicu-dev
+          - libxml2-dev
+          - libxslt1-dev
+          - zlib1g-dev
+        state: present
+
+    # =====================================
+    # User Creation
+    # =====================================
+    - name: Create CUPCAKE system user
+      user:
+        name: "{{ cupcake_user }}"
+        home: "/home/{{ cupcake_user }}"
+        shell: /bin/bash
+        groups: sudo
+        append: yes
+        create_home: yes
+        system: no
+
+    - name: Create CUPCAKE directory structure
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ cupcake_user }}"
+        group: "{{ cupcake_user }}"
+        mode: '0755'
+      loop:
+        - "{{ cupcake_home }}"
+        - "{{ cupcake_home }}/app"
+        - "{{ cupcake_home }}/logs"
+        - "{{ cupcake_home }}/media"
+        - "{{ cupcake_home }}/static"
+        - "{{ cupcake_home }}/ssl"
+        - "{{ cupcake_home }}/backups"
+        - "{{ cupcake_home }}/scripts"
+        - "{{ cupcake_home }}/frontend"
+
+    # =====================================
+    # Repository Clone
+    # =====================================
+    - name: Clone CUPCAKE repository
+      git:
+        repo: "{{ cupcake_repository }}"
+        dest: "{{ cupcake_home }}/app"
+        version: "{{ cupcake_branch }}"
+        force: yes
+      become_user: "{{ cupcake_user }}"
+
+    - name: Copy raspberry-pi scripts to scripts directory
+      copy:
+        src: "{{ cupcake_home }}/app/raspberry-pi/scripts/"
+        dest: "{{ cupcake_home }}/scripts/"
+        remote_src: yes
+        owner: "{{ cupcake_user }}"
+        group: "{{ cupcake_user }}"
+        mode: '0755'
+
+    - name: Set execute permissions on all scripts
+      file:
+        path: "{{ cupcake_home }}/scripts"
+        mode: '0755'
+        recurse: yes
+
+    - name: Set root ownership on boot service script
+      file:
+        path: "{{ cupcake_home }}/scripts/cupcake-boot-service.sh"
+        owner: root
+        group: root
+        mode: '0755'
+
+    # =====================================
+    # Frontend Setup
+    # =====================================
+    - name: Download frontend artifacts from GitHub releases
+      block:
+        - name: Create temporary download directory
+          tempfile:
+            state: directory
+          register: temp_dir
+
+        - name: Download CUPCAKE frontend
+          get_url:
+            url: "https://github.com/noatgnu/cupcake/releases/{{ 'latest' if frontend_download_version == 'latest' else 'download/' + frontend_download_version }}/cupcake-frontend-pi.tar.gz"
+            dest: "{{ temp_dir.path }}/cupcake-frontend-pi.tar.gz"
+            mode: '0644'
+          register: frontend_download
+          ignore_errors: yes
+
+        - name: Extract frontend files
+          unarchive:
+            src: "{{ temp_dir.path }}/cupcake-frontend-pi.tar.gz"
+            dest: "{{ cupcake_home }}/frontend/"
+            remote_src: yes
+            owner: "{{ nginx_user }}"
+            group: "{{ nginx_user }}"
+          when: frontend_download is succeeded
+
+        - name: Clean up temporary directory
+          file:
+            path: "{{ temp_dir.path }}"
+            state: absent
+          when: temp_dir.path is defined
+
+      rescue:
+        - name: Frontend download failed
+          fail:
+            msg: "Failed to download frontend. Please ensure the release exists or build manually."
+
+    # =====================================
+    # Python Virtual Environment
+    # =====================================
+    - name: Create Python virtual environment
+      command: "{{ python_version }} -m venv {{ cupcake_home }}/venv"
+      become_user: "{{ cupcake_user }}"
+      creates: "{{ cupcake_home }}/venv/bin/activate"
+
+    - name: Upgrade pip in virtual environment
+      pip:
+        name:
+          - pip
+          - setuptools
+          - wheel
+        state: latest
+        virtualenv: "{{ cupcake_home }}/venv"
+      become_user: "{{ cupcake_user }}"
+
+    - name: Install Python requirements
+      pip:
+        requirements: "{{ cupcake_home }}/app/requirements.txt"
+        virtualenv: "{{ cupcake_home }}/venv"
+        extra_args: "--prefer-binary --timeout=3600"
+      become_user: "{{ cupcake_user }}"
+
+    # =====================================
+    # Whisper.cpp Setup
+    # =====================================
+    - name: Clone Whisper.cpp repository
+      git:
+        repo: "https://github.com/ggerganov/whisper.cpp.git"
+        dest: "{{ cupcake_home }}/whisper.cpp"
+      become_user: "{{ cupcake_user }}"
+
+    - name: Download Whisper models
+      shell: |
+        cd {{ cupcake_home }}/whisper.cpp
+        ./models/download-ggml-model.sh base.en
+        ./models/download-ggml-model.sh small.en
+      become_user: "{{ cupcake_user }}"
+      creates: "{{ cupcake_home }}/whisper.cpp/models/ggml-base.en.bin"
+
+    - name: Build Whisper.cpp
+      shell: |
+        cd {{ cupcake_home }}/whisper.cpp
+        cmake -B build -DGGML_NATIVE=OFF -DWHISPER_BUILD_TESTS=OFF
+        cmake --build build --config Release -j {{ ansible_processor_vcpus | default(2) }}
+      become_user: "{{ cupcake_user }}"
+      creates: "{{ cupcake_home }}/whisper.cpp/build/bin/main"
+
+    # =====================================
+    # Database Configuration
+    # =====================================
+    - name: Start and enable PostgreSQL
+      systemd:
+        name: postgresql
+        state: started
+        enabled: yes
+
+    - name: Create PostgreSQL user
+      postgresql_user:
+        name: "{{ postgres_user }}"
+        password: "{{ postgres_password }}"
+        state: present
+      become_user: postgres
+
+    - name: Create PostgreSQL database
+      postgresql_db:
+        name: "{{ postgres_db }}"
+        owner: "{{ postgres_user }}"
+        state: present
+      become_user: postgres
+
+    # =====================================
+    # Redis Configuration
+    # =====================================
+    - name: Start and enable Redis
+      systemd:
+        name: redis-server
+        state: started
+        enabled: yes
+
+    # =====================================
+    # Environment Configuration
+    # =====================================
+    - name: Create environment configuration directory
+      file:
+        path: /etc/environment.d
+        state: directory
+        mode: '0755'
+
+    - name: Create CUPCAKE environment configuration
+      template:
+        src: cupcake.conf.j2
+        dest: /etc/environment.d/cupcake.conf
+        mode: '0644'
+      notify:
+        - restart cupcake services
+
+    # =====================================
+    # Django Setup
+    # =====================================
+    - name: Run Django migrations
+      shell: |
+        set -a
+        source /etc/environment.d/cupcake.conf
+        set +a
+        cd {{ cupcake_home }}/app
+        source {{ cupcake_home }}/venv/bin/activate
+        python manage.py migrate
+      become_user: "{{ cupcake_user }}"
+
+    - name: Collect Django static files
+      shell: |
+        set -a
+        source /etc/environment.d/cupcake.conf
+        set +a
+        cd {{ cupcake_home }}/app
+        source {{ cupcake_home }}/venv/bin/activate
+        python manage.py collectstatic --noinput
+      become_user: "{{ cupcake_user }}"
+
+    - name: Create Django superuser
+      shell: |
+        set -a
+        source /etc/environment.d/cupcake.conf
+        set +a
+        cd {{ cupcake_home }}/app
+        source {{ cupcake_home }}/venv/bin/activate
+        python manage.py shell << 'EOF'
+        from django.contrib.auth.models import User
+        if not User.objects.filter(username='admin').exists():
+            User.objects.create_superuser('admin', 'admin@cupcake.local', '{{ cupcake_admin_password | default("cupcake123") }}')
+            print("Superuser created: admin/{{ cupcake_admin_password | default('cupcake123') }}")
+        else:
+            print("Superuser already exists")
+        EOF
+      become_user: "{{ cupcake_user }}"
+
+    # =====================================
+    # Systemd Services
+    # =====================================
+    - name: Create CUPCAKE web service
+      template:
+        src: cupcake-web.service.j2
+        dest: /etc/systemd/system/cupcake-web.service
+        mode: '0644'
+      notify:
+        - reload systemd
+        - restart cupcake-web
+
+    - name: Create CUPCAKE worker service
+      template:
+        src: cupcake-worker.service.j2
+        dest: /etc/systemd/system/cupcake-worker.service
+        mode: '0644'
+      notify:
+        - reload systemd
+        - restart cupcake-worker
+
+    - name: Create CUPCAKE boot service
+      template:
+        src: cupcake-boot.service.j2
+        dest: /etc/systemd/system/cupcake-boot.service
+        mode: '0644'
+      notify:
+        - reload systemd
+        - enable cupcake-boot
+
+    - name: Enable CUPCAKE services
+      systemd:
+        name: "{{ item }}"
+        enabled: yes
+      loop:
+        - cupcake-web
+        - cupcake-worker
+        - cupcake-boot
+
+    # =====================================
+    # Nginx Configuration
+    # =====================================
+    - name: Configure Nginx for CUPCAKE
+      template:
+        src: nginx-cupcake.conf.j2
+        dest: /etc/nginx/sites-available/cupcake
+        mode: '0644'
+      notify:
+        - test nginx config
+        - restart nginx
+
+    - name: Enable CUPCAKE site
+      file:
+        src: /etc/nginx/sites-available/cupcake
+        dest: /etc/nginx/sites-enabled/cupcake
+        state: link
+      notify:
+        - test nginx config
+        - restart nginx
+
+    - name: Disable default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify:
+        - test nginx config
+        - restart nginx
+
+    - name: Start and enable Nginx
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+
+    # =====================================
+    # Security Configuration
+    # =====================================
+    - name: Configure fail2ban for SSH
+      copy:
+        content: |
+          [sshd]
+          enabled = true
+          port = ssh
+          filter = sshd
+          logpath = /var/log/auth.log
+          maxretry = 3
+          bantime = 1800
+        dest: /etc/fail2ban/jail.d/cupcake-ssh.conf
+        mode: '0644'
+      notify:
+        - restart fail2ban
+
+    - name: Start and enable fail2ban
+      systemd:
+        name: fail2ban
+        state: started
+        enabled: yes
+
+    # =====================================
+    # MOTD Configuration
+    # =====================================
+    - name: Create dynamic MOTD script
+      copy:
+        src: "{{ cupcake_home }}/app/raspberry-pi/scripts/cupcake-motd.sh"
+        dest: /etc/update-motd.d/10-cupcake
+        remote_src: yes
+        mode: '0755'
+      ignore_errors: yes
+
+    - name: Remove default MOTD
+      file:
+        path: /etc/motd
+        state: absent
+
+    # =====================================
+    # Final Tasks
+    # =====================================
+    - name: Install CUPCAKE update script globally
+      copy:
+        src: "{{ cupcake_home }}/scripts/update-cupcake.sh"
+        dest: /usr/local/bin/cupcake-update
+        remote_src: yes
+        mode: '0755'
+
+    - name: Create symlink for update script
+      file:
+        src: /usr/local/bin/cupcake-update
+        dest: /usr/local/bin/update-cupcake
+        state: link
+
+    - name: Set proper ownership for CUPCAKE directories
+      file:
+        path: "{{ cupcake_home }}"
+        owner: "{{ cupcake_user }}"
+        group: "{{ cupcake_user }}"
+        recurse: yes
+        state: directory
+
+    - name: Set proper ownership for frontend
+      file:
+        path: "{{ cupcake_home }}/frontend"
+        owner: "{{ nginx_user }}"
+        group: "{{ nginx_user }}"
+        recurse: yes
+        state: directory
+
+  handlers:
+    - name: reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: restart cupcake-web
+      systemd:
+        name: cupcake-web
+        state: restarted
+
+    - name: restart cupcake-worker
+      systemd:
+        name: cupcake-worker
+        state: restarted
+
+    - name: restart cupcake services
+      systemd:
+        name: "{{ item }}"
+        state: restarted
+      loop:
+        - cupcake-web
+        - cupcake-worker
+
+    - name: enable cupcake-boot
+      systemd:
+        name: cupcake-boot
+        enabled: yes
+
+    - name: test nginx config
+      command: nginx -t
+      register: nginx_test
+      failed_when: nginx_test.rc != 0
+
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted
+
+    - name: restart fail2ban
+      systemd:
+        name: fail2ban
+        state: restarted
+
+  post_tasks:
+    - name: Display deployment summary
+      debug:
+        msg: |
+          CUPCAKE deployment completed successfully!
+          
+          Access points:
+            - Web interface: http://{{ ansible_fqdn | default(ansible_default_ipv4.address) }}
+            - Admin interface: http://{{ ansible_fqdn | default(ansible_default_ipv4.address) }}/admin
+          
+          Default credentials:
+            - Admin user: admin
+            - Admin password: {{ cupcake_admin_password | default('cupcake123') }}
+            - System user: {{ cupcake_user }}
+          
+          Services:
+            - cupcake-web: Web application server
+            - cupcake-worker: Background task worker
+            - cupcake-boot: Boot verification service
+          
+          Management commands:
+            - Update CUPCAKE: cupcake-update
+            - Check status: systemctl status cupcake-*
+            - View logs: journalctl -f -u cupcake-web
+          
+          SECURITY WARNING: Change default passwords before production use!

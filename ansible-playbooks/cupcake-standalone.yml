@@ -8,23 +8,23 @@
     cupcake_home: "/opt/cupcake"
     cupcake_repository: "https://github.com/noatgnu/cupcake.git"
     cupcake_branch: "master"
-    
+
     # Database Configuration
     postgres_db: "cupcake"
     postgres_user: "cupcake"
     postgres_password: "{{ cupcake_db_password | default('cupcake') }}"
-    
+
     # Redis Configuration
     redis_port: 6379
-    
+
     # Django Configuration
     django_secret_key: "{{ cupcake_secret_key | default(ansible_machine_id | hash('sha256')) }}"
     django_debug: false
     django_allowed_hosts: "localhost,127.0.0.1,*.local,{{ ansible_hostname }},{{ ansible_fqdn }}"
-    
+
     # Frontend Configuration
     frontend_download_version: "{{ cupcake_version | default('latest') }}"
-    
+
     # System Configuration
     nginx_user: "www-data"
     python_version: "python3"
@@ -190,7 +190,11 @@
 
         - name: Download CUPCAKE frontend
           get_url:
-            url: "https://github.com/noatgnu/cupcake/releases/{{ 'latest' if frontend_download_version == 'latest' else 'download/' + frontend_download_version }}/cupcake-frontend-pi.tar.gz"
+            url: >-
+              https://github.com/noatgnu/cupcake/releases/{{
+              'latest' if frontend_download_version == 'latest'
+              else 'download/' + frontend_download_version
+              }}/cupcake-frontend-pi.tar.gz
             dest: "{{ temp_dir.path }}/cupcake-frontend-pi.tar.gz"
             mode: '0644'
           register: frontend_download
@@ -348,7 +352,10 @@
         python manage.py shell << 'EOF'
         from django.contrib.auth.models import User
         if not User.objects.filter(username='admin').exists():
-            User.objects.create_superuser('admin', 'admin@cupcake.local', '{{ cupcake_admin_password | default("cupcake123") }}')
+            User.objects.create_superuser(
+                'admin', 'admin@cupcake.local',
+                '{{ cupcake_admin_password | default("cupcake123") }}'
+            )
             print("Superuser created: admin/{{ cupcake_admin_password | default('cupcake123') }}")
         else:
             print("Superuser already exists")
@@ -549,24 +556,24 @@
       debug:
         msg: |
           CUPCAKE deployment completed successfully!
-          
+
           Access points:
             - Web interface: http://{{ ansible_fqdn | default(ansible_default_ipv4.address) }}
             - Admin interface: http://{{ ansible_fqdn | default(ansible_default_ipv4.address) }}/admin
-          
+
           Default credentials:
             - Admin user: admin
             - Admin password: {{ cupcake_admin_password | default('cupcake123') }}
             - System user: {{ cupcake_user }}
-          
+
           Services:
             - cupcake-web: Web application server
             - cupcake-worker: Background task worker
             - cupcake-boot: Boot verification service
-          
+
           Management commands:
             - Update CUPCAKE: cupcake-update
             - Check status: systemctl status cupcake-*
             - View logs: journalctl -f -u cupcake-web
-          
+
           SECURITY WARNING: Change default passwords before production use!

@@ -3,7 +3,7 @@
 - name: Provision Debian VM on Proxmox for Nextflow
   hosts: localhost # This play runs on your Ansible control node
   gather_facts: no
-  connection: local # No SSH needed for Proxmox API interaction
+  connection: local
   vars_files:
     # Optional: Store sensitive vars like API keys in a separate, vaulted file
     # - proxmox_secrets.vault.yml
@@ -24,7 +24,7 @@
     proxmox_node: "pve" # CHANGE THIS: The Proxmox node name where the VM will be created
     vm_id: 9001 # CHANGE THIS: Choose a unique VMID
     vm_name: "nextflow-runner-01" # CHANGE THIS: Desired hostname for the VM
-    vm_template: "debian-12-cloudinit-template" # CHANGE THIS: Exact name of your Debian cloud-init template on Proxmox storage
+    vm_template: "debian-12-cloudinit-template"
     vm_cores: 2
     vm_memory_mb: 4096 # 4GB RAM
     vm_disk_gb: 30 # Disk size in GB (without 'G')
@@ -139,7 +139,9 @@
 
     - name: Display message about successful provisioning
       ansible.builtin.debug:
-        msg: "VM {{ vm_name }} ({{ vm_ip_address }}) provisioned on {{ proxmox_node }} and added to '{{ dynamic_group_name }}' group. Proceeding with setup..."
+        msg: >-
+          VM {{ vm_name }} ({{ vm_ip_address }}) provisioned on {{ proxmox_node }}
+          and added to '{{ dynamic_group_name }}' group. Proceeding with setup...
 
 # Play 2: Configure the newly created VM using the imported playbook
 - name: Configure Nextflow and Docker on the new VM

@@ -93,6 +93,8 @@
     # -------------------------------------
     - name: Display Docker group notice
       ansible.builtin.debug:
-        msg: "IMPORTANT: User '{{ target_user }}' was added to the 'docker' group by the geerlingguy.docker role. They MUST log out and log back in for this change to take effect and run Docker commands without sudo."
+        msg: >-
+          IMPORTANT: User '{{ target_user }}' was added to the 'docker' group by the geerlingguy.docker role.
+          They MUST log out and log back in for this change to take effect and run Docker commands without sudo.
       # Only show if the user was actually specified (prevents noise if docker_users is empty)
       when: target_user in docker_users

@@ -3380,7 +3380,8 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
     if instrument_job.project:
         try:
             # Use the same logic as the sdrf_metadata_collection endpoint
-            project_sessions = Session.objects.filter(session_name__startswith=instrument_job.project.project_name)
+
+            project_sessions = instrument_job.project.sessions.all()
             
             # Collect all metadata from project sources
             project_metadata = set()

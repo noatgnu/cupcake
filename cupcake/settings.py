@@ -206,8 +206,14 @@ CSRF_USE_SESSIONS = False
 CSRF_COOKIE_HTTPONLY = False
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_ALL_ORIGINS = False
-CSRF_TRUSTED_ORIGINS = os.environ.get("CORS_ORIGIN_WHITELIST", "http://localhost:4200").split(",")
-CORS_ORIGIN_WHITELIST = os.environ.get("CORS_ORIGIN_WHITELIST", "http://localhost:4200").split(",")
+
+cors_origins = os.environ.get("CORS_ORIGIN_WHITELIST", "http://localhost:4200").split(",")
+
+cors_origins = [origin.strip() for origin in cors_origins if origin.strip()]
+cors_origins = list(dict.fromkeys(cors_origins))
+
+CSRF_TRUSTED_ORIGINS = cors_origins
+CORS_ORIGIN_WHITELIST = cors_origins
 CORS_ALLOW_METHODS = [
     "DELETE",
     "GET",

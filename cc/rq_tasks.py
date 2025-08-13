@@ -14,7 +14,6 @@ from PIL import Image
 from asgiref.sync import async_to_sync
 from bs4 import BeautifulSoup
 from channels.layers import get_channel_layer
-from django.contrib.auth.models import User
 from django.core.files import File
 from django.core.management import call_command
 from django.core.signing import TimestampSigner
@@ -57,7 +56,7 @@ import re
 
 from docx.shared import Inches, RGBColor
 import re
-
+from django.contrib.auth.models import User
 from cc.improved_docx_generator import EnhancedDocxGenerator, DocxGenerationError
 from cc.models import SiteSettings
 from cc.utils import user_metadata, staff_metadata, required_metadata_name, identify_barcode_format
@@ -2943,6 +2942,7 @@ def _create_pool_metadata_from_import(pool, pool_data, metadata_columns,
             else:
                 pool.staff_metadata.add(pool_metadata_column)
 
+@job('import-data', timeout='3h')
 def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, instance_id: str = None, data_type: str = "user_metadata"):
     """
     Import SDRF file
@@ -3034,6 +3034,13 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
 
         else:
             data = data[:instrument_job.sample_number]
+            
+            # If we removed SN= rows and truncated data, add SN= rows back for pool creation
+            if pooled_sample_column_index is not None and sn_rows and 'sn_data' in locals():
+                # Add SN= rows back to the end of the truncated data
+                data.extend(sn_data)
+                # Update sn_rows indices to reflect their new positions at the end
+                sn_rows = list(range(instrument_job.sample_number, len(data)))
 
     if data_type == "user_metadata":
         for m in instrument_job.user_metadata.all():
@@ -3120,7 +3127,6 @@ def import_sdrf_file(annotation_id: int, user_id: int, instrument_job_id: int, i
 
     # Create pools from SDRF data if pooled samples were found
     if pooled_sample_column_index is not None:
-        from cc.models import SamplePool, User
         user = User.objects.get(id=user_id)
         
         # Get the source name column index
@@ -4223,7 +4229,6 @@ def _import_pool_data_from_excel(instrument_job, pool_main_headers, pool_main_da
     """
     Import pool data from Excel sheets
     """
-    from cc.models import SamplePool, MetadataColumn, User, FavouriteMetadataOption
     
     user = User.objects.get(id=user_id)
     

@@ -3388,17 +3388,18 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
             
             # From protocol step annotations
             for session in project_sessions:
-                for protocol in session.protocols.all():
-                    for step in protocol.steps.all():
-                        for annotation in step.annotations.all():
-                            if annotation.value:
-                                project_metadata.add((annotation.name.lower(), annotation.value))
-            
-            # From session annotations  
-            for session in project_sessions:
                 for annotation in session.annotations.all():
-                    if annotation.value:
-                        project_metadata.add((annotation.name.lower(), annotation.value))
+                    if annotation.step:  # This is a protocol step annotation
+                        for metadata in annotation.metadata_columns.all():
+                            if metadata.value:
+                                project_metadata.add((metadata.name.lower(), metadata.value))
+            
+            # From session annotations (not linked to specific steps)
+            for session in project_sessions:
+                for annotation in session.annotations.filter(step__isnull=True):
+                    for metadata in annotation.metadata_columns.all():
+                        if metadata.value:
+                            project_metadata.add((metadata.name.lower(), metadata.value))
             
             # From stored reagent annotations
             stored_reagents_with_metadata = set()
@@ -3417,9 +3418,9 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
             for reagent_id in stored_reagents_with_metadata:
                 try:
                     stored_reagent = StoredReagent.objects.get(id=reagent_id)
-                    for annotation in stored_reagent.annotations.all():
-                        if annotation.value:
-                            project_metadata.add((annotation.name.lower(), annotation.value))
+                    for metadata in stored_reagent.metadata_columns.all():
+                        if metadata.value:
+                            project_metadata.add((metadata.name.lower(), metadata.value))
                 except StoredReagent.DoesNotExist:
                     continue
             
@@ -3517,7 +3518,8 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
         "Note: Cells that are empty will automatically be filled with 'not applicable' or 'no available' depending on the column when submitted.",
         "[*] User-specific favourite options.",
         "[**] Facility-recommended options.",
-        "[***] Global recommendations."
+        "[***] Global recommendations.",
+        "[****] Project-specific suggestions."
     ]
 
     start_row = instrument_job.sample_number + 2
@@ -3584,7 +3586,8 @@ def export_excel_template(user_id: int, instance_id: str, instrument_job_id: int
             "Note: Pool metadata for all pools (both reference and non-reference).",
             "[*] User-specific favourite options.",
             "[**] Facility-recommended options.", 
-            "[***] Global recommendations."
+            "[***] Global recommendations.",
+            "[****] Project-specific suggestions."
         ]
         
         pool_start_row = len(all_pools) + 2

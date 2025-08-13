@@ -4269,37 +4269,33 @@ class ProjectViewSet(ModelViewSet, FilterMixin):
                         }
                         
                         for metadata in reagent_metadata:
-                            metadata_info = {
-                                'id': metadata.id,
-                                'name': metadata.name,
-                                'type': metadata.type,
-                                'value': metadata.value,
-                                'column_position': metadata.column_position,
-                                'mandatory': metadata.mandatory,
-                                'hidden': metadata.hidden,
-                                'auto_generated': metadata.auto_generated,
-                                'readonly': metadata.readonly,
-                                'modifiers': metadata.modifiers,
-                                'created_at': metadata.created_at,
-                                'updated_at': metadata.updated_at
-                            }
-                            reagent_data['metadata_columns'].append(metadata_info)
-                            
-                            # Add to unique columns collection
-                            column_key = f"{metadata.name}_{metadata.type}"
-                            if column_key not in metadata_collection['unique_metadata_columns']:
-                                metadata_collection['unique_metadata_columns'][column_key] = {
+                            if unique_values_only and filter_names:
+                                # In unique values mode, use the helper function
+                                process_metadata(metadata)
+                            else:
+                                # Standard mode - collect full details
+                                metadata_info = {
+                                    'id': metadata.id,
                                     'name': metadata.name,
                                     'type': metadata.type,
-                                    'occurrences': 0,
-                                    'sources': []
+                                    'value': metadata.value,
+                                    'column_position': metadata.column_position,
+                                    'mandatory': metadata.mandatory,
+                                    'hidden': metadata.hidden,
+                                    'auto_generated': metadata.auto_generated,
+                                    'readonly': metadata.readonly,
+                                    'modifiers': metadata.modifiers,
+                                    'created_at': metadata.created_at,
+                                    'updated_at': metadata.updated_at
                                 }
-                            
-                            metadata_collection['unique_metadata_columns'][column_key]['occurrences'] += 1
-                            metadata_collection['unique_metadata_columns'][column_key]['sources'].append({
-                                'type': 'stored_reagent',
-                                'stored_reagent_id': stored_reagent.id
-                            })
+                                reagent_data['metadata_columns'].append(metadata_info)
+                                
+                                # Use helper function for consistent processing
+                                source_info = {
+                                    'type': 'stored_reagent',
+                                    'stored_reagent_id': stored_reagent.id
+                                }
+                                process_metadata(metadata, source_info)
                         
                         if reagent_data['metadata_columns']:
                             metadata_collection['metadata_sources']['stored_reagent_annotations'].append(reagent_data)
